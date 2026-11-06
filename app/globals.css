@@ -5,13 +5,11 @@
 
 @custom-variant dark (&:is(.dark *));
 
-body {
-  font-family: ui-sans-serif, system-ui, sans-serif;
-}
 
 @theme inline {
-  --font-heading: var(--font-sans);
+  --font-heading: var(--font-mono);
   --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono), ui-monospace, monospace;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -52,73 +50,105 @@ body {
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-:root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+/*
+ * Sevastolink palette (https://github.com/paulopacitti/sevastolink), after the Seegson consoles of
+ * "Alien: Isolation":
+ *   Xenomorph Skin #0c290c · Terminal Green #134213 · Seegson Green #05b669
+ *   Acid Blood #f07826 · Hypersleep White #ccd5d4 · Synthetic Skin #7a807f
+ */
+:root,
+.dark {
+  --xeno: #0c290c;
+  --terminal: #134213;
+  --seegson: #05b669;
+  --acid: #f07826;
+  --hypersleep: #ccd5d4;
+  --synthetic: #7a807f;
+  --panel: #0f330f;
+  --deep: #071a07;
+  --line: #1f5a2a;
+
+  --background: var(--xeno);
+  --foreground: var(--hypersleep);
+  --card: var(--panel);
+  --card-foreground: var(--hypersleep);
+  --popover: var(--panel);
+  --popover-foreground: var(--hypersleep);
+  --primary: var(--seegson);
+  --primary-foreground: var(--deep);
+  --secondary: var(--terminal);
+  --secondary-foreground: var(--hypersleep);
+  --muted: var(--terminal);
+  --muted-foreground: var(--synthetic);
+  --accent: var(--terminal);
+  --accent-foreground: var(--hypersleep);
+  --destructive: var(--acid);
+  --border: var(--line);
+  --input: #2b6438;
+  --ring: var(--seegson);
+  --chart-1: var(--seegson);
+  --chart-2: var(--acid);
+  --chart-3: var(--hypersleep);
+  --chart-4: var(--synthetic);
+  --chart-5: var(--terminal);
+  --radius: 0.375rem;
+  --sidebar: var(--panel);
+  --sidebar-foreground: var(--hypersleep);
+  --sidebar-primary: var(--seegson);
+  --sidebar-primary-foreground: var(--deep);
+  --sidebar-accent: var(--terminal);
+  --sidebar-accent-foreground: var(--hypersleep);
+  --sidebar-border: var(--line);
+  --sidebar-ring: var(--seegson);
+  color-scheme: dark;
 }
 
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+/*
+ * The UI was written with Tailwind's light "stone" scale and white panels. Instead of rewriting
+ * every class, the scales are remapped onto the palette: low numbers are dark surfaces, high
+ * numbers are light text. Status colours keep their meaning (green ok, orange warning, red-orange
+ * danger) as dark tinted fills with bright text.
+ */
+@theme {
+  --color-white: #0f330f;
+  --color-stone-50: #0c290c;
+  --color-stone-100: #134213;
+  --color-stone-200: #1a521a;
+  --color-stone-300: #2b6438;
+  --color-stone-400: #5f6b69;
+  --color-stone-500: #7a807f;
+  --color-stone-600: #9aa3a2;
+  --color-stone-700: #b4bdbc;
+  --color-stone-800: #ccd5d4;
+  --color-stone-900: #ccd5d4;
+  --color-stone-950: #e6eeed;
+
+  --color-emerald-50: #0e3a1f;
+  --color-emerald-100: #0f4224;
+  --color-emerald-700: #05b669;
+  --color-emerald-800: #05b669;
+  --color-emerald-900: #3fd690;
+
+  --color-amber-50: #33240e;
+  --color-amber-100: #3d2a10;
+  --color-amber-300: #a3521c;
+  --color-amber-700: #f07826;
+  --color-amber-800: #f07826;
+  --color-amber-900: #f59a5a;
+  --color-amber-950: #f8b07f;
+
+  --color-red-50: #3a160c;
+  --color-red-100: #451a0e;
+  --color-red-700: #ff6a3d;
+  --color-red-800: #ff6a3d;
+  --color-red-900: #ff8b66;
+
+  --color-sky-100: #10372f;
+  --color-sky-900: #7fd8c4;
+  --color-indigo-100: #163a26;
+  --color-indigo-900: #8fe0b0;
+  --color-violet-100: #2b3a16;
+  --color-violet-900: #d2df8a;
 }
 
 @layer base {
@@ -131,4 +161,68 @@ body {
   html {
     @apply font-sans;
   }
+}
+
+/* Console chrome: monospace headings, navigation, labels and tables; a faint glow and scanlines. */
+h1,
+h2,
+h3,
+h4,
+header,
+nav,
+label,
+th,
+button,
+summary,
+.font-console {
+  font-family: var(--font-mono), ui-monospace, monospace;
+}
+h1 {
+  color: var(--seegson);
+  text-shadow: 0 0 12px rgb(5 182 105 / 0.35);
+}
+h2,
+h3 {
+  color: var(--seegson);
+  letter-spacing: 0.02em;
+}
+a:hover {
+  color: var(--acid);
+}
+::selection {
+  background: var(--seegson);
+  color: var(--deep);
+}
+html {
+  scrollbar-color: var(--line) var(--deep);
+}
+body {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    rgb(255 255 255 / 0.018) 0px,
+    rgb(255 255 255 / 0.018) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
+/* Rendered Markdown (articles, guidelines, reviews). */
+html .prose {
+  --tw-prose-body: var(--hypersleep);
+  --tw-prose-headings: var(--seegson);
+  --tw-prose-lead: var(--hypersleep);
+  --tw-prose-links: var(--acid);
+  --tw-prose-bold: #e6eeed;
+  --tw-prose-counters: var(--synthetic);
+  --tw-prose-bullets: var(--synthetic);
+  --tw-prose-hr: var(--line);
+  --tw-prose-quotes: var(--hypersleep);
+  --tw-prose-quote-borders: var(--seegson);
+  --tw-prose-captions: var(--synthetic);
+  --tw-prose-kbd: var(--hypersleep);
+  --tw-prose-code: var(--acid);
+  --tw-prose-pre-code: var(--hypersleep);
+  --tw-prose-pre-bg: var(--deep);
+  --tw-prose-th-borders: #2b6438;
+  --tw-prose-td-borders: var(--line);
 }

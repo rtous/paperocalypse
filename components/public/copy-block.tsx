@@ -13,11 +13,11 @@ export function CopyBlock({ text }: { text: string }) {
           setCopied(true);
           setTimeout(() => setCopied(false), 2000);
         }}
-        className="absolute right-3 top-3 rounded-md bg-white px-3 py-1 text-sm font-medium text-stone-900 shadow ring-1 ring-stone-300 hover:bg-stone-50"
+        className="absolute right-3 top-3 rounded-md bg-primary px-3 py-1 text-sm font-medium text-primary-foreground shadow hover:bg-primary/85"
       >
         {copied ? "Copied" : "Copy"}
       </button>
-      <pre className="overflow-x-auto whitespace-pre-wrap rounded-xl bg-stone-900 p-5 pr-24 font-mono text-[13px] leading-relaxed text-stone-100">
+      <pre className="overflow-x-auto whitespace-pre-wrap rounded-xl border border-primary/40 bg-[#071a07] p-5 pr-24 font-mono text-[13px] leading-relaxed text-primary [text-shadow:0_0_6px_rgb(5_182_105_/_0.35)]">
         {text}
       </pre>
     </div>

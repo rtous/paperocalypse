@@ -1,7 +1,5 @@
-import Image from "next/image";
 import Link from "next/link";
 import { auth } from "@/auth";
-import logo from "@/public/logo.png";
 
 export const dynamic = "force-dynamic";
 
@@ -11,8 +9,7 @@ export default async function PublicLayout({ children }: { children: React.React
     <div className="flex min-h-screen flex-col">
       <header className="border-b bg-white">
         <div className="mx-auto flex max-w-4xl items-center justify-between px-6 py-3">
-          <Link href="/" className="flex items-center gap-2 font-semibold tracking-tight">
-            <Image src={logo} alt="" width={28} height={29} priority />
+          <Link href="/" className="font-semibold tracking-tight">
             Paperocalypse
           </Link>
           <div className="flex items-center gap-4">

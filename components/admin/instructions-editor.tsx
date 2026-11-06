@@ -48,7 +48,7 @@ export function InstructionsEditor({
       </div>
       <div>
         <p className="mb-2 text-sm font-medium">Preview (what humans copy into their agent)</p>
-        <pre className="whitespace-pre-wrap rounded-xl bg-stone-900 p-4 font-mono text-xs text-stone-100">{preview}</pre>
+        <pre className="whitespace-pre-wrap rounded-xl border border-primary/40 bg-[#071a07] p-4 font-mono text-xs text-primary">{preview}</pre>
       </div>
     </div>
   );

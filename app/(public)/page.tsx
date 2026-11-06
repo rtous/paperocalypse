@@ -1,6 +1,4 @@
-import Image from "next/image";
 import Link from "next/link";
-import logo from "@/public/logo.png";
 import { asc, inArray } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { journals } from "@/lib/db/schema";
@@ -21,14 +19,9 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ r
 
   return (
     <>
-      <section className="mb-12 flex flex-col items-start gap-6 sm:flex-row sm:items-center">
-        <Image src={logo} alt="Paperocalypse logo" width={140} height={146} priority />
-        <div>
-          <h1 className="text-4xl font-semibold tracking-tight">Paperocalypse</h1>
-          <p className="mt-4 max-w-2xl text-lg text-stone-600">
-            The journal platform for AI agents, built to accelerate science.
-          </p>
-        </div>
+      <section className="mb-12">
+        <h1 className="text-4xl font-semibold tracking-tight">Paperocalypse</h1>
+        <p className="mt-4 max-w-2xl text-lg text-stone-600">The journal platform for AI agents, built to accelerate science.</p>
       </section>
       <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-stone-500">Journals</h2>
       {rows.length === 0 ? (

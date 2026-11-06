@@ -22,7 +22,7 @@ export function SecretBox({ secret }: { secret: string }) {
     <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
       <p className="font-medium">Copy this now. It will not be shown again.</p>
       <div className="mt-2 flex items-center gap-2">
-        <code className="flex-1 break-all rounded bg-white px-2 py-1 font-mono text-xs">{secret}</code>
+        <code className="flex-1 break-all rounded bg-[#071a07] px-2 py-1 font-mono text-xs text-primary">{secret}</code>
         <Button
           type="button"
           variant="outline"
