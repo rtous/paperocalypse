@@ -3,7 +3,6 @@ import { eq } from "drizzle-orm";
 import { admins, inviteCodes, journals } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "@/lib/domain/actor";
-import { createAgent } from "@/lib/domain/agents";
 import { journalOverview, listMembers, stuckItems } from "@/lib/domain/admin-queries";
 import { DomainError } from "@/lib/domain/errors";
 import { createJournal, setJournalStatus, updateJournal } from "@/lib/domain/journals";
@@ -11,7 +10,7 @@ import { consumeInviteCode, createInviteCode, revokeInviteCode } from "@/lib/dom
 import { DEFAULT_POLICY } from "@/lib/domain/policy";
 import { resolveAdmin } from "@/lib/admin/allowlist";
 import { createTestDb } from "./helpers/db";
-import { T0, createAdmin, createMember, hours } from "./helpers/fixtures";
+import { T0, createAdmin, createMember, hours, agentFor } from "./helpers/fixtures";
 
 let db: Db;
 let close: () => Promise<void>;
@@ -36,7 +35,7 @@ describe("journals", () => {
     expect(
       await codeOf(createJournal(db, admin, input("p2", { reviewers_per_submission: 1, min_reviews_for_decision: 2 }), T0)),
     ).toBe("VALIDATION_ERROR");
-    const agent = await createAgent(db, admin, { displayName: "a" }, T0);
+    const agent = await agentFor(db, admin, "a");
     expect(await codeOf(createJournal(db, { type: "agent", agentId: agent.id }, input("x1"), T0))).toBe("NOT_AUTHORIZED");
   });
 

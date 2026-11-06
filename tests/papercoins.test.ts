@@ -1,12 +1,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { agents, papercoinTransactions, settings, submissions } from "@/lib/db/schema";
+import { operators, papercoinTransactions, settings, submissions } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "@/lib/domain/actor";
-import { createAgent, grantRoles } from "@/lib/domain/agents";
+import { grantRoles } from "@/lib/domain/agents";
 import { DomainError } from "@/lib/domain/errors";
-import { adjustPapercoins, applyPapercoins, getPapercoinBalance } from "@/lib/domain/papercoins";
+import { adjustPapercoins, applyPapercoins, getPapercoinBalance, operatorOfAgent } from "@/lib/domain/papercoins";
 import {
   inviteReviewers,
   makeDecision,
@@ -17,7 +17,7 @@ import {
 } from "@/lib/domain/submissions";
 import { clearSettingsCache } from "@/lib/mcp/framework";
 import { createTestDb } from "./helpers/db";
-import { LETTER, T0, createAdmin, createDashboardAgent, createJournal, createMember, hours, manuscript, review } from "./helpers/fixtures";
+import { LETTER, T0, agentFor, createAdmin, createDashboardAgent, createJournal, createMember, hours, manuscript, review } from "./helpers/fixtures";
 import { connect, fakeBlob, makeDeps, router } from "./helpers/mcp";
 
 let db: Db;
@@ -33,29 +33,33 @@ const code = (p: Promise<unknown>) => p.then(() => null, (e) => (e instanceof Do
 
 /** A journal member created without the fixture's generous balance. */
 async function plainMember(journalId: string, roles: ("author" | "reviewer" | "editor")[], name: string) {
-  const a = await createAgent(db, admin, { displayName: name, operatorContact: `${name}@coins.test` }, T0);
+  const a = await agentFor(db, admin, name, { email: `${name}@coins.test` });
   await grantRoles(db, admin, journalId, a.id, roles, T0);
   return { type: "agent" as const, agentId: a.id };
 }
 
+/** The operator's cached wallet equals the sum of its ledger. */
 async function ledgerIsConsistent(agentId: string) {
+  const operatorId = await operatorOfAgent(db, agentId);
   const [sum] = await db
     .select({ s: sql<number>`coalesce(sum(${papercoinTransactions.amount}), 0)`.mapWith(Number) })
     .from(papercoinTransactions)
-    .where(eq(papercoinTransactions.agentId, agentId));
+    .where(eq(papercoinTransactions.operatorId, operatorId));
   return (await getPapercoinBalance(db, agentId)) === sum!.s;
 }
 
 describe("papercoins", () => {
-  it("new agents get the signup grant (configurable)", async () => {
-    const a = await createAgent(db, admin, { displayName: "Newbie" }, T0);
+  it("new operators get the welcome grant once; their agents share it (configurable)", async () => {
+    const a = await agentFor(db, admin, "Newbie", { email: "newbie@coins.test" });
     expect(await getPapercoinBalance(db, a.id)).toBe(3);
+    const b = await agentFor(db, admin, "Newbie-2", { email: "newbie@coins.test" });
+    expect(await getPapercoinBalance(db, b.id)).toBe(3);
     const reg = await createDashboardAgent(db, "dash@coins.test", "Dashboard-created");
     expect(await getPapercoinBalance(db, reg.agentId)).toBe(3);
 
     await db.insert(settings).values({ key: "platform", value: { papercoin_signup_grant: 0 } });
-    const b = await createAgent(db, admin, { displayName: "No grant" }, T0);
-    expect(await getPapercoinBalance(db, b.id)).toBe(0);
+    const c = await agentFor(db, admin, "No grant", { email: "nogrant@coins.test" });
+    expect(await getPapercoinBalance(db, c.id)).toBe(0);
     await db.delete(settings).where(eq(settings.key, "platform"));
   });
 
@@ -119,7 +123,7 @@ describe("papercoins", () => {
   });
 
   it("applies a referenced entry only once", async () => {
-    const a = await createAgent(db, admin, { displayName: "Once" }, T0);
+    const a = await agentFor(db, admin, "Once");
     const ref = "00000000-0000-0000-0000-0000000000aa";
     await db.transaction((tx) => applyPapercoins(tx, { agentId: a.id, amount: 1, reason: "review", refId: ref, now: T0 }));
     await db.transaction((tx) => applyPapercoins(tx, { agentId: a.id, amount: 1, reason: "review", refId: ref, now: T0 }));
@@ -127,14 +131,14 @@ describe("papercoins", () => {
   });
 
   it("admins can adjust balances; others cannot", async () => {
-    const a = await createAgent(db, admin, { displayName: "Adjusted" }, T0);
-    expect(await adjustPapercoins(db, admin, a.id, 10, "Pilot lab grant", T0)).toBe(13);
-    expect(await adjustPapercoins(db, admin, a.id, -20, "Penalty for junk reviews", T0)).toBe(-7);
-    expect(await code(adjustPapercoins(db, admin, a.id, 0, "nothing", T0))).toBe("VALIDATION_ERROR");
-    expect(await code(adjustPapercoins(db, admin, a.id, 5, "", T0))).toBe("VALIDATION_ERROR");
-    expect(await code(adjustPapercoins(db, { type: "agent", agentId: a.id }, a.id, 5, "self grant", T0))).toBe("NOT_AUTHORIZED");
+    const a = await agentFor(db, admin, "Adjusted");
+    expect(await adjustPapercoins(db, admin, a.operatorId, 10, "Pilot lab grant", T0)).toBe(13);
+    expect(await adjustPapercoins(db, admin, a.operatorId, -20, "Penalty for junk reviews", T0)).toBe(-7);
+    expect(await code(adjustPapercoins(db, admin, a.operatorId, 0, "nothing", T0))).toBe("VALIDATION_ERROR");
+    expect(await code(adjustPapercoins(db, admin, a.operatorId, 5, "", T0))).toBe("VALIDATION_ERROR");
+    expect(await code(adjustPapercoins(db, { type: "agent", agentId: a.id }, a.operatorId, 5, "self grant", T0))).toBe("NOT_AUTHORIZED");
     expect(await ledgerIsConsistent(a.id)).toBe(true);
-    const [row] = await db.select().from(agents).where(eq(agents.id, a.id));
+    const [row] = await db.select().from(operators).where(eq(operators.id, a.operatorId));
     expect(row!.papercoins).toBe(-7);
   });
 });
@@ -170,7 +174,7 @@ describe("papercoins over MCP", () => {
     expect(coins.balance).toBe(0);
     expect(coins.rules).toMatchObject({ submission_cost: 1, publication_cost: 2, review_reward: 1, signup_grant: 3 });
     expect(coins.transactions.map((t: any) => t.reason)).toEqual(["submission", "submission", "submission", "signup_grant"]);
-    expect((await g.must("whoami")).papercoins).toMatchObject({ owner: "operator", balance: 0 });
+    expect((await g.must("whoami")).papercoins).toMatchObject({ balance: 0, operatorName: "coin" });
     expect(coins.wallet).toMatch(/shared with all agents of your operator/);
     await g.close();
     await c.close();

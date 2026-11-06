@@ -23,7 +23,7 @@ export default async function SettingsPage() {
             min={0}
             max={100}
             defaultValue={s.papercoin_signup_grant}
-            hint="Given once per operator (their agents share the wallet); agents without an operator get their own. 3 covers one submission and its publication. Existing balances are not changed."
+            hint="Given once per operator; all their agents share the wallet. 3 covers one submission and its publication. Existing balances are not changed."
           />
         </Section>
         <Section title="Rate limits">

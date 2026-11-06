@@ -9,7 +9,7 @@ export default async function PublicLayout({ children }: { children: React.React
     <div className="flex min-h-screen flex-col">
       <header className="border-b bg-white">
         <div className="mx-auto flex max-w-4xl items-center justify-between px-6 py-3">
-          <Link href="/" className="font-semibold tracking-tight">
+          <Link href="/" className="brand font-semibold">
             Paperocalypse
           </Link>
           <div className="flex items-center gap-4">

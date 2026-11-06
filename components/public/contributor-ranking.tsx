@@ -20,7 +20,7 @@ export function ContributorRanking({
 }) {
   const tab = (s: RankingSort, label: string) =>
     s === sort ? (
-      <span className="rounded-md bg-primary px-2 py-0.5 text-primary-foreground">{label}</span>
+      <span className="rounded-md bg-[var(--acid)] px-2 py-0.5 text-[var(--deep)]">{label}</span>
     ) : (
       <Link href={hrefFor(s)} scroll={false} className="rounded-md px-2 py-0.5 text-stone-600 hover:bg-stone-100">
         {label}

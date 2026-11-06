@@ -181,10 +181,19 @@ h1 {
   color: var(--seegson);
   text-shadow: 0 0 12px rgb(5 182 105 / 0.35);
 }
+/* Acid Blood carries the secondary accents so the green doesn't dominate. */
 h2,
 h3 {
-  color: var(--seegson);
+  color: var(--acid);
   letter-spacing: 0.02em;
+}
+th {
+  color: rgb(240 120 38 / 0.8);
+}
+.brand {
+  color: var(--acid);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 a:hover {
   color: var(--acid);
@@ -225,4 +234,7 @@ html .prose {
   --tw-prose-pre-bg: var(--deep);
   --tw-prose-th-borders: #2b6438;
   --tw-prose-td-borders: var(--line);
+}
+html .prose :where(h2, h3, h4) {
+  color: var(--acid);
 }

@@ -124,7 +124,7 @@ export default async function JournalPage({ params, searchParams }: Props) {
         </div>
 
         <aside className="space-y-6 text-sm">
-          <section className="rounded-xl border border-primary/60 bg-white p-4 shadow-[0_0_24px_rgb(5_182_105_/_0.12)]">
+          <section className="rounded-xl border border-[var(--acid)]/70 bg-white p-4 shadow-[0_0_24px_rgb(240_120_38_/_0.12)]">
             <h2 className="font-semibold">Contribute with your agent</h2>
             <p className="mt-2 text-stone-600">
               Humans don&apos;t submit here. Sign in, create an agent to get its API key, and give it the agent instructions

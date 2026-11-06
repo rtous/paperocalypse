@@ -202,11 +202,11 @@ export const agents = pgTable(
     webhookFailureCount: integer("webhook_failure_count").notNull().default(0),
     webhookDisabledAt: tz("webhook_disabled_at"),
     status: agentStatus("status").notNull().default("active"),
-    /** The registered human responsible for this agent (null for legacy or platform agents). */
-    operatorId: uuid("operator_id").references(() => operators.id),
+    /** The registered human responsible for this agent. Every agent has one. */
+    operatorId: uuid("operator_id")
+      .notNull()
+      .references(() => operators.id),
     lastSeenAt: tz("last_seen_at"),
-    /** Cached papercoin balance (sum of papercoin_transactions); may be negative after a publication. */
-    papercoins: integer("papercoins").notNull().default(0),
   },
   (t) => [index("agents_operator_contact_idx").on(t.operatorContactNormalized), index("agents_operator_idx").on(t.operatorId)],
 );
@@ -575,10 +575,12 @@ export const papercoinTransactions = pgTable(
   "papercoin_transactions",
   {
     ...base,
-    /** Wallet owner when the wallet is an operator's (shared by all their agents). */
-    operatorId: uuid("operator_id").references(() => operators.id, { onDelete: "cascade" }),
-    /** The agent whose action caused the entry (or whose own wallet it is, for agents without an operator). */
-    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "cascade" }),
+    /** The wallet: papercoins belong to operators and are shared by all their agents. */
+    operatorId: uuid("operator_id")
+      .notNull()
+      .references(() => operators.id, { onDelete: "cascade" }),
+    /** The agent whose action caused the entry (null for grants and adjustments on the operator). */
+    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
     amount: integer("amount").notNull(),
     reason: papercoinReason("reason").notNull(),
     /** Submission, article, review assignment or decision id (wallet owner id for the signup grant). */
@@ -595,7 +597,6 @@ export const papercoinTransactions = pgTable(
     uniqueIndex("papercoin_once_per_ref_uq")
       .on(t.reason, t.refId)
       .where(sql`${t.refId} IS NOT NULL AND ${t.reason} IN ('signup_grant', 'submission', 'publication', 'review', 'editorial_decision')`),
-    check("papercoin_has_wallet", sql`${t.operatorId} IS NOT NULL OR ${t.agentId} IS NOT NULL`),
   ],
 );
 

@@ -3,7 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { articles, events, reviewAssignments, submissions, tasks } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "@/lib/domain/actor";
-import { createAgent, grantRoles, issueApiKey, revokeApiKey, setAgentStatus, verifyApiKey } from "@/lib/domain/agents";
+import { grantRoles, issueApiKey, revokeApiKey, setAgentStatus, verifyApiKey } from "@/lib/domain/agents";
 import { loadBundle } from "@/lib/domain/bundle";
 import { serializeForAuthor } from "@/lib/domain/blinding";
 import { processDeadlines } from "@/lib/domain/deadlines";
@@ -23,7 +23,7 @@ import {
 } from "@/lib/domain/submissions";
 import { listOpenTasks } from "@/lib/domain/tasks";
 import { createTestDb } from "./helpers/db";
-import { LETTER, T0, createAdmin, createJournal, createMember, hours, manuscript, review } from "./helpers/fixtures";
+import { LETTER, T0, agentFor, createAdmin, createJournal, createMember, hours, manuscript, review } from "./helpers/fixtures";
 
 let db: Db;
 let close: () => Promise<void>;
@@ -444,7 +444,7 @@ describe("events are append-only", () => {
 
 describe("API keys", () => {
   it("issues, verifies and revokes keys; suspended agents are rejected", async () => {
-    const agent = await createAgent(db, admin, { displayName: "Keyed" }, T0);
+    const agent = await agentFor(db, admin, "Keyed");
     const { apiKey, keyId, keyPrefix } = await issueApiKey(db, admin, agent.id, "main", T0);
     expect(apiKey.startsWith("pk_live_")).toBe(true);
     expect(apiKey.slice(8, 16)).toBe(keyPrefix);
@@ -466,7 +466,7 @@ describe("API keys", () => {
 
   it("only admins grant roles", async () => {
     const j = await createJournal(db);
-    const agent = await createAgent(db, admin, { displayName: "x" }, T0);
+    const agent = await agentFor(db, admin, "x");
     await expectCode(grantRoles(db, { type: "agent", agentId: agent.id }, j.id, agent.id, ["editor"], T0), "NOT_AUTHORIZED");
   });
 });

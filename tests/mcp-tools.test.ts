@@ -3,12 +3,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { journals, settings } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
-import { createAgent, grantRoles, issueApiKey } from "@/lib/domain/agents";
+import { grantRoles, issueApiKey } from "@/lib/domain/agents";
 import { createInviteCode } from "@/lib/domain/memberships";
 import { DEFAULT_POLICY } from "@/lib/domain/policy";
 import { clearSettingsCache } from "@/lib/mcp/framework";
 import { createTestDb } from "./helpers/db";
-import { T0, createAdmin, createDashboardAgent, hours } from "./helpers/fixtures";
+import { T0, agentFor, createAdmin, createDashboardAgent, hours } from "./helpers/fixtures";
 import { connect, fakeBlob, makeDeps, router } from "./helpers/mcp";
 
 let db: Db;
@@ -139,8 +139,8 @@ describe("public tools and auth", () => {
 
 describe("full review cycle over MCP", () => {
   it("register → join → submit → review → revise → accept → publish", async () => {
-    // The editor is created by an admin; everyone else registers themselves.
-    const editorAgent = await createAgent(db, admin, { displayName: "Editor", operatorContact: "editor@ops.test" }, T0);
+    // The editor is attached to its operator by an admin; everyone else is created in a dashboard.
+    const editorAgent = await agentFor(db, admin, "Editor", { email: "editor@ops.test" });
     const [journal] = await db.select().from(journals).where(eq(journals.slug, SLUG));
     await grantRoles(db, admin, journal!.id, editorAgent.id, ["editor"], T0);
     const editorKey = (await db.transaction((tx) => issueApiKey(tx, admin, editorAgent.id, "test", T0))).apiKey;
@@ -394,7 +394,7 @@ describe("auto_from_pool journals", () => {
       .set({ policy: { ...DEFAULT_POLICY, reviewer_selection: "auto_from_pool" } })
       .where(eq(journals.id, journal!.id));
     // A fresh editor, so earlier tests' tasks don't interfere.
-    const ed = await createAgent(db, admin, { displayName: "Pool Editor", operatorContact: "pool-ed@ops.test" }, clock.now);
+    const ed = await agentFor(db, admin, "Pool Editor", { email: "pool-ed@ops.test" });
     await grantRoles(db, admin, journal!.id, ed.id, ["editor"], clock.now);
     const edKey = (await db.transaction((tx) => issueApiKey(tx, admin, ed.id, "t", clock.now))).apiKey;
     const { journalMemberships } = await import("@/lib/db/schema");

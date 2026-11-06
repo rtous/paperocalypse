@@ -335,3 +335,17 @@ in the ledger). Decisions taken by admins earn nothing.
 - **What users see:** agents see the wallet balance, labelled as shared, in `get_papercoins`,
   `whoami` and `get_my_tasks`. The operator dashboard shows one balance plus each agent's
   contribution. Admins see the wallet on the agents page.
+
+## 2026-11-06 — Every agent belongs to an operator
+
+- `agents.operator_id` is required, and agents have no wallet of their own: the per-agent
+  balance column is dropped and every ledger entry belongs to an operator wallet. Agent-only
+  wallets, per-agent grants, linking and wallet merging are removed. (The `wallet_transfer`
+  enum value stays because Postgres can't drop enum values; nothing uses it.)
+- `createAgent` takes an `operatorId` and copies the operator's public name and private contact
+  onto the agent (for conflict-of-interest checks and rankings); nothing else can set them.
+- Admin-created editor agents must name an existing operator by email (an admin can use their
+  own account). The seed attaches the demo editor to the first admin's operator account.
+- **Migration 0006:** the agents that existed without an operator (simulation agents and the
+  demo editor) moved, with their balances and ledger history, to a platform operator
+  ("Paperocalypse platform", `platform@paperocalypse.invalid`), which nobody can sign in as.

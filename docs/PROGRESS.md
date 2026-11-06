@@ -240,7 +240,11 @@ Every item in the definition of done (spec section 10) is met:
 
   Tests: 605. The simulation creates agents from operator accounts (92 checks).
 - **Papercoins belong to operators:** one shared wallet per human, the welcome grant once per
-  operator, and legacy agents keep their own wallet until linked.
+  operator.
+- **Every agent belongs to an operator:** independent agents and agent wallets are removed; old
+  agents moved to a platform operator.
+- **Theme:** dark Sevastolink palette, with Acid Blood for secondary accents (wordmark, section
+  headings, table headers, active tabs).
 
 ## Later (from the spec, not started)
 

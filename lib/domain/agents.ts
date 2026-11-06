@@ -1,13 +1,11 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { and, eq, isNull, lt, or } from "drizzle-orm";
-import { agents, apiKeys, journalMemberships } from "@/lib/db/schema";
+import { agents, apiKeys, journalMemberships, operators } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "./actor";
 import { normalizeContact } from "./coi";
 import { DomainError, notAuthorized, notFound } from "./errors";
 import { recordEvent } from "./events";
-import { applyPapercoins } from "./papercoins";
-import { getPlatformSettings } from "./settings";
 import { checkWebhookUrl } from "./webhooks";
 
 // ---------------------------------------------------------------------------
@@ -108,44 +106,37 @@ export async function verifyApiKey(db: Db, plain: string, now: Date) {
 export type NewAgent = {
   displayName: string;
   description?: string;
-  operatorName?: string | null;
-  operatorContact?: string | null;
   webhookUrl?: string | null;
-  /** Registered operator who owns the agent (their wallet pays for it; no per-agent grant). */
-  operatorId?: string | null;
+  /** The registered operator who owns the agent. Required: every agent belongs to an operator. */
+  operatorId: string;
 };
 
+/**
+ * Create an agent for an operator. The operator's public name and private contact are copied onto
+ * the agent (used by conflict-of-interest checks and rankings); papercoins live in the operator's
+ * wallet, so the agent gets no grant of its own.
+ */
 export async function createAgent(tx: Db, actor: Actor, input: NewAgent, now: Date) {
+  const [op] = await tx.select().from(operators).where(eq(operators.id, input.operatorId));
+  if (!op) throw notFound("Operator");
   const [row] = await tx
     .insert(agents)
     .values({
       displayName: input.displayName,
       description: input.description ?? "",
-      operatorName: input.operatorName ?? null,
-      operatorContact: input.operatorContact ?? null,
-      operatorContactNormalized: normalizeContact(input.operatorContact),
+      operatorId: op.id,
+      operatorName: op.name,
+      operatorContact: op.email,
+      operatorContactNormalized: normalizeContact(op.email),
       webhookUrl: input.webhookUrl ?? null,
-      operatorId: input.operatorId ?? null,
       createdAt: now,
       updatedAt: now,
     })
     .returning();
   await recordEvent(tx, actor, "agent.created", {
-    payload: { agent_id: row!.id, display_name: row!.displayName },
+    payload: { agent_id: row!.id, display_name: row!.displayName, operator_id: op.id },
     now,
   });
-  // Agents of a registered operator share the operator's wallet (granted once per operator).
-  const { papercoin_signup_grant: grant } = await getPlatformSettings(tx);
-  if (grant > 0 && !input.operatorId) {
-    row!.papercoins = await applyPapercoins(tx, {
-      agentId: row!.id,
-      amount: grant,
-      reason: "signup_grant",
-      refId: row!.id,
-      note: "Welcome grant",
-      now,
-    });
-  }
   return row!;
 }
 
@@ -257,18 +248,13 @@ export async function rotateApiKey(
 export async function updateAgentProfile(
   db: Db,
   actor: Actor & { type: "agent" },
-  input: { description?: string; operatorName?: string | null; operatorContact?: string | null; webhookUrl?: string | null },
+  input: { description?: string; webhookUrl?: string | null },
   now: Date,
 ) {
   const webhookProblem = input.webhookUrl ? checkWebhookUrl(input.webhookUrl) : null;
   if (webhookProblem) throw new DomainError("VALIDATION_ERROR", `webhook_url ${webhookProblem}.`);
   const set: Partial<typeof agents.$inferInsert> = { updatedAt: now };
   if (input.description !== undefined) set.description = input.description;
-  if (input.operatorName !== undefined) set.operatorName = input.operatorName;
-  if (input.operatorContact !== undefined) {
-    set.operatorContact = input.operatorContact;
-    set.operatorContactNormalized = normalizeContact(input.operatorContact);
-  }
   if (input.webhookUrl !== undefined) {
     set.webhookUrl = input.webhookUrl;
     set.webhookFailureCount = 0;

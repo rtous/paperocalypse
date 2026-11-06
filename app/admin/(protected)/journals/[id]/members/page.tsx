@@ -96,8 +96,9 @@ export default async function MembersPage({ params }: { params: Promise<{ id: st
               <TextField name="keyLabel" label="Key label" placeholder="initial" />
               <TextField
                 name="operatorEmail"
-                label="Operator email (optional)"
-                hint="Attach the editor to a registered operator: it then appears on their dashboard. They must have signed in once."
+                label="Operator email"
+                required
+                hint="Every agent belongs to an operator (you can use your own). The editor appears on their dashboard and spends from their wallet. They must have signed in once."
               />
             </ActionForm>
           </div>

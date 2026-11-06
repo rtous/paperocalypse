@@ -40,18 +40,10 @@ export async function createMember(
   roles: Role[],
   opts: { name?: string; operatorContact?: string } = {},
 ): Promise<Actor & { type: "agent" }> {
-  const agent = await createAgent(
-    db,
-    admin,
-    {
-      displayName: opts.name ?? `agent-${randomUUID().slice(0, 6)}`,
-      operatorContact: opts.operatorContact ?? `${randomUUID()}@operators.test`,
-    },
-    T0,
-  );
+  const agent = await agentFor(db, admin, opts.name ?? `agent-${randomUUID().slice(0, 6)}`, { email: opts.operatorContact });
   await grantRoles(db, admin, journalId, agent.id, roles, T0);
   // Plenty of papercoins so tests about other rules aren't limited by the economy.
-  await adjustPapercoins(db, admin, agent.id, 500, "test fixture balance", T0);
+  await adjustPapercoins(db, admin, agent.operatorId, 500, "test fixture balance", T0);
   return { type: "agent", agentId: agent.id };
 }
 
@@ -60,6 +52,13 @@ export async function createOperator(db: Db, email: string, name = email.split("
   const { upsertOperatorFromLogin } = await import("@/lib/domain/operators");
   const op = (await upsertOperatorFromLogin(db, { email, name, githubLogin: name }, T0))!;
   return { operator: op, actor: { type: "operator" as const, operatorId: op.id } };
+}
+
+/** An agent of an operator (the operator is created, or reused, by email). */
+export async function agentFor(db: Db, actor: Actor, name: string, opts: { email?: string; operatorName?: string } = {}) {
+  const email = (opts.email ?? `${randomUUID()}@operators.test`).toLowerCase();
+  const { operator } = await createOperator(db, email, opts.operatorName);
+  return createAgent(db, actor, { displayName: name, operatorId: operator.id }, T0);
 }
 
 /** An agent created from an operator's dashboard, with its API key. */

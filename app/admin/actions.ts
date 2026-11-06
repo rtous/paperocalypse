@@ -14,8 +14,8 @@ import { createJournal, setInstructionsTemplate, setJournalStatus, updateJournal
 import { getPlatformSettings, savePlatformSettings } from "@/lib/domain/settings";
 import { baseUrl } from "@/lib/mcp/deps";
 import { createInviteCode, removeRole, revokeInviteCode, setMembershipStatus } from "@/lib/domain/memberships";
-import { linkAgentToOperator } from "@/lib/domain/operators";
-import { adjustPapercoins } from "@/lib/domain/papercoins";
+import { findOperatorByEmail } from "@/lib/domain/operators";
+import { adjustPapercoins, operatorOfAgent } from "@/lib/domain/papercoins";
 import { resolveFlag } from "@/lib/domain/queries";
 import { adminOverride, assignEditor } from "@/lib/domain/submissions";
 import { SUBMISSION_STATUSES, type SubmissionStatus } from "@/lib/domain/workflow";
@@ -132,21 +132,11 @@ export async function createEditorAgent(_: ActionState, fd: FormData): Promise<A
   const res = await attempt(async () => {
     const now = new Date();
     const key = await getDb().transaction(async (tx) => {
-      const agent = await createAgent(
-        tx,
-        actor,
-        {
-          displayName,
-          description: str(fd, "description"),
-          operatorName: str(fd, "operatorName") || null,
-          operatorContact: str(fd, "operatorContact") || null,
-        },
-        now,
-      );
+      // Every agent belongs to an operator; the editor appears on that operator's dashboard.
+      const op = await findOperatorByEmail(tx, str(fd, "operatorEmail"));
+      const agent = await createAgent(tx, actor, { displayName, description: str(fd, "description"), operatorId: op.id }, now);
       await grantRoles(tx, actor, journalId, agent.id, ["editor"], now);
-      const key = await issueApiKey(tx, actor, agent.id, str(fd, "keyLabel") || "initial", now);
-      if (str(fd, "operatorEmail").trim()) await linkAgentToOperator(tx, actor, agent.id, str(fd, "operatorEmail"), now);
-      return key;
+      return issueApiKey(tx, actor, agent.id, str(fd, "keyLabel") || "initial", now);
     });
     return { ok: true, message: `Editor "${displayName}" created.`, secret: key.apiKey };
   });
@@ -316,21 +306,12 @@ export async function saveSettingsAction(_: ActionState, fd: FormData): Promise<
   return res.error ? res : { ok: true, message: "Settings saved. MCP servers pick them up within a minute." };
 }
 
-export async function linkOperatorAction(_: ActionState, fd: FormData): Promise<ActionState> {
-  const { actor } = await requireAdmin();
-  const res = await attempt(async () => {
-    const op = await linkAgentToOperator(getDb(), actor, str(fd, "agentId"), str(fd, "operatorEmail"), new Date());
-    return { ok: true, message: `Linked to ${op.name}.` };
-  });
-  revalidatePath("/admin/agents");
-  return res;
-}
-
 export async function adjustPapercoinsAction(_: ActionState, fd: FormData): Promise<ActionState> {
   const { actor } = await requireAdmin();
   const res = await attempt(async () => {
-    const balance = await adjustPapercoins(getDb(), actor, str(fd, "agentId"), num(fd, "amount"), str(fd, "note"), new Date());
-    return { ok: true, message: `Balance is now ${balance}.` };
+    const operatorId = await operatorOfAgent(getDb(), str(fd, "agentId"));
+    const balance = await adjustPapercoins(getDb(), actor, operatorId, num(fd, "amount"), str(fd, "note"), new Date());
+    return { ok: true, message: `The operator's wallet is now ${balance}.` };
   });
   revalidatePath("/admin/agents");
   return res;

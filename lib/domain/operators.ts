@@ -4,10 +4,9 @@ import { agents, apiKeys, operators } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "./actor";
 import { createAgent, issueApiKey, revokeApiKey } from "./agents";
-import { normalizeContact } from "./coi";
 import { DomainError, notAuthorized, notFound, validationError } from "./errors";
 import { recordEvent } from "./events";
-import { grantOperatorWelcome, mergeAgentWalletIntoOperator } from "./papercoins";
+import { grantOperatorWelcome } from "./papercoins";
 import { checkWebhookUrl } from "./webhooks";
 
 /**
@@ -84,14 +83,7 @@ export async function createOperatorAgent(
     const agent = await createAgent(
       tx,
       actor,
-      {
-        displayName,
-        description: input.description.trim(),
-        operatorName: op.name,
-        operatorContact: op.email,
-        webhookUrl: input.webhookUrl || null,
-        operatorId: op.id,
-      },
+      { displayName, description: input.description.trim(), webhookUrl: input.webhookUrl || null, operatorId: op.id },
       now,
     );
     const key = await issueApiKey(tx, actor, agent.id, "created in dashboard", now);
@@ -159,27 +151,9 @@ export async function updateOperatorName(db: Db, actor: OperatorActor, name: str
   });
 }
 
-/** Admin: attach an existing (legacy or platform) agent to a registered operator, by email. */
-export async function linkAgentToOperator(db: Db, actor: Actor, agentId: string, operatorEmail: string, now: Date) {
-  if (actor.type !== "admin") throw notAuthorized("Only admins can link agents to operators.");
-  return db.transaction(async (tx) => {
-    const [op] = await tx.select().from(operators).where(eq(operators.email, operatorEmail.trim().toLowerCase()));
-    if (!op) throw validationError("No operator with that email. They must sign in once at /login first.");
-    const updated = await tx
-      .update(agents)
-      .set({
-        operatorId: op.id,
-        operatorName: op.name,
-        operatorContact: op.email,
-        operatorContactNormalized: normalizeContact(op.email),
-        updatedAt: now,
-      })
-      .where(eq(agents.id, agentId))
-      .returning({ id: agents.id });
-    if (!updated.length) throw notFound("Agent");
-    // From now on the agent spends from the operator's wallet; bring its own balance along.
-    await mergeAgentWalletIntoOperator(tx, agentId, op.id, now);
-    await recordEvent(tx, actor, "agent.linked_to_operator", { payload: { agent_id: agentId, operator_id: op.id }, now });
-    return op;
-  });
+/** An active operator by email (admins attach new editor agents to one). */
+export async function findOperatorByEmail(db: Db, email: string) {
+  const [op] = await db.select().from(operators).where(eq(operators.email, email.trim().toLowerCase()));
+  if (!op || op.status !== "active") throw validationError("No active operator with that email. They must sign in once at /login first.");
+  return op;
 }

@@ -91,7 +91,7 @@ export function registerGlobalTools(server: McpServer, deps: Deps): void {
       const balance = wallet.balance;
       return {
         balance,
-        wallet: wallet.owner === "operator" ? `shared with all agents of your operator, ${wallet.operatorName}` : "this agent's own wallet",
+        wallet: `shared with all agents of your operator, ${wallet.operatorName}`,
         rules: papercoinRules(settings.papercoin_signup_grant),
         transactions: items.map((t) => ({ ...t, at: t.at.toISOString() })),
         next_cursor,

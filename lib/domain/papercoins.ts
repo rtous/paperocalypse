@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { desc, eq, and, sql } from "drizzle-orm";
 import { agents, operators, papercoinTransactions } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "./actor";
@@ -13,47 +13,26 @@ import { getPlatformSettings } from "./settings";
  *     is never blocked; the debt blocks the next submission);
  *   - each completed review and each editorial decision earns 1.
  *
- * Wallets belong to operators: all agents of one human share a single balance, and the welcome
- * grant is given once per operator. Agents without an operator (legacy or platform agents) have
- * their own wallet. Every change is a row in papercoin_transactions:
- *   operator wallet → operator_id set (agent_id = the agent that acted, if any)
- *   agent wallet    → operator_id null, agent_id set
+ * Papercoins belong to operators: every agent belongs to one, and all agents of an operator share
+ * one wallet (operators.papercoins). The welcome grant is given once per operator. Every change is
+ * a row in papercoin_transactions (operator_id = wallet, agent_id = the agent that acted, if any).
  */
 export const PAPERCOIN_COST = { submission: 1, publication: 2 } as const;
 export const PAPERCOIN_REWARD = { review: 1, editorial_decision: 1 } as const;
 
 export type PapercoinReason = (typeof papercoinTransactions.$inferSelect)["reason"];
-export type Wallet = { kind: "operator"; id: string } | { kind: "agent"; id: string };
 
-export async function walletOfAgent(db: Db, agentId: string): Promise<Wallet> {
+/** The operator whose wallet an agent spends from. */
+export async function operatorOfAgent(db: Db, agentId: string): Promise<string> {
   const [a] = await db.select({ operatorId: agents.operatorId }).from(agents).where(eq(agents.id, agentId));
   if (!a) throw notFound("Agent");
-  return a.operatorId ? { kind: "operator", id: a.operatorId } : { kind: "agent", id: agentId };
-}
-
-async function lockBalance(tx: Db, w: Wallet): Promise<number> {
-  if (w.kind === "operator") {
-    const [o] = await tx.select({ b: operators.papercoins }).from(operators).where(eq(operators.id, w.id)).for("update");
-    if (!o) throw notFound("Operator");
-    return o.b;
-  }
-  const [a] = await tx.select({ b: agents.papercoins }).from(agents).where(eq(agents.id, w.id)).for("update");
-  if (!a) throw notFound("Agent");
-  return a.b;
-}
-
-async function addToBalance(tx: Db, w: Wallet, amount: number) {
-  if (w.kind === "operator") {
-    await tx.update(operators).set({ papercoins: sql`${operators.papercoins} + ${amount}` }).where(eq(operators.id, w.id));
-  } else {
-    await tx.update(agents).set({ papercoins: sql`${agents.papercoins} + ${amount}` }).where(eq(agents.id, w.id));
-  }
+  return a.operatorId;
 }
 
 /**
- * Apply one ledger entry atomically: resolve and lock the wallet, check the balance, append the
+ * Apply one ledger entry atomically: lock the operator's wallet, check the balance, append the
  * entry, update the cached balance. Entries with a refId are applied at most once.
- * The wallet is the operator's when `operatorId` is given or the acting agent has one.
+ * Pass `operatorId` for operator-level entries, or `agentId` to use that agent's operator.
  * Returns the wallet balance after the entry.
  */
 export async function applyPapercoins(
@@ -72,28 +51,33 @@ export async function applyPapercoins(
   },
 ): Promise<number> {
   if (!entry.operatorId && !entry.agentId) throw new Error("applyPapercoins needs agentId or operatorId");
-  const wallet: Wallet = entry.operatorId ? { kind: "operator", id: entry.operatorId } : await walletOfAgent(tx, entry.agentId!);
-  const balance = await lockBalance(tx, wallet);
+  const operatorId = entry.operatorId ?? (await operatorOfAgent(tx, entry.agentId!));
+  const [wallet] = await tx
+    .select({ balance: operators.papercoins })
+    .from(operators)
+    .where(eq(operators.id, operatorId))
+    .for("update");
+  if (!wallet) throw notFound("Operator");
 
-  if (entry.refId && entry.reason !== "admin_adjustment" && entry.reason !== "wallet_transfer") {
+  if (entry.refId && entry.reason !== "admin_adjustment") {
     const [done] = await tx
       .select({ id: papercoinTransactions.id })
       .from(papercoinTransactions)
       .where(and(eq(papercoinTransactions.reason, entry.reason), eq(papercoinTransactions.refId, entry.refId)));
-    if (done) return balance;
+    if (done) return wallet.balance;
   }
 
-  const after = balance + entry.amount;
+  const after = wallet.balance + entry.amount;
   if (entry.amount < 0 && !entry.allowNegative && after < 0) {
     throw new DomainError(
       "INSUFFICIENT_PAPERCOINS",
-      `This needs ${-entry.amount} papercoin(s) and your${wallet.kind === "operator" ? " operator's" : ""} balance is ${balance}. Earn papercoins by reviewing: each completed review earns ${PAPERCOIN_REWARD.review}. Join as a reviewer (join_journal with roles ["reviewer"]) and accept invitations from get_my_tasks.`,
-      { balance, required: -entry.amount },
+      `This needs ${-entry.amount} papercoin(s) and your operator's balance is ${wallet.balance}. Earn papercoins by reviewing: each completed review earns ${PAPERCOIN_REWARD.review}. Join as a reviewer (join_journal with roles ["reviewer"]) and accept invitations from get_my_tasks.`,
+      { balance: wallet.balance, required: -entry.amount },
     );
   }
   await tx.insert(papercoinTransactions).values({
-    operatorId: wallet.kind === "operator" ? wallet.id : null,
-    agentId: entry.agentId ?? (wallet.kind === "agent" ? wallet.id : null),
+    operatorId,
+    agentId: entry.agentId ?? null,
     amount: entry.amount,
     reason: entry.reason,
     refId: entry.refId ?? null,
@@ -104,30 +88,31 @@ export async function applyPapercoins(
     createdAt: entry.now,
     updatedAt: entry.now,
   });
-  await addToBalance(tx, wallet, entry.amount);
+  await tx
+    .update(operators)
+    .set({ papercoins: sql`${operators.papercoins} + ${entry.amount}` })
+    .where(eq(operators.id, operatorId));
   return after;
 }
 
-/** The balance an agent can spend: its operator's wallet, or its own if it has no operator. */
+/** The balance an agent can spend: its operator's wallet. */
 export async function getPapercoinBalance(db: Db, agentId: string): Promise<number> {
   return (await walletInfo(db, agentId)).balance;
 }
 
 export async function walletInfo(db: Db, agentId: string) {
   const [row] = await db
-    .select({ agentBalance: agents.papercoins, operatorId: agents.operatorId, operatorBalance: operators.papercoins, operatorName: operators.name })
+    .select({ balance: operators.papercoins, operatorName: operators.name })
     .from(agents)
-    .leftJoin(operators, eq(operators.id, agents.operatorId))
+    .innerJoin(operators, eq(operators.id, agents.operatorId))
     .where(eq(agents.id, agentId));
   if (!row) throw notFound("Agent");
-  return row.operatorId
-    ? { owner: "operator" as const, balance: row.operatorBalance ?? 0, operatorName: row.operatorName }
-    : { owner: "agent" as const, balance: row.agentBalance, operatorName: null };
+  return row;
 }
 
 /** The wallet's transactions (all agents of the operator), newest first. */
 export async function listPapercoinTransactions(db: Db, agentId: string, limit: number, offset: number) {
-  const w = await walletOfAgent(db, agentId);
+  const operatorId = await operatorOfAgent(db, agentId);
   return db
     .select({
       amount: papercoinTransactions.amount,
@@ -140,11 +125,7 @@ export async function listPapercoinTransactions(db: Db, agentId: string, limit: 
     })
     .from(papercoinTransactions)
     .leftJoin(agents, eq(agents.id, papercoinTransactions.agentId))
-    .where(
-      w.kind === "operator"
-        ? eq(papercoinTransactions.operatorId, w.id)
-        : and(eq(papercoinTransactions.agentId, w.id), isNull(papercoinTransactions.operatorId)),
-    )
+    .where(eq(papercoinTransactions.operatorId, operatorId))
     .orderBy(desc(papercoinTransactions.createdAt), desc(papercoinTransactions.id))
     .limit(limit)
     .offset(offset);
@@ -157,26 +138,8 @@ export async function grantOperatorWelcome(tx: Db, operatorId: string, now: Date
   await applyPapercoins(tx, { operatorId, amount: grant, reason: "signup_grant", refId: operatorId, note: "Welcome grant", now });
 }
 
-/** Move an agent's own balance into its (new) operator's wallet. */
-export async function mergeAgentWalletIntoOperator(tx: Db, agentId: string, operatorId: string, now: Date) {
-  const [a] = await tx.select({ b: agents.papercoins }).from(agents).where(eq(agents.id, agentId)).for("update");
-  if (!a || a.b === 0) return;
-  const note = "Agent balance moved to its operator's wallet";
-  await tx.insert(papercoinTransactions).values({
-    agentId,
-    amount: -a.b,
-    reason: "wallet_transfer",
-    note,
-    balanceAfter: 0,
-    createdAt: now,
-    updatedAt: now,
-  });
-  await tx.update(agents).set({ papercoins: 0 }).where(eq(agents.id, agentId));
-  await applyPapercoins(tx, { operatorId, agentId, amount: a.b, reason: "wallet_transfer", note, allowNegative: true, now });
-}
-
-/** Admin grant (positive) or deduction (negative) on the wallet the agent spends from. */
-export async function adjustPapercoins(db: Db, actor: Actor, agentId: string, amount: number, note: string, now: Date) {
+/** Admin grant (positive) or deduction (negative) on an operator's wallet. */
+export async function adjustPapercoins(db: Db, actor: Actor, operatorId: string, amount: number, note: string, now: Date) {
   if (actor.type !== "admin") throw notAuthorized("Only admins adjust papercoins.");
   if (!Number.isInteger(amount) || amount === 0 || Math.abs(amount) > 1000) {
     throw validationError("The amount must be a non-zero whole number between -1000 and 1000.");
@@ -184,7 +147,7 @@ export async function adjustPapercoins(db: Db, actor: Actor, agentId: string, am
   if (note.trim().length < 3) throw validationError("Add a note explaining the adjustment.");
   return db.transaction(async (tx) => {
     const balance = await applyPapercoins(tx, {
-      agentId,
+      operatorId,
       amount,
       reason: "admin_adjustment",
       adminId: actor.adminId,
@@ -192,7 +155,7 @@ export async function adjustPapercoins(db: Db, actor: Actor, agentId: string, am
       allowNegative: true,
       now,
     });
-    await recordEvent(tx, actor, "papercoins.adjusted", { payload: { agent_id: agentId, amount, note: note.trim(), balance }, now });
+    await recordEvent(tx, actor, "papercoins.adjusted", { payload: { operator_id: operatorId, amount, note: note.trim(), balance }, now });
     return balance;
   });
 }

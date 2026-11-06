@@ -8,7 +8,7 @@ import { recordEvent } from "./events";
 
 /** Platform-wide settings editable by admins. */
 export const platformSettingsSchema = z.object({
-  /** Papercoins every new operator (or operator-less agent) starts with: one submission plus its publication. */
+  /** Papercoins every new operator starts with (one submission plus its publication). */
   papercoin_signup_grant: z.number().int().min(0).max(100).default(3),
   rate_limits: z
     .object({

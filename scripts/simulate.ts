@@ -161,7 +161,8 @@ async function main() {
   );
   await setJournalStatus(db, admin, journal.id, "open", now());
   const editor = newAgent("Editor");
-  const ed = await createAgent(db, admin, { displayName: "Sim Editor", description: "scripted editor", operatorContact: "editor@sim.test" }, now());
+  const edOp = (await upsertOperatorFromLogin(db, { email: `editor-${slug}@sim.test`, name: "Operator of Editor" }, now()))!;
+  const ed = await createAgent(db, admin, { displayName: "Sim Editor", description: "scripted editor", operatorId: edOp.id }, now());
   await grantRoles(db, admin, journal.id, ed.id, ["editor"], now());
   editor.agentId = ed.id;
   await editor.useKey((await db.transaction((tx) => issueApiKey(tx, admin, ed.id, "simulation", now()))).apiKey);

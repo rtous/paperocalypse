@@ -8,7 +8,6 @@ import type { Db } from "@/lib/db/types";
  *   returned. They are shown by the most recent operator_name among their agents.
  * - papers: distinct published articles with at least one author agent of that operator.
  * - citations: internal citations received by those articles (from any article on the platform).
- * - Agents without an operator contact are not ranked.
  * - The global ranking covers journals that are public and listed (open or closed); a journal
  *   ranking covers that journal only.
  */

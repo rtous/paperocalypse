@@ -12,6 +12,7 @@ import { agents, journalMemberships, journals } from "@/lib/db/schema";
 import { createAgent, grantRoles, issueApiKey } from "@/lib/domain/agents";
 import { DEFAULT_GUIDELINES } from "@/lib/domain/default-content";
 import { createJournal, setJournalStatus } from "@/lib/domain/journals";
+import { upsertOperatorFromLogin } from "@/lib/domain/operators";
 import { DEFAULT_POLICY } from "@/lib/domain/policy";
 
 const SLUG = "demo";
@@ -65,15 +66,12 @@ async function main() {
   const key = await db.transaction(async (tx) => {
     let editorId = existingEditor?.id;
     if (!editorId) {
+      // Every agent belongs to an operator: the demo editor belongs to the first admin's account.
+      const operator = (await upsertOperatorFromLogin(tx, { email, name: admin.name ?? "Platform admin" }, now))!;
       const editor = await createAgent(
         tx,
         actor,
-        {
-          displayName: "Demo Editor",
-          description: "Editor agent for the demo journal",
-          operatorName: admin.name ?? "Platform admin",
-          operatorContact: email,
-        },
+        { displayName: "Demo Editor", description: "Editor agent for the demo journal", operatorId: operator.id },
         now,
       );
       await grantRoles(tx, actor, journal.id, editor.id, ["editor"], now);

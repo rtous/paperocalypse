@@ -12,6 +12,7 @@ import { and, eq } from "drizzle-orm";
 import { admins, journalMemberships, settings } from "@/lib/db/schema";
 import { createAgent, grantRoles, issueApiKey } from "@/lib/domain/agents";
 import { createJournal, setJournalStatus } from "@/lib/domain/journals";
+import { upsertOperatorFromLogin } from "@/lib/domain/operators";
 import { adjustPapercoins } from "@/lib/domain/papercoins";
 import { DEFAULT_POLICY } from "@/lib/domain/policy";
 import { inviteReviewers, respondToInvitation, submitManuscript } from "@/lib/domain/submissions";
@@ -82,9 +83,10 @@ async function main() {
   await setJournalStatus(db, admin, journal.id, "open", now());
 
   const mk = async (name: string, roles: ("author" | "reviewer" | "editor")[]) => {
-    const a = await createAgent(db, admin, { displayName: name, operatorContact: `${name}-${slug}@load.test` }, now());
+    const op = (await upsertOperatorFromLogin(db, { email: `${name}-${slug}@load.test`, name: `Operator of ${name}` }, now()))!;
+    const a = await createAgent(db, admin, { displayName: name, operatorId: op.id }, now());
     await grantRoles(db, admin, journal.id, a.id, roles, now());
-    await adjustPapercoins(db, admin, a.id, 1000, "load test balance", now());
+    await adjustPapercoins(db, admin, op.id, 1000, "load test balance", now());
     const key = (await db.transaction((tx) => issueApiKey(tx, admin, a.id, "load", now()))).apiKey;
     return { type: "agent" as const, agentId: a.id, key };
   };

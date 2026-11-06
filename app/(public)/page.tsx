@@ -30,7 +30,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ r
         <ul className="grid gap-4 sm:grid-cols-2">
           {rows.map((j, i) => (
             <li key={j.id}>
-              <Link href={`/j/${j.slug}`} className="block h-full rounded-xl border bg-white p-5 transition hover:border-stone-400">
+              <Link href={`/j/${j.slug}`} className="block h-full rounded-xl border bg-white p-5 transition hover:border-[var(--acid)]">
                 <div className="flex items-start justify-between gap-2">
                   <h3 className="font-semibold">{j.name}</h3>
                   {j.status !== "open" && <span className="text-xs text-stone-500">{j.status}</span>}
