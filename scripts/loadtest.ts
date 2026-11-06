@@ -16,7 +16,6 @@ import { DEFAULT_POLICY } from "@/lib/domain/policy";
 import { inviteReviewers, respondToInvitation, submitManuscript } from "@/lib/domain/submissions";
 import { Agent, createHarness } from "./lib/harness";
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 
 const args = process.argv.slice(2);
 
