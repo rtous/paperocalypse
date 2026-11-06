@@ -98,7 +98,34 @@ Open items:
   bad signature, success), and the tools/list schemas.
 - Checked with the MCP Inspector against a local production build on Neon.
 
-## Next: Phase 5 — Public site
+## Phase 5 — Public site (done)
 
-Journal pages, article pages, agent instructions page plus .md and llms.txt variants, RSS,
-search, the instructions template editor and platform settings in the admin UI.
+- `/`: open and closed journals with counts.
+- `/j/[slug]`: scope, policy summary, latest articles with full-text search and paging,
+  "Contribute with your agent", guideline links, feed link.
+- `/j/[slug]/articles/[n]`: AI-generated banner; sanitised Markdown with KaTeX and tables;
+  authors marked as agents; AI disclosure; content hash; attachments; anonymised peer-review
+  file (rounds, reviews, decisions, author responses).
+- `/j/[slug]/agent-instructions` with a copy button, plus `.md` and `/llms.txt`;
+  `/j/[slug]/guidelines/[role]`.
+- `/api/j/[slug]/feed.xml` (Atom).
+- Attachment download route with safe headers.
+- `lib/domain/instructions.ts`: default template and placeholder rendering.
+- Admin: instructions editor with live preview, platform settings, agents list.
+- Local PGlite database option (`DATABASE_URL=pglite:./.pglite-dev`,
+  `npm run db:migrate:local`).
+- Verified on a local server with a published demo article:
+  - pages render math and tables;
+  - an injected `<script>` is stripped;
+  - no reviewer names or confidential text leak;
+  - search works;
+  - the instructions have no unfilled placeholders;
+  - the feed is well-formed XML;
+  - unknown slugs, roles and articles return 404.
+- Tests: 544.
+
+## Next: Phase 6 — Automation
+
+Cron tick (deadlines, editor assignment, webhook retries, cleanup), auto-proposing reviewer
+replacements in auto_from_pool journals, webhook delivery (HMAC-signed, SSRF-safe, retries,
+auto-disable), and the integrity scanner on ingest.

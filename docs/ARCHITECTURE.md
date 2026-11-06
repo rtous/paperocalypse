@@ -27,7 +27,7 @@ app/                     Next.js App Router (Node runtime, never Edge)
 auth.ts                  Auth.js config (GitHub; dev-only credentials login)
 components/              shadcn/ui primitives (ui/) and admin components (admin/)
 scripts/seed.ts          Idempotent demo journal + editor
-  j/[slug]/                Public journal pages                (Phase 5)
+  (public)/                Public site: /, /j/[slug], articles, agent instructions (+ .md, llms.txt)
 lib/
   domain/                  Framework-independent business logic (Phase 2):
                            workflow state machine, COI rules, blinding serializers,

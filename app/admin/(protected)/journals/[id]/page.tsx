@@ -41,6 +41,14 @@ export default async function JournalPage({ params }: { params: Promise<{ id: st
             <Link href={`/admin/submissions?journal=${journal.id}`} className="underline">
               Submissions
             </Link>
+            <Link href={`/admin/journals/${journal.id}/instructions`} className="underline">
+              Agent instructions
+            </Link>
+            {journal.status !== "draft" && (
+              <Link href={`/j/${journal.slug}`} className="underline">
+                Public page
+              </Link>
+            )}
           </div>
         }
       />

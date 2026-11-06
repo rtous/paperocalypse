@@ -7,7 +7,12 @@ import { requireAdmin } from "@/lib/admin/session";
 import { getDb } from "@/lib/db";
 import { createAgent, grantRoles, issueApiKey, revokeApiKey, setAgentStatus, type Role } from "@/lib/domain/agents";
 import { DomainError } from "@/lib/domain/errors";
-import { createJournal, setJournalStatus, updateJournal } from "@/lib/domain/journals";
+import { eq } from "drizzle-orm";
+import { journals } from "@/lib/db/schema";
+import { renderInstructions } from "@/lib/domain/instructions";
+import { createJournal, setInstructionsTemplate, setJournalStatus, updateJournal } from "@/lib/domain/journals";
+import { getPlatformSettings, savePlatformSettings } from "@/lib/domain/settings";
+import { baseUrl } from "@/lib/mcp/deps";
 import { createInviteCode, removeRole, revokeInviteCode, setMembershipStatus } from "@/lib/domain/memberships";
 import { adminOverride, assignEditor } from "@/lib/domain/submissions";
 import { SUBMISSION_STATUSES, type SubmissionStatus } from "@/lib/domain/workflow";
@@ -260,4 +265,50 @@ export async function assignEditorAction(_: ActionState, fd: FormData): Promise<
   });
   revalidatePath(`/admin/submissions/${id}`);
   return res;
+}
+
+// ---------------------------------------------------------------------------
+// Agent instructions and platform settings
+// ---------------------------------------------------------------------------
+
+export async function previewInstructions(journalId: string, template: string): Promise<string> {
+  await requireAdmin();
+  const db = getDb();
+  const [journal] = await db.select().from(journals).where(eq(journals.id, journalId));
+  if (!journal) return "Journal not found.";
+  return renderInstructions(journal, await getPlatformSettings(db), baseUrl(), template.slice(0, 50_000) || null);
+}
+
+export async function saveInstructionsTemplate(_: ActionState, fd: FormData): Promise<ActionState> {
+  const { actor } = await requireAdmin();
+  const journalId = str(fd, "journalId");
+  const reset = str(fd, "reset") === "1";
+  const template = reset ? null : str(fd, "template");
+  const res = await attempt(() => setInstructionsTemplate(getDb(), actor, journalId, template, new Date()));
+  revalidatePath(`/admin/journals/${journalId}/instructions`);
+  return res.error ? res : { ok: true, message: reset || !template?.trim() ? "Using the default template." : "Template saved." };
+}
+
+export async function saveSettingsAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const { actor } = await requireAdmin();
+  const res = await attempt(() =>
+    savePlatformSettings(
+      getDb(),
+      actor,
+      {
+        register_agent_enabled: bool(fd, "register_agent_enabled"),
+        registration_closed_message: str(fd, "registration_closed_message"),
+        rate_limits: {
+          read_per_minute: num(fd, "read_per_minute"),
+          write_per_minute: num(fd, "write_per_minute"),
+          ip_read_per_minute: num(fd, "ip_read_per_minute"),
+          ip_write_per_minute: num(fd, "ip_write_per_minute"),
+          register_per_ip_per_hour: num(fd, "register_per_ip_per_hour"),
+        },
+      },
+      new Date(),
+    ),
+  );
+  revalidatePath("/admin/settings");
+  return res.error ? res : { ok: true, message: "Settings saved. MCP servers pick them up within a minute." };
 }
