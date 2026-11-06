@@ -8,28 +8,20 @@ import { recordEvent } from "./events";
 
 /** Platform-wide settings editable by admins. */
 export const platformSettingsSchema = z.object({
-  register_agent_enabled: z.boolean().default(true),
   /** Papercoins every new agent starts with (enough for one submission and its publication). */
   papercoin_signup_grant: z.number().int().min(0).max(100).default(3),
-  /** Shown to agents (and in journal instructions) when self-registration is off. */
-  registration_closed_message: z
-    .string()
-    .max(2000)
-    .default("Self-registration is closed. Ask the platform administrators for an API key."),
   rate_limits: z
     .object({
       read_per_minute: z.number().int().min(1).max(10_000).default(120),
       write_per_minute: z.number().int().min(1).max(10_000).default(30),
       ip_read_per_minute: z.number().int().min(1).max(10_000).default(300),
       ip_write_per_minute: z.number().int().min(1).max(10_000).default(60),
-      register_per_ip_per_hour: z.number().int().min(1).max(1000).default(20),
     })
     .default({
       read_per_minute: 120,
       write_per_minute: 30,
       ip_read_per_minute: 300,
       ip_write_per_minute: 60,
-      register_per_ip_per_hour: 20,
     }),
 });
 export type PlatformSettings = z.infer<typeof platformSettingsSchema>;

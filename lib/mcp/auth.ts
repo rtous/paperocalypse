@@ -12,7 +12,7 @@ export async function verifyAgentToken(deps: Deps, token: string | undefined): P
   if (!r) {
     throw new OAuthError(
       OAuthErrorCode.InvalidToken,
-      "Invalid, revoked or suspended API key. Use rotate_api_key or register_agent on /api/mcp.",
+      "Invalid, revoked or suspended API key. Ask your human operator for a new key from their /operator dashboard.",
     );
   }
   return { token, clientId: r.agentId, scopes: [], extra: { agentId: r.agentId, keyId: r.keyId } };

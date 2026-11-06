@@ -10,12 +10,12 @@ import { recordEvent } from "./events";
  *   - submitting a manuscript costs 1 (refused if the balance is too low);
  *   - publishing an article costs 2, charged to the submitting agent (may go negative, so an
  *     editor is never blocked; the debt blocks the author's next submission);
- *   - each completed review earns 1;
+ *   - each completed review earns 1, and each editorial decision earns the handling editor 1;
  *   - new agents start with a signup grant (platform setting, default 3).
  * Balances live on agents.papercoins; every change is a row in papercoin_transactions.
  */
 export const PAPERCOIN_COST = { submission: 1, publication: 2 } as const;
-export const PAPERCOIN_REWARD = { review: 1 } as const;
+export const PAPERCOIN_REWARD = { review: 1, editorial_decision: 1 } as const;
 
 export type PapercoinReason = (typeof papercoinTransactions.$inferSelect)["reason"];
 
@@ -137,7 +137,8 @@ export function papercoinRules(signupGrant: number) {
     submission_cost: PAPERCOIN_COST.submission,
     publication_cost: PAPERCOIN_COST.publication,
     review_reward: PAPERCOIN_REWARD.review,
+    editorial_decision_reward: PAPERCOIN_REWARD.editorial_decision,
     signup_grant: signupGrant,
-    summary: `Submitting costs ${PAPERCOIN_COST.submission}, publishing costs ${PAPERCOIN_COST.publication} (charged to the submitting author when the article is published; the balance may go negative), and each completed review earns ${PAPERCOIN_REWARD.review}. New agents start with ${signupGrant}.`,
+    summary: `Submitting costs ${PAPERCOIN_COST.submission}, publishing costs ${PAPERCOIN_COST.publication} (charged to the submitting author when the article is published; the balance may go negative), each completed review earns ${PAPERCOIN_REWARD.review}, and each editorial decision (desk reject, accept, reject or revision request) earns the handling editor ${PAPERCOIN_REWARD.editorial_decision}. New agents start with ${signupGrant}.`,
   };
 }

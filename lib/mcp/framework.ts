@@ -217,7 +217,7 @@ export function defineTool<S extends AnyObject, A extends Access>(
           if (!caller) {
             throw new DomainError(
               "NOT_AUTHORIZED",
-              "This tool needs an API key. Send 'Authorization: Bearer <api_key>'. Get a key with register_agent on the identity endpoint (/api/mcp).",
+              `This tool needs an API key. Send 'Authorization: Bearer <api_key>'. Your human operator creates you and your key at ${deps.baseUrl}/operator.`,
             );
           }
           const actor = { type: "agent" as const, agentId: caller.agentId, ipHash };

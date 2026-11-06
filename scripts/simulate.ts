@@ -23,6 +23,7 @@ import { createAgent, grantRoles, issueApiKey } from "@/lib/domain/agents";
 import { processDeadlines } from "@/lib/domain/deadlines";
 import { DEFAULT_GUIDELINES } from "@/lib/domain/default-content";
 import { createJournal, setJournalStatus } from "@/lib/domain/journals";
+import { createOperatorAgent, upsertOperatorFromLogin } from "@/lib/domain/operators";
 import { DEFAULT_POLICY } from "@/lib/domain/policy";
 import { Agent, createHarness, type Harness } from "./lib/harness";
 
@@ -169,23 +170,24 @@ async function main() {
   log(`journal /${slug} (${journal.id}), editor ${ed.id}`);
 
   // ---------------------------------------------------------------- registration
-  section("Agents register and join over MCP");
+  section("Operators create agents (dashboard), agents join over MCP");
   const authors = [1, 2, 3].map((i) => newAgent(`Author${i}`));
   const reviewers = [1, 2, 3, 4, 5].map((i) => newAgent(`Reviewer${i}`));
   const run = randomUUID().slice(0, 6);
   for (const a of [...authors, ...reviewers]) {
-    // Reviewer5 shares Author1's operator, so it is conflicted for Author1's papers.
-    const operator = a.name === "Reviewer5" ? `author1-${run}@sim.test` : `${a.name.toLowerCase()}-${run}@sim.test`;
-    const r = await a.must(ID, "register_agent", {
-      display_name: `Sim ${a.name}`,
-      description: `${a.name}, a scripted simulation agent (no LLM)`,
-      operator_name: "Simulation operator",
-      operator_contact: operator,
-    });
-    a.agentId = r.agent_id;
-    await a.useKey(r.api_key);
+    // Reviewer5 belongs to Author1's operator, so it is conflicted for Author1's papers.
+    const email = a.name === "Reviewer5" ? `author1-${run}@sim.test` : `${a.name.toLowerCase()}-${run}@sim.test`;
+    const op = (await upsertOperatorFromLogin(db, { email, name: `Operator of ${a.name}`, githubLogin: null }, now()))!;
+    const r = await createOperatorAgent(
+      db,
+      { type: "operator", operatorId: op.id },
+      { displayName: `Sim ${a.name}`, description: `${a.name}, a scripted simulation agent (no LLM)` },
+      now(),
+    );
+    a.agentId = r.agent.id;
+    await a.useKey(r.apiKey);
   }
-  check(true, "8 agents registered with register_agent");
+  check(true, "8 agents created from 7 operator accounts");
   for (const a of authors) check((await a.must(J, "join_journal", { roles: ["author"] })).membership.status === "active", `${a.name} joined as author`);
   for (const r of reviewers) await r.must(J, "join_journal", { roles: ["reviewer"], reviewer_topics: ["simulation", "deadlines", "convergence"] });
   check(true, "5 reviewers joined with topics");
@@ -341,6 +343,9 @@ async function main() {
   // completed 3 reviews (two rounds of C, the replacement on D): +3.
   check((await authors[2]!.must(ID, "get_papercoins")).balance === 0, "Author3 paid 1 papercoin to submit and 2 to publish");
   check((await reviewers[2]!.must(ID, "get_papercoins")).balance === 6, "Reviewer3 earned 1 papercoin per completed review");
+  // The editor made 6 decisions: desk reject (A), reject (B), major, minor and accept (C), accept (D).
+  const edCoins = await editor.must(ID, "get_papercoins");
+  check(edCoins.transactions.filter((t: any) => t.reason === "editorial_decision").length === 6, "the editor earned 1 papercoin per editorial decision");
   const editorQueue = await editor.must(J, "list_editor_queue");
   check(editorQueue.count === 0, "the editor's queue is empty at the end");
 

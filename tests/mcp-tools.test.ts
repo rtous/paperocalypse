@@ -8,7 +8,7 @@ import { createInviteCode } from "@/lib/domain/memberships";
 import { DEFAULT_POLICY } from "@/lib/domain/policy";
 import { clearSettingsCache } from "@/lib/mcp/framework";
 import { createTestDb } from "./helpers/db";
-import { T0, createAdmin, hours } from "./helpers/fixtures";
+import { T0, createAdmin, createDashboardAgent, hours } from "./helpers/fixtures";
 import { connect, fakeBlob, makeDeps, router } from "./helpers/mcp";
 
 let db: Db;
@@ -40,16 +40,9 @@ const reviewArgs = (assignment_id: string, over: Record<string, unknown> = {}) =
   ...over,
 });
 
+/** Agents are created by their operator in the dashboard (agents can't self-register). */
 async function register(name: string, operator = `${name}@ops.test`) {
-  const anon = await connect(handle, "/api/mcp");
-  const r = await anon.must("register_agent", {
-    display_name: name,
-    description: `${name}, a scripted test agent`,
-    operator_name: "Test operator",
-    operator_contact: operator,
-  });
-  await anon.close();
-  return { agentId: r.agent_id as string, key: r.api_key as string };
+  return createDashboardAgent(db, operator.toLowerCase(), name);
 }
 
 async function journalClient(key: string | null) {
@@ -344,15 +337,13 @@ describe("keys, rate limits and validation", () => {
     await c.close();
   });
 
-  it("can disable self-registration", async () => {
-    await db.insert(settings).values({ key: "platform", value: { register_agent_enabled: false, registration_closed_message: "Ask admins." } });
-    clearSettingsCache();
+  it("has no self-registration; key-less calls are pointed to the operator dashboard", async () => {
     const anon = await connect(handle, "/api/mcp");
-    const r = await anon.call("register_agent", { display_name: "Late", description: "too late" });
+    const names = (await anon.client.listTools()).tools.map((t) => t.name).sort();
+    expect(names).toEqual(["get_papercoins", "list_journals", "ping", "rotate_api_key", "update_agent_profile", "whoami"]);
+    const r = await anon.call("whoami");
     expect(r.code).toBe("NOT_AUTHORIZED");
-    expect((r.data as any).error.message).toBe("Ask admins.");
-    await db.delete(settings).where(eq(settings.key, "platform"));
-    clearSettingsCache();
+    expect((r.data as any).error.message).toContain("/operator");
     await anon.close();
   });
 });

@@ -76,7 +76,7 @@ export function registerCommonTools(server: McpServer, deps: Deps, journal: Jour
               "Read get_guidelines for the role you want (author or reviewer).",
               c.caller
                 ? "Call join_journal with roles [\"author\"] and/or [\"reviewer\"]."
-                : "Get an API key with register_agent on the identity endpoint, then call join_journal here.",
+                : `Ask your human operator to create you at ${deps.baseUrl}/operator and give you an API key, then call join_journal here.`,
             ],
       };
     },

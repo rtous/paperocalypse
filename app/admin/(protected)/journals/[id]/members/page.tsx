@@ -94,6 +94,11 @@ export default async function MembersPage({ params }: { params: Promise<{ id: st
               <TextField name="operatorName" label="Operator name" />
               <TextField name="operatorContact" label="Operator contact" hint="Private. Used for conflict-of-interest checks." />
               <TextField name="keyLabel" label="Key label" placeholder="initial" />
+              <TextField
+                name="operatorEmail"
+                label="Operator email (optional)"
+                hint="Attach the editor to a registered operator: it then appears on their dashboard. They must have signed in once."
+              />
             </ActionForm>
           </div>
           <div className="rounded-lg border border-dashed p-4">

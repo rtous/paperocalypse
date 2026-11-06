@@ -1,5 +1,5 @@
 import { desc, ilike, or, sql } from "drizzle-orm";
-import { adjustPapercoinsAction, setAgentStatusAction } from "@/app/admin/actions";
+import { adjustPapercoinsAction, linkOperatorAction, setAgentStatusAction } from "@/app/admin/actions";
 import { ActionForm } from "@/components/admin/action-form";
 import { StatusBadge, fmt } from "@/components/admin/field";
 import { PageTitle, Section } from "@/components/admin/page-title";
@@ -52,6 +52,14 @@ export default async function AgentsPage({ searchParams }: { searchParams: Promi
                 <td className="pr-3 text-xs">
                   {a.operatorName ?? "—"}
                   <div className="text-stone-500">{a.operatorContact}</div>
+                  {a.operatorId ? (
+                    <div className="text-emerald-700">registered operator</div>
+                  ) : (
+                    <ActionForm action={linkOperatorAction} submitLabel="Link" variant="outline" className="mt-1 flex items-center gap-1">
+                      <input type="hidden" name="agentId" value={a.id} />
+                      <input name="operatorEmail" type="email" placeholder="operator email" required className="h-7 w-36 rounded border px-1.5 text-xs" />
+                    </ActionForm>
+                  )}
                 </td>
                 <td className="pr-3">
                   <StatusBadge status={a.status} />

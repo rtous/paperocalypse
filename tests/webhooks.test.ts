@@ -4,12 +4,12 @@ import { eq } from "drizzle-orm";
 import { agents, webhookDeliveries } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import { DomainError } from "@/lib/domain/errors";
-import { registerAgent, updateAgentProfile } from "@/lib/domain/agents";
+import { updateAgentProfile } from "@/lib/domain/agents";
 import { submitManuscript } from "@/lib/domain/submissions";
 import { runTick } from "@/lib/domain/tick";
 import { checkWebhookUrl, deliverWebhooks, isBlockedAddress, signWebhook, type WebhookFetch } from "@/lib/domain/webhooks";
 import { createTestDb } from "./helpers/db";
-import { T0, createAdmin, createJournal, createMember, hours, manuscript } from "./helpers/fixtures";
+import { T0, createAdmin, createDashboardAgent, createJournal, createMember, createOperator, hours, manuscript } from "./helpers/fixtures";
 
 describe("SSRF guard", () => {
   it.each(["127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fc00::1", "fd12::1", "fe80::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1", "224.0.0.1", "not-an-ip"])(
@@ -40,19 +40,21 @@ describe("webhook delivery", () => {
     const admin = await createAdmin(db);
     const j = await createJournal(db);
     await createMember(db, admin, j.id, ["editor"]);
-    const reg = await registerAgent(db, { displayName: "Hooked", operatorContact: "h@ops.test" }, null, T0);
-    const { webhookSecret } = await updateAgentProfile(db, { type: "agent", agentId: reg.agent.id }, { webhookUrl: "https://hooks.example.org/in" }, T0);
+    const reg = await createDashboardAgent(db, "h@ops.test", "Hooked");
+    const { webhookSecret } = await updateAgentProfile(db, { type: "agent", agentId: reg.agentId }, { webhookUrl: "https://hooks.example.org/in" }, T0);
     const { grantRoles } = await import("@/lib/domain/agents");
-    await grantRoles(db, admin, j.id, reg.agent.id, ["author"], T0);
-    return { journal: j, author: { type: "agent" as const, agentId: reg.agent.id }, secret: webhookSecret! };
+    await grantRoles(db, admin, j.id, reg.agentId, ["author"], T0);
+    return { journal: j, author: { type: "agent" as const, agentId: reg.agentId }, secret: webhookSecret! };
   }
 
   it("refuses unsafe webhook URLs when they are set", async () => {
-    const reg = await registerAgent(db, { displayName: "x" }, null, T0);
+    const reg = await createDashboardAgent(db, "x@ops.test", "Agent X");
     await expect(
-      updateAgentProfile(db, { type: "agent", agentId: reg.agent.id }, { webhookUrl: "https://169.254.169.254/latest" }, T0),
+      updateAgentProfile(db, { type: "agent", agentId: reg.agentId }, { webhookUrl: "https://169.254.169.254/latest" }, T0),
     ).rejects.toBeInstanceOf(DomainError);
-    await expect(registerAgent(db, { displayName: "y", webhookUrl: "http://example.org" }, null, T0)).rejects.toBeInstanceOf(DomainError);
+    const { createOperatorAgent } = await import("@/lib/domain/operators");
+    const { actor } = await createOperator(db, "y@ops.test");
+    await expect(createOperatorAgent(db, actor, { displayName: "y", description: "", webhookUrl: "http://example.org" }, T0)).rejects.toBeInstanceOf(DomainError);
   });
 
   it("sends signed, id-only payloads and marks them delivered", async () => {

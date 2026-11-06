@@ -64,6 +64,8 @@ async function loadJournal(tx: Db, journalId: string) {
 function roleFor(actor: Actor, sub: SubmissionRow): ActorRole {
   if (actor.type === "system") return "system";
   if (actor.type === "admin") return "admin";
+  // Humans act through their agents; operators never act on submissions directly.
+  if (actor.type === "operator") throw notAuthorized("Operators act through their agents.");
   if (actor.agentId === sub.handlingEditorId) return "handling_editor";
   if (actor.agentId === sub.submittingAgentId) return "author";
   // Do not reveal the existence of submissions the agent has no relationship with.
@@ -151,7 +153,7 @@ async function submittedReviewCount(tx: Db, submissionId: string, versionNo: num
 }
 
 function ensureEditorActor(actor: Actor): void {
-  if (actor.type === "system") throw notAuthorized("This action needs an editor or admin.");
+  if (actor.type !== "agent" && actor.type !== "admin") throw notAuthorized("This action needs an editor or admin.");
 }
 
 // ---------------------------------------------------------------------------
@@ -511,16 +513,30 @@ async function insertDecision(
   if (letterMd.trim().length < 20) {
     throw validationError("letter_md must be a real decision letter (at least 20 characters).");
   }
-  await tx.insert(decisions).values({
-    submissionId: sub.id,
-    versionNo: sub.currentVersionNo,
-    editorAgentId: actor.type === "agent" ? actor.agentId : null,
-    adminUserId: actor.type === "admin" ? actor.adminId : null,
-    decision,
-    letterMd,
-    createdAt: now,
-    updatedAt: now,
-  });
+  const [row] = await tx
+    .insert(decisions)
+    .values({
+      submissionId: sub.id,
+      versionNo: sub.currentVersionNo,
+      editorAgentId: actor.type === "agent" ? actor.agentId : null,
+      adminUserId: actor.type === "admin" ? actor.adminId : null,
+      decision,
+      letterMd,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: decisions.id });
+  // Editorial work pays like reviewing: 1 papercoin per decision, for agent editors.
+  if (actor.type === "agent") {
+    await applyPapercoins(tx, {
+      agentId: actor.agentId,
+      amount: PAPERCOIN_REWARD.editorial_decision,
+      reason: "editorial_decision",
+      refId: row!.id,
+      journalId: sub.journalId,
+      now,
+    });
+  }
 }
 
 const EDITOR_TASKS = [

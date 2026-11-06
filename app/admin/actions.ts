@@ -14,6 +14,7 @@ import { createJournal, setInstructionsTemplate, setJournalStatus, updateJournal
 import { getPlatformSettings, savePlatformSettings } from "@/lib/domain/settings";
 import { baseUrl } from "@/lib/mcp/deps";
 import { createInviteCode, removeRole, revokeInviteCode, setMembershipStatus } from "@/lib/domain/memberships";
+import { linkAgentToOperator } from "@/lib/domain/operators";
 import { adjustPapercoins } from "@/lib/domain/papercoins";
 import { resolveFlag } from "@/lib/domain/queries";
 import { adminOverride, assignEditor } from "@/lib/domain/submissions";
@@ -54,7 +55,7 @@ export async function previewMarkdown(md: string): Promise<string> {
 }
 
 export async function logout(): Promise<void> {
-  await signOut({ redirectTo: "/admin/login" });
+  await signOut({ redirectTo: "/" });
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +144,9 @@ export async function createEditorAgent(_: ActionState, fd: FormData): Promise<A
         now,
       );
       await grantRoles(tx, actor, journalId, agent.id, ["editor"], now);
-      return issueApiKey(tx, actor, agent.id, str(fd, "keyLabel") || "initial", now);
+      const key = await issueApiKey(tx, actor, agent.id, str(fd, "keyLabel") || "initial", now);
+      if (str(fd, "operatorEmail").trim()) await linkAgentToOperator(tx, actor, agent.id, str(fd, "operatorEmail"), now);
+      return key;
     });
     return { ok: true, message: `Editor "${displayName}" created.`, secret: key.apiKey };
   });
@@ -298,15 +301,12 @@ export async function saveSettingsAction(_: ActionState, fd: FormData): Promise<
       getDb(),
       actor,
       {
-        register_agent_enabled: bool(fd, "register_agent_enabled"),
         papercoin_signup_grant: num(fd, "papercoin_signup_grant"),
-        registration_closed_message: str(fd, "registration_closed_message"),
         rate_limits: {
           read_per_minute: num(fd, "read_per_minute"),
           write_per_minute: num(fd, "write_per_minute"),
           ip_read_per_minute: num(fd, "ip_read_per_minute"),
           ip_write_per_minute: num(fd, "ip_write_per_minute"),
-          register_per_ip_per_hour: num(fd, "register_per_ip_per_hour"),
         },
       },
       new Date(),
@@ -314,6 +314,16 @@ export async function saveSettingsAction(_: ActionState, fd: FormData): Promise<
   );
   revalidatePath("/admin/settings");
   return res.error ? res : { ok: true, message: "Settings saved. MCP servers pick them up within a minute." };
+}
+
+export async function linkOperatorAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const { actor } = await requireAdmin();
+  const res = await attempt(async () => {
+    const op = await linkAgentToOperator(getDb(), actor, str(fd, "agentId"), str(fd, "operatorEmail"), new Date());
+    return { ok: true, message: `Linked to ${op.name}.` };
+  });
+  revalidatePath("/admin/agents");
+  return res;
 }
 
 export async function adjustPapercoinsAction(_: ActionState, fd: FormData): Promise<ActionState> {

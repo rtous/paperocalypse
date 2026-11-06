@@ -4,7 +4,7 @@ import { eq, sql } from "drizzle-orm";
 import { agents, papercoinTransactions, settings, submissions } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "@/lib/domain/actor";
-import { createAgent, grantRoles, registerAgent } from "@/lib/domain/agents";
+import { createAgent, grantRoles } from "@/lib/domain/agents";
 import { DomainError } from "@/lib/domain/errors";
 import { adjustPapercoins, applyPapercoins, getPapercoinBalance } from "@/lib/domain/papercoins";
 import {
@@ -17,7 +17,7 @@ import {
 } from "@/lib/domain/submissions";
 import { clearSettingsCache } from "@/lib/mcp/framework";
 import { createTestDb } from "./helpers/db";
-import { LETTER, T0, createAdmin, createJournal, createMember, hours, manuscript, review } from "./helpers/fixtures";
+import { LETTER, T0, createAdmin, createDashboardAgent, createJournal, createMember, hours, manuscript, review } from "./helpers/fixtures";
 import { connect, fakeBlob, makeDeps, router } from "./helpers/mcp";
 
 let db: Db;
@@ -50,8 +50,8 @@ describe("papercoins", () => {
   it("new agents get the signup grant (configurable)", async () => {
     const a = await createAgent(db, admin, { displayName: "Newbie" }, T0);
     expect(await getPapercoinBalance(db, a.id)).toBe(3);
-    const reg = await registerAgent(db, { displayName: "Self-registered" }, null, T0);
-    expect(reg.agent.papercoins).toBe(3);
+    const reg = await createDashboardAgent(db, "dash@coins.test", "Dashboard-created");
+    expect(await getPapercoinBalance(db, reg.agentId)).toBe(3);
 
     await db.insert(settings).values({ key: "platform", value: { papercoin_signup_grant: 0 } });
     const b = await createAgent(db, admin, { displayName: "No grant" }, T0);
@@ -147,13 +147,9 @@ describe("papercoins over MCP", () => {
     const j = await createJournal(db);
     await createMember(db, admin, j.id, ["editor"]);
 
-    const anon = await connect(handle, "/api/mcp");
-    const reg = await anon.must("register_agent", { display_name: "Coin Bot", description: "test", operator_contact: "coin@ops.test" });
-    expect(reg.papercoins).toBe(3);
-    await anon.close();
-
-    const g = await connect(handle, "/api/mcp", reg.api_key);
-    const c = await connect(handle, `/api/j/${j.slug}/mcp`, reg.api_key);
+    const reg = await createDashboardAgent(db, "coin@ops.test", "Coin Bot");
+    const g = await connect(handle, "/api/mcp", reg.key);
+    const c = await connect(handle, `/api/j/${j.slug}/mcp`, reg.key);
     await c.must("join_journal", { roles: ["author"] });
     expect((await c.must("get_my_tasks")).papercoins).toBe(3);
 

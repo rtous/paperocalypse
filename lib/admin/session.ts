@@ -12,8 +12,8 @@ import { resolveAdmin } from "./allowlist";
 export async function requireAdmin(): Promise<{ actor: Actor & { type: "admin" }; email: string }> {
   const session = await auth();
   const email = session?.user?.email;
-  if (!email) redirect("/admin/login");
+  if (!email) redirect("/login?callbackUrl=/admin");
   const admin = await resolveAdmin(getDb(), email);
-  if (!admin) redirect("/admin/login?error=AccessDenied");
+  if (!admin) redirect("/login?error=AccessDenied&callbackUrl=/admin");
   return { actor: { type: "admin", adminId: admin.id }, email: admin.email };
 }

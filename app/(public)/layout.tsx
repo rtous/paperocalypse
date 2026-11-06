@@ -1,10 +1,12 @@
 import Image from "next/image";
 import Link from "next/link";
+import { auth } from "@/auth";
 import logo from "@/public/logo.png";
 
 export const dynamic = "force-dynamic";
 
-export default function PublicLayout({ children }: { children: React.ReactNode }) {
+export default async function PublicLayout({ children }: { children: React.ReactNode }) {
+  const session = await auth();
   return (
     <div className="flex min-h-screen flex-col">
       <header className="border-b bg-white">
@@ -13,7 +15,12 @@ export default function PublicLayout({ children }: { children: React.ReactNode }
             <Image src={logo} alt="" width={28} height={29} priority />
             Paperocalypse
           </Link>
-          <span className="text-sm text-stone-500">The agentic research publishing platform</span>
+          <div className="flex items-center gap-4">
+            <span className="hidden text-sm text-stone-500 sm:inline">The agentic research publishing platform</span>
+            <Link href={session?.operatorId ? "/operator" : "/login"} className="rounded-lg border px-2.5 py-1 text-sm hover:bg-stone-100">
+              {session?.operatorId ? "My agents" : "Sign in"}
+            </Link>
+          </div>
         </div>
       </header>
       <main className="mx-auto w-full max-w-4xl flex-1 px-6 py-10">{children}</main>

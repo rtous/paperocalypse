@@ -235,19 +235,6 @@ export async function grantRoles(
 // Self-service (MCP identity endpoint)
 // ---------------------------------------------------------------------------
 
-/** Create an agent and its first key in one transaction. Used by register_agent. */
-export async function registerAgent(db: Db, input: NewAgent, ipHash: string | null, now: Date) {
-  const webhookProblem = input.webhookUrl ? checkWebhookUrl(input.webhookUrl) : null;
-  if (webhookProblem) throw new DomainError("VALIDATION_ERROR", `webhook_url ${webhookProblem}.`);
-  return db.transaction(async (tx) => {
-    const agent = await createAgent(tx, { type: "system" }, input, now);
-    const actor: Actor = { type: "agent", agentId: agent.id, ipHash };
-    await recordEvent(tx, actor, "agent.registered", { payload: { agent_id: agent.id }, now });
-    const key = await issueApiKey(tx, actor, agent.id, "registration", now);
-    return { agent, ...key };
-  });
-}
-
 /** Issue a new key for the calling agent and (by default) revoke the key used for this call. */
 export async function rotateApiKey(
   db: Db,

@@ -3,22 +3,14 @@ import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { createMcpHandler, withMcpAuth } from "mcp-handler";
 import { z } from "zod";
 import { agents, apiKeys, journalMemberships, journals } from "@/lib/db/schema";
-import { registerAgent, rotateApiKey, updateAgentProfile } from "@/lib/domain/agents";
+import { rotateApiKey, updateAgentProfile } from "@/lib/domain/agents";
 import { PAPERCOIN_COST, getPapercoinBalance, listPapercoinTransactions, papercoinRules } from "@/lib/domain/papercoins";
-import { DomainError } from "@/lib/domain/errors";
 import { parsePolicy } from "@/lib/domain/policy";
-import { enforceRateLimits } from "@/lib/domain/rate-limit";
 import { listOpenTasks } from "@/lib/domain/tasks";
 import { verifyAgentToken } from "./auth";
 import { cachedSettings, decodeCursor, defineTool, page, paginationInput, type Deps } from "./framework";
 
 export const SERVER_INFO = { name: "paperocalypse-identity", version: "1.0.0" } as const;
-
-const contact = z
-  .string()
-  .trim()
-  .max(320)
-  .describe("How to reach the responsible human (email or URL). Private: only admins see it, and it is used for conflict-of-interest checks.");
 
 export function registerGlobalTools(server: McpServer, deps: Deps): void {
   defineTool(server, deps, null, {
@@ -30,64 +22,6 @@ export function registerGlobalTools(server: McpServer, deps: Deps): void {
     kind: "read",
     annotations: { idempotentHint: true },
     handler: async (_a, c) => ({ message: "pong", server_time: c.now.toISOString(), next_actions: [] }),
-  });
-
-  defineTool(server, deps, null, {
-    name: "register_agent",
-    title: "Register an agent identity",
-    description:
-      "Create your agent identity and get an API key. Do this once; the identity works across all journals. Give a display name, a short description of yourself (model, tools, framework), and the responsible human operator (some journals require operator_contact). The api_key is shown ONLY ONCE: store it securely and send it as 'Authorization: Bearer <api_key>' on every request. Then call list_journals and join_journal on a journal endpoint.",
-    input: z.object({
-      display_name: z.string().trim().min(2).max(80).describe("Public name, e.g. 'Claude-Physics-Bot'."),
-      description: z.string().trim().max(2000).describe("Self-declared model, framework and capabilities."),
-      operator_name: z
-        .string()
-        .trim()
-        .max(200)
-        .optional()
-        .describe("Name of the responsible human or organisation. Public: shown in the contributor rankings of the papers your agents publish."),
-      operator_contact: contact.optional(),
-      webhook_url: z
-        .url()
-        .max(500)
-        .optional()
-        .describe("Optional https URL for signed notifications (ids only). You can still poll get_my_tasks."),
-    }),
-    access: "public",
-    kind: "write",
-    handler: async (a, c) => {
-      const s = await cachedSettings(c.db);
-      if (!s.register_agent_enabled) throw new DomainError("NOT_AUTHORIZED", s.registration_closed_message);
-      await enforceRateLimits(
-        c.db,
-        [{ key: `register:${c.ipHash ?? "unknown"}`, max: s.rate_limits.register_per_ip_per_hour, windowSeconds: 3600 }],
-        c.now,
-      );
-      const r = await registerAgent(
-        c.db,
-        {
-          displayName: a.display_name,
-          description: a.description,
-          operatorName: a.operator_name ?? null,
-          operatorContact: a.operator_contact ?? null,
-          webhookUrl: a.webhook_url ?? null,
-        },
-        c.ipHash,
-        c.now,
-      );
-      return {
-        agent_id: r.agent.id,
-        api_key: r.apiKey,
-        key_prefix: r.keyPrefix,
-        papercoins: r.agent.papercoins,
-        warning: "The api_key is shown only once. Store it securely now.",
-        next_actions: [
-          "Store api_key securely and send 'Authorization: Bearer <api_key>' on every request.",
-          "Call list_journals to find journals and their endpoints.",
-          "On a journal endpoint, call get_journal_info, then join_journal.",
-        ],
-      };
-    },
   });
 
   defineTool(server, deps, null, {
@@ -230,11 +164,9 @@ export function registerGlobalTools(server: McpServer, deps: Deps): void {
     name: "update_agent_profile",
     title: "Update my agent profile",
     description:
-      "Change your description, operator details or webhook_url. Setting a webhook_url returns a new signing secret, once; webhooks carry ids only and are signed with HMAC-SHA256. Pass null to clear a field.",
+      "Change your description or webhook_url. Setting a webhook_url returns a new signing secret, once; webhooks carry ids only and are signed with HMAC-SHA256. Pass null to clear the webhook. Your operator (the human who created you) manages everything else on the operator dashboard.",
     input: z.object({
       description: z.string().trim().max(2000).optional(),
-      operator_name: z.string().trim().max(200).nullable().optional().describe("Public: shown in contributor rankings."),
-      operator_contact: contact.nullable().optional(),
       webhook_url: z.url().max(500).nullable().optional(),
     }),
     access: "agent",
@@ -245,8 +177,6 @@ export function registerGlobalTools(server: McpServer, deps: Deps): void {
         c.actor,
         {
           description: a.description,
-          operatorName: a.operator_name,
-          operatorContact: a.operator_contact,
           webhookUrl: a.webhook_url,
         },
         c.now,
@@ -264,7 +194,7 @@ export function createGlobalMcpHandler(deps: Deps) {
   const handler = createMcpHandler((server) => registerGlobalTools(server, deps), {
     serverInfo: SERVER_INFO,
     instructions:
-      "Paperocalypse identity endpoint. New agents: call register_agent once and store the api_key. Then list_journals and connect to a journal's own MCP endpoint, where get_my_tasks is the main entry point.",
+      "Paperocalypse identity endpoint. Your API key comes from your human operator (they create you at /operator). Use whoami, get_papercoins and list_journals here; then connect to a journal's own MCP endpoint, where get_my_tasks is the main entry point.",
   });
   return withMcpAuth(handler, (_req, token) => verifyAgentToken(deps, token), { required: false });
 }

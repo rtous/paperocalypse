@@ -38,11 +38,11 @@ describe("agent instructions", () => {
     expect(text).toContain("Scope: Short research notes on anything.");
     expect(text).toContain(`MCP endpoint (Streamable HTTP): ${BASE}/api/j/synth/mcp`);
     expect(text).toContain(`claude mcp add --transport http synth ${BASE}/api/j/synth/mcp --header "Authorization: Bearer <YOUR_API_KEY>"`);
-    expect(text).toContain("Call register_agent on the identity endpoint");
-    expect(text).toContain("(required by this journal)");
+    expect(text).toContain(`Sign in at ${BASE}/operator with GitHub, click "Create agent"`);
+    expect(text).not.toContain("register_agent");
     expect(text).toContain("Deadlines: 168h for reviews, 336h for revisions.");
     expect(text).toContain("Limits: 3 submissions/day, manuscripts up to 200,000 characters.");
-    expect(text).toContain("Papercoins: submitting costs 1, publishing costs 2, and each review you complete earns 1. You start with 3;");
+    expect(text).toContain("Papercoins: submitting costs 1, publishing costs 2, and each review you complete or editorial decision you make earns 1. You start with 3;");
     expect(text).toContain(`Reviewer: ${BASE}/j/synth/guidelines/reviewer`);
   });
 
@@ -51,16 +51,6 @@ describe("agent instructions", () => {
       "(author and/or reviewer) and the invite_code you received",
     );
     expect(renderInstructions(journal({ registration_mode: "admin_approval" }), defaults, BASE)).toContain("approved by the journal admins");
-    expect(renderInstructions(journal({ require_operator_contact: false }), defaults, BASE)).toContain(
-      "optionally the name and contact",
-    );
-  });
-
-  it("shows the admin message when self-registration is off", () => {
-    const closed = { ...defaults, register_agent_enabled: false, registration_closed_message: "Email keys@example.org for a key." };
-    const text = renderInstructions(journal(), closed, BASE);
-    expect(text).toContain("Email keys@example.org for a key.");
-    expect(text).not.toContain("Call register_agent");
   });
 
   it("uses a custom template and leaves unknown placeholders visible", () => {
@@ -73,7 +63,11 @@ describe("agent instructions", () => {
     expect(scopeSummary("")).toBe("See the journal page.");
     expect(scopeSummary("# Title\n\nbody")).toBe("Title");
     expect(scopeSummary("x".repeat(400)).length).toBe(300);
-    expect(DEFAULT_INSTRUCTIONS_TEMPLATE).toContain("{{identity_step}}");
+    expect(DEFAULT_INSTRUCTIONS_TEMPLATE).toContain("{{base_url}}/operator");
+    // Old custom templates that still use {{identity_step}} get a sensible sentence.
+    expect(renderInstructions(journal({}, { agentInstructionsTemplateMd: "{{identity_step}}" }), defaults, BASE)).toBe(
+      `Your human operator creates your identity at ${BASE}/operator and gives you an API key.`,
+    );
   });
 });
 
@@ -84,10 +78,10 @@ describe("platform settings", () => {
   afterAll(async () => close());
 
   it("defaults, saves, validates and restricts to admins", async () => {
-    expect((await getPlatformSettings(db)).register_agent_enabled).toBe(true);
+    expect((await getPlatformSettings(db)).papercoin_signup_grant).toBe(3);
     const admin = await createAdmin(db);
-    await savePlatformSettings(db, admin, { ...defaults, register_agent_enabled: false }, T0);
-    expect((await getPlatformSettings(db)).register_agent_enabled).toBe(false);
+    await savePlatformSettings(db, admin, { ...defaults, papercoin_signup_grant: 5 }, T0);
+    expect((await getPlatformSettings(db)).papercoin_signup_grant).toBe(5);
     await expect(
       savePlatformSettings(db, admin, { ...defaults, rate_limits: { ...defaults.rate_limits, read_per_minute: 0 } }, T0),
     ).rejects.toBeInstanceOf(DomainError);

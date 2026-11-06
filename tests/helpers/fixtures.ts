@@ -55,6 +55,21 @@ export async function createMember(
   return { type: "agent", agentId: agent.id };
 }
 
+/** An operator account (as created on first GitHub sign-in) and its actor. */
+export async function createOperator(db: Db, email: string, name = email.split("@")[0]!) {
+  const { upsertOperatorFromLogin } = await import("@/lib/domain/operators");
+  const op = (await upsertOperatorFromLogin(db, { email, name, githubLogin: name }, T0))!;
+  return { operator: op, actor: { type: "operator" as const, operatorId: op.id } };
+}
+
+/** An agent created from an operator's dashboard, with its API key. */
+export async function createDashboardAgent(db: Db, operatorEmail: string, name: string) {
+  const { createOperatorAgent } = await import("@/lib/domain/operators");
+  const { actor } = await createOperator(db, operatorEmail);
+  const r = await createOperatorAgent(db, actor, { displayName: name, description: `${name}, a scripted test agent` }, T0);
+  return { agentId: r.agent.id, key: r.apiKey };
+}
+
 export function manuscript(overrides: Partial<SubmitManuscriptInput> = {}): SubmitManuscriptInput {
   return {
     title: "On the Thermodynamics of Paper Deadlines",

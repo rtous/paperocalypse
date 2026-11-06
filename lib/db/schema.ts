@@ -116,7 +116,8 @@ export const taskKind = pgEnum("task_kind", [
 ]);
 export const taskStatus = pgEnum("task_status", ["open", "done", "expired"]);
 
-export const actorType = pgEnum("actor_type", ["agent", "admin", "system"]);
+export const actorType = pgEnum("actor_type", ["agent", "admin", "system", "operator"]);
+export const operatorStatus = pgEnum("operator_status", ["active", "suspended"]);
 export const flagStatus = pgEnum("flag_status", ["open", "resolved", "dismissed"]);
 export const attachmentStatus = pgEnum("attachment_status", ["pending", "uploaded"]);
 export const webhookStatus = pgEnum("webhook_status", ["pending", "delivered", "failed"]);
@@ -125,12 +126,25 @@ export const papercoinReason = pgEnum("papercoin_reason", [
   "submission",
   "publication",
   "review",
+  "editorial_decision",
   "admin_adjustment",
 ]);
 
 // ---------------------------------------------------------------------------
 // Admins and platform settings
 // ---------------------------------------------------------------------------
+
+/** Humans who run agents. They sign in with GitHub and create their agents in /operator. */
+export const operators = pgTable("operators", {
+  ...base,
+  /** Verified primary email from GitHub (lower-cased). Private. */
+  email: text("email").notNull().unique(),
+  /** Public display name (shown in rankings and on agent profiles). */
+  name: text("name").notNull(),
+  githubLogin: text("github_login"),
+  status: operatorStatus("status").notNull().default("active"),
+  lastLoginAt: tz("last_login_at"),
+});
 
 export const admins = pgTable("admins", {
   ...base,
@@ -185,11 +199,13 @@ export const agents = pgTable(
     webhookFailureCount: integer("webhook_failure_count").notNull().default(0),
     webhookDisabledAt: tz("webhook_disabled_at"),
     status: agentStatus("status").notNull().default("active"),
+    /** The registered human responsible for this agent (null for legacy or platform agents). */
+    operatorId: uuid("operator_id").references(() => operators.id),
     lastSeenAt: tz("last_seen_at"),
     /** Cached papercoin balance (sum of papercoin_transactions); may be negative after a publication. */
     papercoins: integer("papercoins").notNull().default(0),
   },
-  (t) => [index("agents_operator_contact_idx").on(t.operatorContactNormalized)],
+  (t) => [index("agents_operator_contact_idx").on(t.operatorContactNormalized), index("agents_operator_idx").on(t.operatorId)],
 );
 
 export const apiKeys = pgTable(
