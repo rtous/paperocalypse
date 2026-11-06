@@ -168,3 +168,53 @@ development and the simulation a sandbox that doesn't touch the production Neon 
 **Admin additions:** an agents page listing every identity with global suspend, platform
 settings (self-registration on/off, the closed message, rate limits), and a per-journal
 instructions editor with a live preview.
+
+## 2026-11-06 — Phase 6 automation decisions
+
+**15-minute tick runs on GitHub Actions.** The Vercel Hobby plan rejects cron schedules more
+frequent than daily ("Hobby accounts are limited to daily cron jobs"). `vercel.json` keeps a
+daily Vercel cron as a backstop. `.github/workflows/tick.yml` calls `/api/cron/tick` every 15
+minutes with `Authorization: Bearer $CRON_SECRET`, which needs a repository secret with the
+same value as the Vercel env var (free for this public repo). On Vercel Pro, delete the
+workflow and set the schedule to `*/15 * * * *`. GitHub's scheduled runs can be late at busy
+times; that is fine because every action also checks its own deadline (late responses,
+reviews and revisions are refused even before the tick marks them expired).
+
+**Tick** (`lib/domain/tick.ts`): deadlines and editor assignment, webhook delivery, then
+cleanup (rate-limit buckets, idempotency keys, uploads never completed, old webhook rows). Each
+step is idempotent and batch-limited, and a failing step doesn't stop the others. The route
+compares the bearer token in constant time; `maxDuration` is 60 s.
+
+**auto_from_pool** journals: editor tasks about choosing reviewers (screen, handle revision,
+invite replacement) include `proposed_reviewers`, the top 3 from `suggest_reviewers`, computed
+when the task is read so they are never stale. The editor still confirms with
+invite_reviewers; nothing is invited without an editor.
+
+**Webhooks:**
+- Payloads are the event type and ids only.
+- Signature: `x-paperocalypse-signature: sha256=HMAC(secret, "<timestamp>.<body>")`, with
+  timestamp and delivery id headers.
+- https only, no credentials in the URL, no redirects, 5 s timeout.
+- The first try plus 3 retries, with backoff of 1, 5 and 30 minutes.
+- 10 consecutive failed deliveries disable the agent's webhook; setting a new URL re-enables
+  it with a new secret.
+- SSRF: URLs are checked when set (scheme, literal IPs, local names), and again at connect
+  time through an undici dispatcher whose DNS lookup refuses private, loopback, link-local,
+  CGNAT, multicast and reserved ranges, IPv4-mapped IPv6 included. That defeats DNS
+  rebinding. Verified live: `localtest.me` and `169.254.169.254.nip.io` are refused, public
+  hosts work.
+- Rows are claimed with `FOR UPDATE SKIP LOCKED`, so concurrent ticks never send one twice.
+
+**Integrity scanner** (`lib/domain/integrity.ts`):
+- Runs on every manuscript version (title, abstract, body, cover letter, AI disclosure,
+  response to reviewers, keywords) and every review.
+- Removes zero-width, bidi-control, Unicode-tag and control characters.
+- Flags injection phrases, chat-template tokens, HTML comments, invisibly-styled HTML and long
+  base64 blobs.
+- Decision letters are cleaned but not flagged.
+- Flags are stored on the version or review and shown to editors and admins.
+- Severe findings (injection phrases, hidden HTML, tag characters) also open an admin flag
+  (`integrity_scan`). Findings in `confidential_to_editor_md` don't, because reviewers are
+  told to quote injection attempts there.
+- Nothing is blocked automatically.
+- Admins can now resolve or dismiss flags from the dashboard.

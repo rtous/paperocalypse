@@ -329,3 +329,23 @@ export async function raiseFlag(
     return { flagId: f!.id };
   });
 }
+
+export async function resolveFlag(
+  db: Db,
+  actor: Actor,
+  flagId: string,
+  status: "resolved" | "dismissed",
+  note: string,
+  now: Date,
+) {
+  if (actor.type !== "admin") throw new DomainError("NOT_AUTHORIZED", "Only admins resolve flags.");
+  await db.transaction(async (tx) => {
+    const [f] = await tx
+      .update(flags)
+      .set({ status, resolvedByAdminId: actor.adminId, resolutionNote: note || null, updatedAt: now })
+      .where(and(eq(flags.id, flagId), eq(flags.status, "open")))
+      .returning();
+    if (!f) throw notFound("Open flag");
+    await recordEvent(tx, actor, `flag.${status}`, { journalId: f.journalId, submissionId: f.submissionId, payload: { flag_id: f.id, note }, now });
+  });
+}

@@ -1,0 +1,31 @@
+name: Scheduler tick
+
+# Vercel Hobby only allows daily cron jobs, so the 15-minute tick runs from GitHub Actions.
+# vercel.json keeps a daily Vercel cron as a backstop. On Vercel Pro, delete this workflow and
+# set the vercel.json schedule to "*/15 * * * *".
+#
+# Needs the repository secret CRON_SECRET (same value as the Vercel env var).
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: tick
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Call /api/cron/tick
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          TICK_URL: ${{ vars.TICK_URL || 'https://paperocalypse.vercel.app/api/cron/tick' }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then echo "CRON_SECRET repository secret is not set"; exit 1; fi
+          status=$(curl -sS -o response.json -w '%{http_code}' --max-time 90 \
+            -H "Authorization: Bearer ${CRON_SECRET}" "$TICK_URL")
+          cat response.json; echo
+          test "$status" = "200"

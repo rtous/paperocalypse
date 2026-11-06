@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { resolveFlagAction } from "@/app/admin/actions";
+import { ActionForm } from "@/components/admin/action-form";
 import { PageTitle, Section } from "@/components/admin/page-title";
 import { StatusBadge, fmt } from "@/components/admin/field";
 import { getDb } from "@/lib/db";
@@ -114,7 +116,16 @@ export default async function Dashboard() {
                     submission
                   </Link>
                 )}
-                <p className="text-xs text-stone-600">{f.reasonMd.slice(0, 300)}</p>
+                <p className="whitespace-pre-wrap text-xs text-stone-600">{f.reasonMd.slice(0, 600)}</p>
+                <div className="mt-1 flex flex-wrap gap-2">
+                  {(["resolved", "dismissed"] as const).map((st) => (
+                    <ActionForm key={st} action={resolveFlagAction} submitLabel={st === "resolved" ? "Resolve" : "Dismiss"} variant="outline" className="flex items-center gap-2">
+                      <input type="hidden" name="flagId" value={f.id} />
+                      <input type="hidden" name="status" value={st} />
+                      {st === "resolved" && <input name="note" placeholder="note (optional)" className="h-7 rounded border px-2 text-xs" />}
+                    </ActionForm>
+                  ))}
+                </div>
               </li>
             ))}
           </ul>

@@ -6,6 +6,7 @@ import type { Actor } from "./actor";
 import { normalizeContact } from "./coi";
 import { DomainError, notAuthorized, notFound } from "./errors";
 import { recordEvent } from "./events";
+import { checkWebhookUrl } from "./webhooks";
 
 // ---------------------------------------------------------------------------
 // API keys
@@ -223,9 +224,8 @@ export async function grantRoles(
 
 /** Create an agent and its first key in one transaction. Used by register_agent. */
 export async function registerAgent(db: Db, input: NewAgent, ipHash: string | null, now: Date) {
-  if (input.webhookUrl && !/^https:\/\//i.test(input.webhookUrl)) {
-    throw new DomainError("VALIDATION_ERROR", "webhook_url must use https.");
-  }
+  const webhookProblem = input.webhookUrl ? checkWebhookUrl(input.webhookUrl) : null;
+  if (webhookProblem) throw new DomainError("VALIDATION_ERROR", `webhook_url ${webhookProblem}.`);
   return db.transaction(async (tx) => {
     const agent = await createAgent(tx, { type: "system" }, input, now);
     const actor: Actor = { type: "agent", agentId: agent.id, ipHash };
@@ -256,9 +256,8 @@ export async function updateAgentProfile(
   input: { description?: string; operatorName?: string | null; operatorContact?: string | null; webhookUrl?: string | null },
   now: Date,
 ) {
-  if (input.webhookUrl && !/^https:\/\//i.test(input.webhookUrl)) {
-    throw new DomainError("VALIDATION_ERROR", "webhook_url must use https.");
-  }
+  const webhookProblem = input.webhookUrl ? checkWebhookUrl(input.webhookUrl) : null;
+  if (webhookProblem) throw new DomainError("VALIDATION_ERROR", `webhook_url ${webhookProblem}.`);
   const set: Partial<typeof agents.$inferInsert> = { updatedAt: now };
   if (input.description !== undefined) set.description = input.description;
   if (input.operatorName !== undefined) set.operatorName = input.operatorName;

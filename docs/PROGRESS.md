@@ -124,8 +124,25 @@ Open items:
   - unknown slugs, roles and articles return 404.
 - Tests: 544.
 
-## Next: Phase 6 — Automation
+## Phase 6 — Automation (done, pending one secret)
 
-Cron tick (deadlines, editor assignment, webhook retries, cleanup), auto-proposing reviewer
-replacements in auto_from_pool journals, webhook delivery (HMAC-signed, SSRF-safe, retries,
-auto-disable), and the integrity scanner on ingest.
+- `/api/cron/tick` (constant-time CRON_SECRET check): deadlines and replacement tasks,
+  revision expiry, editor assignment, webhook delivery, cleanup. Tested locally: 401 without
+  or with a wrong token; a full report with the right one.
+- Scheduling: daily Vercel cron (the Hobby limit) plus a GitHub Actions workflow every 15
+  minutes.
+- Webhooks: signed, id-only, retries with backoff, auto-disable, SSRF-safe at connect time
+  (checked live).
+- Integrity scanner on manuscripts and reviews, with automatic admin flags for severe
+  findings; admins can resolve or dismiss flags.
+- auto_from_pool: editor tasks carry proposed reviewers.
+- Tests: 591.
+
+**Pending (repo owner):** set the same CRON_SECRET in Vercel and as a GitHub Actions secret
+(see README / the command in the Phase 6 hand-off), then redeploy.
+
+## Next: Phase 7 — End-to-end simulation
+
+`scripts/simulate.ts` with scripted agents over real MCP (1 editor, 3 authors, 5 reviewers)
+covering desk reject, reject, two revision rounds, accept, publish, expired review and
+withdrawal. Run it locally and against a preview, then test with a real agent.

@@ -379,3 +379,48 @@ describe("attachments", () => {
     await c.close();
   });
 });
+
+describe("auto_from_pool journals", () => {
+  it("attach proposed reviewers to editor tasks", async () => {
+    const [journal] = await db.select().from(journals).where(eq(journals.slug, SLUG));
+    await db
+      .update(journals)
+      .set({ policy: { ...DEFAULT_POLICY, reviewer_selection: "auto_from_pool" } })
+      .where(eq(journals.id, journal!.id));
+    // A fresh editor, so earlier tests' tasks don't interfere.
+    const ed = await createAgent(db, admin, { displayName: "Pool Editor", operatorContact: "pool-ed@ops.test" }, clock.now);
+    await grantRoles(db, admin, journal!.id, ed.id, ["editor"], clock.now);
+    const edKey = (await db.transaction((tx) => issueApiKey(tx, admin, ed.id, "t", clock.now))).apiKey;
+    const { journalMemberships } = await import("@/lib/db/schema");
+    // Make this editor the only one, so the submission is assigned to it.
+    const { and, ne, sql } = await import("drizzle-orm");
+    await db
+      .update(journalMemberships)
+      .set({ roles: sql`array_remove(${journalMemberships.roles}, 'editor')` })
+      .where(and(eq(journalMemberships.journalId, journal!.id), ne(journalMemberships.agentId, ed.id)));
+
+    const author = await register("PoolAuthor");
+    const reviewer = await register("PoolReviewer");
+    const au = await journalClient(author.key);
+    const rv = await journalClient(reviewer.key);
+    await au.must("join_journal", { roles: ["author"] });
+    await rv.must("join_journal", { roles: ["reviewer"], reviewer_topics: ["epistemology"] });
+    const { submission_id } = await au.must("submit_manuscript", manuscript());
+
+    const edc = await journalClient(edKey);
+    const task = (await edc.must("get_my_tasks")).tasks.find((t: any) => t.arguments.submission_id === submission_id);
+    expect(task.kind).toBe("screen_submission");
+    const proposed: string[] = task.proposed_reviewers.map((p: any) => p.agent_id);
+    expect(proposed.length).toBeGreaterThan(0);
+    expect(proposed.length).toBeLessThanOrEqual(3);
+    expect(proposed).not.toContain(author.agentId);
+    expect(proposed).not.toContain(ed.id);
+    // Every proposal is an eligible reviewer according to suggest_reviewers.
+    const all = (await edc.must("suggest_reviewers", { submission_id, limit: 50 })).candidates.map((c: any) => c.agent_id);
+    expect(all).toContain(reviewer.agentId);
+    for (const id of proposed) expect(all).toContain(id);
+
+    await db.update(journals).set({ policy: { ...DEFAULT_POLICY } }).where(eq(journals.id, journal!.id));
+    for (const c of [au, rv, edc]) await c.close();
+  });
+});

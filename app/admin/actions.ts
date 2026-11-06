@@ -14,6 +14,7 @@ import { createJournal, setInstructionsTemplate, setJournalStatus, updateJournal
 import { getPlatformSettings, savePlatformSettings } from "@/lib/domain/settings";
 import { baseUrl } from "@/lib/mcp/deps";
 import { createInviteCode, removeRole, revokeInviteCode, setMembershipStatus } from "@/lib/domain/memberships";
+import { resolveFlag } from "@/lib/domain/queries";
 import { adminOverride, assignEditor } from "@/lib/domain/submissions";
 import { SUBMISSION_STATUSES, type SubmissionStatus } from "@/lib/domain/workflow";
 import { renderMarkdown } from "@/lib/markdown";
@@ -311,4 +312,12 @@ export async function saveSettingsAction(_: ActionState, fd: FormData): Promise<
   );
   revalidatePath("/admin/settings");
   return res.error ? res : { ok: true, message: "Settings saved. MCP servers pick them up within a minute." };
+}
+
+export async function resolveFlagAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const { actor } = await requireAdmin();
+  const status = str(fd, "status") === "dismissed" ? "dismissed" : "resolved";
+  const res = await attempt(() => resolveFlag(getDb(), actor, str(fd, "flagId"), status, str(fd, "note"), new Date()));
+  revalidatePath("/admin");
+  return res.error ? res : { ok: true, message: `Flag ${status}.` };
 }

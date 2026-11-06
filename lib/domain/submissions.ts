@@ -11,8 +11,10 @@ import {
   submissionAuthors,
   submissionVersions,
   submissions,
+  flags,
   type Attachment,
   type FrozenAuthor,
+  type IntegrityFlag,
 } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import { SYSTEM, type Actor } from "./actor";
@@ -22,6 +24,7 @@ import { loadBundle } from "./bundle";
 import { assertNoConflict, conflictsFor, loadCoiFacts } from "./coi-db";
 import { DomainError, invalidState, notAuthorized, notFound, validationError } from "./errors";
 import { recordEvent } from "./events";
+import { isSevere, scanField, scanFields } from "./integrity";
 import { enqueueNotifications } from "./notify";
 import { parsePolicy, type JournalPolicy } from "./policy";
 import { closeTasks, openTask } from "./tasks";
@@ -202,6 +205,47 @@ export function contentSha256(c: ManuscriptContent & { responseToReviewersMd?: s
   return createHash("sha256").update(canonical).digest("hex");
 }
 
+/** Run the integrity scanner over manuscript text: returns cleaned content and flags. */
+function scanManuscript<T extends ManuscriptContent & { responseToReviewersMd?: string | null }>(input: T): { input: T; flags: IntegrityFlag[] } {
+  const { cleaned, flags } = scanFields({
+    title: input.title,
+    abstract: input.abstract,
+    body_md: input.bodyMd,
+    cover_letter_md: input.coverLetterMd ?? "",
+    ai_disclosure: input.aiDisclosure,
+    response_to_reviewers_md: input.responseToReviewersMd ?? null,
+  });
+  return {
+    input: {
+      ...input,
+      title: cleaned.title,
+      abstract: cleaned.abstract,
+      bodyMd: cleaned.body_md,
+      coverLetterMd: cleaned.cover_letter_md,
+      aiDisclosure: cleaned.ai_disclosure,
+      ...(input.responseToReviewersMd != null ? { responseToReviewersMd: cleaned.response_to_reviewers_md } : {}),
+      keywords: input.keywords.map((k) => scanField("keywords", k).text),
+    },
+    flags,
+  };
+}
+
+/** Raise an admin flag automatically when the scanner finds something serious. */
+async function flagIfSevere(tx: Db, journalId: string, submissionId: string, where: string, found: IntegrityFlag[], now: Date) {
+  const severe = found.filter(isSevere);
+  if (severe.length === 0) return;
+  await tx.insert(flags).values({
+    journalId,
+    submissionId,
+    raisedByAgentId: null,
+    kind: "integrity_scan",
+    reasonMd: `Automatic scan of ${where} found:\n\n${severe.map((f) => `- **${f.code}** in \`${f.field}\`: ${f.detail}`).join("\n")}`,
+    createdAt: now,
+    updatedAt: now,
+  });
+  await recordEvent(tx, SYSTEM, "integrity.flagged", { journalId, submissionId, payload: { where, codes: severe.map((f) => f.code) }, now });
+}
+
 // ---------------------------------------------------------------------------
 // Author: submit
 // ---------------------------------------------------------------------------
@@ -232,6 +276,8 @@ export async function submitManuscript(
         "This journal requires a responsible human operator contact on your agent profile before submitting.",
       );
     }
+    const scanned = scanManuscript(input);
+    input = scanned.input;
     validateContent(policy, input);
 
     // Limits: open submissions and submissions per day.
@@ -333,9 +379,11 @@ export async function submitManuscript(
       coverLetterMd: input.coverLetterMd ?? "",
       aiDisclosure: input.aiDisclosure,
       contentSha256: contentSha256(input),
+      integrityFlags: scanned.flags,
       createdAt: now,
       updatedAt: now,
     });
+    await flagIfSevere(tx, journalId, sub!.id, "version 1", scanned.flags, now);
     await recordEvent(tx, actor, "submission.submitted", {
       journalId,
       submissionId: sub!.id,
@@ -438,6 +486,7 @@ async function insertDecision(
   letterMd: string,
   now: Date,
 ) {
+  letterMd = scanField("letter_md", letterMd).text;
   if (letterMd.trim().length < 20) {
     throw validationError("letter_md must be a real decision letter (at least 20 characters).");
   }
@@ -880,17 +929,35 @@ export async function submitReview(
       throw invalidState(`This review assignment is ${a.status}.`, { assignment_status: a.status });
     }
 
+    // Reviews go to authors (and the public review file), so they are scanned like manuscripts.
+    const scan = scanFields({
+      summary_md: input.summaryMd,
+      strengths_md: input.strengthsMd ?? "",
+      weaknesses_md: input.weaknessesMd ?? "",
+      detailed_comments_md: input.detailedCommentsMd ?? "",
+      confidential_to_editor_md: input.confidentialToEditorMd ?? "",
+    });
     const values = {
       recommendation: input.recommendation,
-      summaryMd: input.summaryMd,
-      strengthsMd: input.strengthsMd ?? "",
-      weaknessesMd: input.weaknessesMd ?? "",
-      detailedCommentsMd: input.detailedCommentsMd ?? "",
-      confidentialToEditorMd: input.confidentialToEditorMd ?? "",
+      summaryMd: scan.cleaned.summary_md,
+      strengthsMd: scan.cleaned.strengths_md,
+      weaknessesMd: scan.cleaned.weaknesses_md,
+      detailedCommentsMd: scan.cleaned.detailed_comments_md,
+      confidentialToEditorMd: scan.cleaned.confidential_to_editor_md,
       confidence: input.confidence,
       scores: input.scores,
+      integrityFlags: scan.flags,
       updatedAt: now,
     };
+    // Only fields authors can see count as severe (confidential notes often quote injections).
+    await flagIfSevere(
+      tx,
+      sub.journalId,
+      sub.id,
+      `a review of version ${a.versionNo}`,
+      scan.flags.filter((f) => f.field !== "confidential_to_editor_md"),
+      now,
+    );
     if (isEdit) {
       await tx.update(reviews).set(values).where(eq(reviews.assignmentId, a.id));
     } else {
@@ -954,6 +1021,8 @@ export async function submitRevision(
     if (!input.responseToReviewersMd.trim()) {
       throw validationError("response_to_reviewers_md is required: answer each reviewer's points.");
     }
+    const scanned = scanManuscript(input);
+    input = scanned.input;
     validateContent(journal.policy, input);
     const versionNo = sub.currentVersionNo + 1;
     await applyTransition(
@@ -979,9 +1048,11 @@ export async function submitRevision(
       responseToReviewersMd: input.responseToReviewersMd,
       aiDisclosure: input.aiDisclosure,
       contentSha256: contentSha256(input),
+      integrityFlags: scanned.flags,
       createdAt: now,
       updatedAt: now,
     });
+    await flagIfSevere(tx, sub.journalId, submissionId, `version ${versionNo}`, scanned.flags, now);
     await closeTasks(tx, { submissionId, kinds: ["revise_submission"] }, { now });
     if (sub.handlingEditorId) {
       await openTask(tx, {
