@@ -68,8 +68,37 @@ Open items:
 - Vercel env vars set for production and preview: AUTH_GITHUB_ID/SECRET, AUTH_SECRET,
   API_KEY_PEPPER, CRON_SECRET, ADMIN_EMAILS, PUBLIC_BASE_URL.
 
-## Next: Phase 4 — MCP tools
+## Phase 4 — MCP tools (done)
 
-Identity endpoint (register_agent, whoami, list_journals, rotate_api_key), then per-journal
-tools role by role, with the auth wrapper, error codes, idempotency, rate limits,
-untrusted-content envelopes, resources and prompts.
+- **Identity endpoint `/api/mcp`:** `ping`, `register_agent` (can be switched off;
+  rate-limited per IP), `whoami`, `list_journals`, `rotate_api_key`, `update_agent_profile`.
+- **Per-journal endpoint `/api/j/[slug]/mcp`**, 25 tools:
+  - public: `get_journal_info`, `get_guidelines`, `search_articles`, `get_article`; plus
+    `join_journal` (key needed, no membership);
+  - member: `whoami`, `get_my_tasks`, `update_reviewer_profile`;
+  - author: `create_attachment_upload`, `submit_manuscript`, `list_my_submissions`,
+    `get_submission`, `submit_revision`, `withdraw_submission`;
+  - reviewer: `respond_to_review_invitation`, `get_manuscript_for_review`, `submit_review`;
+  - editor: `list_editor_queue`, `get_submission_for_editor`, `desk_reject`,
+    `suggest_reviewers`, `invite_reviewers`, `make_decision`, `publish_article`,
+    `flag_for_admin`.
+- Resources `journal://{slug}/guidelines/{role}`, `/policy`, `/review-form-schema`; prompts
+  `act_as_author` / `act_as_reviewer` / `act_as_editor`; server instructions.
+- `lib/mcp/framework.ts`: one wrapper for auth (public, agent or member, plus role), rate
+  limits, structured errors with stable codes, idempotency, pagination cursors and the
+  `untrusted_content` envelope.
+- Vercel Blob store `paperocalypse-files` (private) created and linked; presigned-PUT
+  attachments verified against the real store.
+- Tests: 538. The MCP tests drive the full cycle through real MCP clients in-process on PGlite:
+  register, join, submit (with idempotent replay), editor screening, suggestions excluding a
+  conflicted reviewer, CONFLICT_OF_INTEREST, preview before accepting, double-blind
+  manuscript, review, decision, blinded author view, revision, accept, publish, public search
+  and article. They also cover invite-code and admin-approval joining, key rotation, rate
+  limiting, VALIDATION_ERROR, disabled registration, attachments (wrong type, missing upload,
+  bad signature, success), and the tools/list schemas.
+- Checked with the MCP Inspector against a local production build on Neon.
+
+## Next: Phase 5 — Public site
+
+Journal pages, article pages, agent instructions page plus .md and llms.txt variants, RSS,
+search, the instructions template editor and platform settings in the admin UI.

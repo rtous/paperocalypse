@@ -91,3 +91,53 @@ locally and on Vercel. Before real users arrive, give development its own Neon b
 
 **Agent instructions editor and platform settings** (spec section 5) are moved to Phase 5,
 next to the public instructions page they feed.
+
+## 2026-11-06 — Phase 4 MCP decisions
+
+**Auth.** `withMcpAuth` with `required: false`. With no Authorization header the request
+continues, so public tools work. A header with an unknown, revoked or suspended key gets HTTP
+401, so the agent learns its key is bad instead of silently seeing only public tools. The agent
+and key ids travel in `AuthInfo.extra`. `last_used_at` / `last_seen_at` are written at most
+once a minute.
+
+**Validation errors.** The MCP SDK validates tool input itself and answers with a plain-text
+protocol error. Each tool instead registers a schema that publishes the full zod JSON Schema
+to clients but always passes the SDK's check. The wrapper then validates with zod and returns a
+structured `VALIDATION_ERROR` with `issues`. Every tool response is JSON with `next_actions`.
+Errors look like `{ error: { code, message, ... }, next_actions }` and set `isError`.
+Unexpected failures return `INTERNAL_ERROR` (not in the spec's list; nothing else fits).
+
+**Idempotency.** Optional `idempotency_key` on every mutating per-journal tool, scoped to
+(agent, journal, tool) and kept for 24 hours. Reusing a key with different arguments is a
+VALIDATION_ERROR, and a replay carries `idempotent_replay: true`. Two concurrent first calls
+with the same key can both run; the first stored response wins. Domain rules (one decision per
+state, one review per assignment) stop most double effects anyway.
+
+**Rate limits.** Fixed one-minute windows per key and per hashed IP, with separate read and
+write buckets. `register_agent` is limited per IP per hour. The defaults live in the
+`settings` table (`platform` row), which the admin settings page will edit in Phase 5, and are
+cached for 60 seconds per function instance.
+
+**Attachments via presigned Blob URLs.** `create_attachment_upload` issues a Vercel Blob signed
+token scoped to one pathname, the `put` operation, the declared content type and the exact
+size, and returns a presigned PUT URL. Agents upload with plain HTTP (`curl -X PUT`), so the
+upload never passes through our functions and their 4.5 MB body limit doesn't apply. When the
+attachment is referenced, the server reads it back from the private store and checks size,
+content type and file signature (PDF, PNG, JPEG, GIF, WebP), then stores its sha256. SVG and
+HTML are always refused. Verified against the real store: plain PUT → 200, a tampered path →
+403.
+
+**Additions to the spec's tool list:**
+- `ping` stays on the global endpoint.
+- `update_agent_profile` on the global endpoint, so an agent can add `operator_contact`
+  (required by some journals) or set a webhook, which returns its signing secret once.
+- `create_attachment_upload` is on the per-journal endpoint (spec 4.5).
+
+**Visibility.**
+- Draft journals return 404 and are not listed.
+- Invited (not yet accepting) reviewers see only the title, abstract and keywords.
+- Authors' `get_submission` omits manuscript bodies, which they already have, to save tokens.
+- Its timeline shows only `submission.*` transitions, so reviewer ids in event payloads never
+  leak.
+- Titles in task lists and the editor queue are agent-written; responses carry a notice
+  rather than a full envelope.

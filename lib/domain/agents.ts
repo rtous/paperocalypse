@@ -1,5 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, lt, or } from "drizzle-orm";
 import { agents, apiKeys, journalMemberships } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "./actor";
@@ -85,8 +85,16 @@ export async function verifyApiKey(db: Db, plain: string, now: Date) {
   if (!timingSafeEqual(Buffer.from(row.keyHash, "hex"), Buffer.from(hash, "hex"))) return null;
   if (row.revokedAt || row.agentStatus !== "active") return null;
 
-  await db.update(apiKeys).set({ lastUsedAt: now }).where(eq(apiKeys.id, row.keyId));
-  await db.update(agents).set({ lastSeenAt: now }).where(eq(agents.id, row.agentId));
+  // Touch last_used_at / last_seen_at at most once a minute to avoid a write per request.
+  const stale = new Date(now.getTime() - 60_000);
+  await db
+    .update(apiKeys)
+    .set({ lastUsedAt: now })
+    .where(and(eq(apiKeys.id, row.keyId), or(isNull(apiKeys.lastUsedAt), lt(apiKeys.lastUsedAt, stale))));
+  await db
+    .update(agents)
+    .set({ lastSeenAt: now })
+    .where(and(eq(agents.id, row.agentId), or(isNull(agents.lastSeenAt), lt(agents.lastSeenAt, stale))));
   return { agentId: row.agentId, keyId: row.keyId };
 }
 
@@ -207,4 +215,70 @@ export async function grantRoles(
     payload: { agent_id: agentId, roles },
     now,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Self-service (MCP identity endpoint)
+// ---------------------------------------------------------------------------
+
+/** Create an agent and its first key in one transaction. Used by register_agent. */
+export async function registerAgent(db: Db, input: NewAgent, ipHash: string | null, now: Date) {
+  if (input.webhookUrl && !/^https:\/\//i.test(input.webhookUrl)) {
+    throw new DomainError("VALIDATION_ERROR", "webhook_url must use https.");
+  }
+  return db.transaction(async (tx) => {
+    const agent = await createAgent(tx, { type: "system" }, input, now);
+    const actor: Actor = { type: "agent", agentId: agent.id, ipHash };
+    await recordEvent(tx, actor, "agent.registered", { payload: { agent_id: agent.id }, now });
+    const key = await issueApiKey(tx, actor, agent.id, "registration", now);
+    return { agent, ...key };
+  });
+}
+
+/** Issue a new key for the calling agent and (by default) revoke the key used for this call. */
+export async function rotateApiKey(
+  db: Db,
+  actor: Actor & { type: "agent" },
+  currentKeyId: string,
+  opts: { revokeCurrent: boolean; label: string },
+  now: Date,
+) {
+  return db.transaction(async (tx) => {
+    const key = await issueApiKey(tx, actor, actor.agentId, opts.label, now);
+    if (opts.revokeCurrent) await revokeApiKey(tx, actor, currentKeyId, now);
+    return key;
+  });
+}
+
+export async function updateAgentProfile(
+  db: Db,
+  actor: Actor & { type: "agent" },
+  input: { description?: string; operatorName?: string | null; operatorContact?: string | null; webhookUrl?: string | null },
+  now: Date,
+) {
+  if (input.webhookUrl && !/^https:\/\//i.test(input.webhookUrl)) {
+    throw new DomainError("VALIDATION_ERROR", "webhook_url must use https.");
+  }
+  const set: Partial<typeof agents.$inferInsert> = { updatedAt: now };
+  if (input.description !== undefined) set.description = input.description;
+  if (input.operatorName !== undefined) set.operatorName = input.operatorName;
+  if (input.operatorContact !== undefined) {
+    set.operatorContact = input.operatorContact;
+    set.operatorContactNormalized = normalizeContact(input.operatorContact);
+  }
+  if (input.webhookUrl !== undefined) {
+    set.webhookUrl = input.webhookUrl;
+    set.webhookFailureCount = 0;
+    set.webhookDisabledAt = null;
+    // A new webhook URL gets a fresh signing secret, returned once to the agent.
+    if (input.webhookUrl) set.webhookSecret = randomBytes(32).toString("hex");
+  }
+  await db.transaction(async (tx) => {
+    await tx.update(agents).set(set).where(eq(agents.id, actor.agentId));
+    await recordEvent(tx, actor, "agent.profile_updated", {
+      payload: { fields: Object.keys(input).filter((k) => (input as Record<string, unknown>)[k] !== undefined) },
+      now,
+    });
+  });
+  return { webhookSecret: set.webhookSecret ?? null };
 }

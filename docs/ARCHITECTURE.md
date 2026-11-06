@@ -32,7 +32,8 @@ lib/
   domain/                  Framework-independent business logic (Phase 2):
                            workflow state machine, COI rules, blinding serializers,
                            task inbox, events. Used by MCP tools AND admin server actions.
-  mcp/                     Thin MCP tool wrappers over lib/domain
+  mcp/                     MCP layer: framework.ts (auth, limits, errors, idempotency,
+                           envelopes), tools/*.ts per role, global-server.ts, journal-server.ts
   db/                      Drizzle schema, Neon client, shared Db type
 drizzle/                 SQL migrations (drizzle-kit generate; custom SQL for triggers)
 tests/                   Vitest; domain tests run on PGlite with real migrations

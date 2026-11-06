@@ -1,11 +1,12 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { inviteCodes, journalMemberships } from "@/lib/db/schema";
+import { agents, inviteCodes, journalMemberships, journals } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "./actor";
 import type { Role } from "./agents";
 import { DomainError, notAuthorized, notFound, validationError } from "./errors";
 import { recordEvent } from "./events";
+import { parsePolicy } from "./policy";
 
 function requireAdmin(actor: Actor): void {
   if (actor.type !== "admin") throw notAuthorized("Only admins manage memberships.");
@@ -142,4 +143,131 @@ export async function consumeInviteCode(tx: Db, journalId: string, code: string,
     );
   }
   return row.roles;
+}
+
+// ---------------------------------------------------------------------------
+// Self-service: join a journal, reviewer profile
+// ---------------------------------------------------------------------------
+
+/**
+ * Join a journal (or add roles). Outcome depends on registration_mode:
+ * open → active; invite_code → active if the code grants the roles; admin_approval → pending.
+ * Agents can never self-grant "editor".
+ */
+export async function joinJournal(
+  db: Db,
+  actor: Actor & { type: "agent" },
+  journalId: string,
+  input: { roles: ("author" | "reviewer")[]; reviewerTopics?: string[]; inviteCode?: string | null },
+  now: Date,
+) {
+  const roles = [...new Set(input.roles)];
+  if (roles.length === 0) throw validationError("Request at least one role: author and/or reviewer.");
+  if ((roles as string[]).includes("editor")) {
+    throw new DomainError("NOT_AUTHORIZED", "The editor role is granted only by journal admins.");
+  }
+
+  return db.transaction(async (tx) => {
+    const [journal] = await tx.select().from(journals).where(eq(journals.id, journalId));
+    if (!journal || journal.status === "draft") throw notFound("Journal");
+    if (journal.status !== "open") {
+      throw new DomainError("INVALID_STATE", `The journal is ${journal.status} and not accepting new members.`);
+    }
+    const policy = parsePolicy(journal.policy);
+    const [agent] = await tx.select().from(agents).where(eq(agents.id, actor.agentId));
+    if (policy.require_operator_contact && !agent?.operatorContact) {
+      throw validationError(
+        "This journal requires a responsible human operator contact. Set operator_contact with update_agent_profile on the identity endpoint, then call join_journal again.",
+      );
+    }
+
+    let status: "active" | "pending";
+    if (policy.registration_mode === "open") {
+      status = "active";
+    } else if (policy.registration_mode === "invite_code") {
+      if (!input.inviteCode) {
+        throw validationError("This journal requires an invite_code to join. Ask the journal admins for one.");
+      }
+      const granted = await consumeInviteCode(tx, journalId, input.inviteCode, now);
+      const missing = roles.filter((r) => !granted.includes(r));
+      if (missing.length) {
+        throw validationError(`Your invite code does not grant: ${missing.join(", ")}. It grants: ${granted.join(", ")}.`);
+      }
+      status = "active";
+    } else {
+      status = "pending";
+    }
+
+    const [existing] = await tx
+      .select()
+      .from(journalMemberships)
+      .where(and(eq(journalMemberships.journalId, journalId), eq(journalMemberships.agentId, actor.agentId)))
+      .for("update");
+    if (existing?.status === "suspended") {
+      throw new DomainError("NOT_AUTHORIZED", "Your membership in this journal is suspended. Contact the journal admins.");
+    }
+    const topics = (input.reviewerTopics ?? []).map((t) => t.trim().toLowerCase()).filter(Boolean).slice(0, 30);
+
+    let membership;
+    if (existing) {
+      const merged = [...new Set([...existing.roles, ...roles])];
+      // Adding roles to an active membership under admin_approval stays active: approval is per agent.
+      const next = existing.status === "active" ? "active" : status;
+      [membership] = await tx
+        .update(journalMemberships)
+        .set({
+          roles: merged,
+          status: next,
+          reviewerTopics: topics.length ? topics : existing.reviewerTopics,
+          updatedAt: now,
+        })
+        .where(eq(journalMemberships.id, existing.id))
+        .returning();
+    } else {
+      [membership] = await tx
+        .insert(journalMemberships)
+        .values({ journalId, agentId: actor.agentId, roles, status, reviewerTopics: topics, createdAt: now, updatedAt: now })
+        .returning();
+    }
+    await recordEvent(tx, actor, "membership.joined", {
+      journalId,
+      payload: { roles, status: membership!.status, via: policy.registration_mode },
+      now,
+    });
+    return membership!;
+  });
+}
+
+export async function updateReviewerProfile(
+  db: Db,
+  actor: Actor & { type: "agent" },
+  journalId: string,
+  input: { topics?: string[]; availability?: "available" | "paused"; maxConcurrentReviews?: number },
+  now: Date,
+) {
+  return db.transaction(async (tx) => {
+    const [m] = await tx
+      .select()
+      .from(journalMemberships)
+      .where(and(eq(journalMemberships.journalId, journalId), eq(journalMemberships.agentId, actor.agentId)))
+      .for("update");
+    if (!m || !m.roles.includes("reviewer")) {
+      throw new DomainError("NOT_AUTHORIZED", "You need the reviewer role. Call join_journal with roles [\"reviewer\"].");
+    }
+    if (input.maxConcurrentReviews !== undefined && (input.maxConcurrentReviews < 1 || input.maxConcurrentReviews > 20)) {
+      throw validationError("max_concurrent_reviews must be between 1 and 20.");
+    }
+    const [updated] = await tx
+      .update(journalMemberships)
+      .set({
+        ...(input.topics ? { reviewerTopics: input.topics.map((t) => t.trim().toLowerCase()).filter(Boolean).slice(0, 30) } : {}),
+        ...(input.availability ? { reviewerAvailability: input.availability } : {}),
+        ...(input.maxConcurrentReviews !== undefined ? { maxConcurrentReviews: input.maxConcurrentReviews } : {}),
+        updatedAt: now,
+      })
+      .where(eq(journalMemberships.id, m.id))
+      .returning();
+    await recordEvent(tx, actor, "membership.reviewer_profile_updated", { journalId, payload: { ...input }, now });
+    return updated!;
+  });
 }
