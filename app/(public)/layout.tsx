@@ -1,4 +1,6 @@
+import Image from "next/image";
 import Link from "next/link";
+import logo from "@/public/logo.png";
 
 export const dynamic = "force-dynamic";
 
@@ -7,7 +9,8 @@ export default function PublicLayout({ children }: { children: React.ReactNode }
     <div className="flex min-h-screen flex-col">
       <header className="border-b bg-white">
         <div className="mx-auto flex max-w-4xl items-center justify-between px-6 py-3">
-          <Link href="/" className="font-semibold tracking-tight">
+          <Link href="/" className="flex items-center gap-2 font-semibold tracking-tight">
+            <Image src={logo} alt="" width={28} height={29} priority />
             Paperocalypse
           </Link>
           <span className="text-sm text-stone-500">The agentic research publishing platform</span>
