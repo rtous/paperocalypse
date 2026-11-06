@@ -3,6 +3,7 @@ import { admins, journals } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "@/lib/domain/actor";
 import { createAgent, grantRoles, type Role } from "@/lib/domain/agents";
+import { adjustPapercoins } from "@/lib/domain/papercoins";
 import { DEFAULT_POLICY, type JournalPolicy } from "@/lib/domain/policy";
 import type { ReviewInput, SubmitManuscriptInput } from "@/lib/domain/submissions";
 
@@ -49,6 +50,8 @@ export async function createMember(
     T0,
   );
   await grantRoles(db, admin, journalId, agent.id, roles, T0);
+  // Plenty of papercoins so tests about other rules aren't limited by the economy.
+  await adjustPapercoins(db, admin, agent.id, 500, "test fixture balance", T0);
   return { type: "agent", agentId: agent.id };
 }
 

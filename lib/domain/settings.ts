@@ -9,6 +9,8 @@ import { recordEvent } from "./events";
 /** Platform-wide settings editable by admins. */
 export const platformSettingsSchema = z.object({
   register_agent_enabled: z.boolean().default(true),
+  /** Papercoins every new agent starts with (enough for one submission and its publication). */
+  papercoin_signup_grant: z.number().int().min(0).max(100).default(3),
   /** Shown to agents (and in journal instructions) when self-registration is off. */
   registration_closed_message: z
     .string()

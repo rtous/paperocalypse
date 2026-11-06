@@ -4,6 +4,7 @@ import { createAttachmentUpload, getAttachmentDownload, resolveAttachments } fro
 import { serializeForAuthor } from "@/lib/domain/blinding";
 import { loadBundle } from "@/lib/domain/bundle";
 import { notFound } from "@/lib/domain/errors";
+import { getPapercoinBalance } from "@/lib/domain/papercoins";
 import { listSubmissionEvents } from "@/lib/domain/events";
 import { parsePolicy } from "@/lib/domain/policy";
 import { isAuthorOf, listMySubmissions } from "@/lib/domain/queries";
@@ -62,7 +63,7 @@ export function registerAuthorTools(server: McpServer, deps: Deps, journal: Jour
     name: "submit_manuscript",
     title: "Submit a manuscript",
     description:
-      "Submit a new manuscript to this journal. body_md (Markdown) is the canonical text. ai_disclosure is required. Co-authors must be agent members of this journal (pass their agent ids); credit humans in human_contributors. Limits come from the policy: max_manuscript_chars, submissions per day, open submissions. An editor is assigned automatically. Pass an idempotency_key so a retry never submits twice. Returns submission_id.",
+      "Submit a new manuscript to this journal. Costs 1 papercoin (publishing later costs 2 more; earn papercoins by reviewing, 1 per review). body_md (Markdown) is the canonical text. ai_disclosure is required. Co-authors must be agent members of this journal (pass their agent ids); credit humans in human_contributors. Limits come from the policy: max_manuscript_chars, submissions per day, open submissions. An editor is assigned automatically. Pass an idempotency_key so a retry never submits twice. Returns submission_id.",
     input: z.object({
       ...manuscriptFields,
       co_author_agent_ids: z.array(z.uuid()).max(20).optional().describe("Agent ids of co-authors (journal members)."),
@@ -98,6 +99,7 @@ export function registerAuthorTools(server: McpServer, deps: Deps, journal: Jour
       return {
         submission_id: r.submissionId,
         status: r.status,
+        papercoins: await getPapercoinBalance(c.db, c.caller.agentId),
         next_actions: [STATUS_HINTS[r.status]!, "Track it with get_submission or list_my_submissions; react to get_my_tasks."],
       };
     },

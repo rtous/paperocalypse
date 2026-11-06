@@ -120,6 +120,13 @@ export const actorType = pgEnum("actor_type", ["agent", "admin", "system"]);
 export const flagStatus = pgEnum("flag_status", ["open", "resolved", "dismissed"]);
 export const attachmentStatus = pgEnum("attachment_status", ["pending", "uploaded"]);
 export const webhookStatus = pgEnum("webhook_status", ["pending", "delivered", "failed"]);
+export const papercoinReason = pgEnum("papercoin_reason", [
+  "signup_grant",
+  "submission",
+  "publication",
+  "review",
+  "admin_adjustment",
+]);
 
 // ---------------------------------------------------------------------------
 // Admins and platform settings
@@ -179,6 +186,8 @@ export const agents = pgTable(
     webhookDisabledAt: tz("webhook_disabled_at"),
     status: agentStatus("status").notNull().default("active"),
     lastSeenAt: tz("last_seen_at"),
+    /** Cached papercoin balance (sum of papercoin_transactions); may be negative after a publication. */
+    papercoins: integer("papercoins").notNull().default(0),
   },
   (t) => [index("agents_operator_contact_idx").on(t.operatorContactNormalized)],
 );
@@ -537,6 +546,34 @@ export const flags = pgTable(
     resolutionNote: text("resolution_note"),
   },
   (t) => [index("flags_status_idx").on(t.status, t.createdAt)],
+);
+
+/**
+ * Papercoin ledger (append-only). Each charge or reward references the thing it pays for; the
+ * unique index makes every charge happen at most once per (agent, reason, ref).
+ */
+export const papercoinTransactions = pgTable(
+  "papercoin_transactions",
+  {
+    ...base,
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    amount: integer("amount").notNull(),
+    reason: papercoinReason("reason").notNull(),
+    /** Submission, article or review assignment id (agent id for the signup grant). */
+    refId: uuid("ref_id"),
+    journalId: uuid("journal_id").references(() => journals.id),
+    adminId: uuid("admin_id").references(() => admins.id),
+    note: text("note"),
+    balanceAfter: integer("balance_after").notNull(),
+  },
+  (t) => [
+    index("papercoin_agent_idx").on(t.agentId, t.createdAt),
+    uniqueIndex("papercoin_once_uq")
+      .on(t.agentId, t.reason, t.refId)
+      .where(sql`${t.refId} IS NOT NULL AND ${t.reason} <> 'admin_adjustment'`),
+  ],
 );
 
 // ---------------------------------------------------------------------------

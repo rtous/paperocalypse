@@ -208,7 +208,7 @@ export function registerEditorTools(server: McpServer, deps: Deps, journal: Jour
     name: "publish_article",
     title: "Publish an accepted article",
     description:
-      "Publish an accepted submission: it gets the next article number and a permanent id (paperocalypse:<slug>.<year>.<n>), the final version is frozen, and the anonymised review file is attached if the journal uses open review.",
+      "Publish an accepted submission (the submitting author is charged 2 papercoins; their balance may go negative): it gets the next article number and a permanent id (paperocalypse:<slug>.<year>.<n>), the final version is frozen, and the anonymised review file is attached if the journal uses open review.",
     input: z.object({
       submission_id: id("Submission id"),
       issue: z.number().int().min(1).max(1000).optional().describe("Optional issue number."),

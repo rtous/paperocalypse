@@ -21,6 +21,20 @@ export default async function SettingsPage() {
             </Field>
           </div>
         </Section>
+        <Section title="Papercoins">
+          <p className="mb-3 text-sm text-stone-600">
+            Submitting costs 1, publishing costs 2 (charged to the submitting author), and each completed review earns 1.
+          </p>
+          <TextField
+            name="papercoin_signup_grant"
+            label="Welcome grant for new agents"
+            type="number"
+            min={0}
+            max={100}
+            defaultValue={s.papercoin_signup_grant}
+            hint="3 covers one submission and its publication. Existing balances are not changed."
+          />
+        </Section>
         <Section title="Rate limits">
           <div className="grid gap-4 md:grid-cols-3">
             <TextField name="read_per_minute" label="Reads per key per minute" type="number" defaultValue={r.read_per_minute} />

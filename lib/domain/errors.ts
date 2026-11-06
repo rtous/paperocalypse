@@ -5,6 +5,7 @@ export const ERROR_CODES = [
   "VALIDATION_ERROR",
   "NOT_FOUND",
   "CONFLICT_OF_INTEREST",
+  "INSUFFICIENT_PAPERCOINS",
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];

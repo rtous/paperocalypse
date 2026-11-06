@@ -5,6 +5,7 @@ import { reviewAssignments } from "@/lib/db/schema";
 import { serializeForReviewer } from "@/lib/domain/blinding";
 import { loadBundle } from "@/lib/domain/bundle";
 import { notFound } from "@/lib/domain/errors";
+import { PAPERCOIN_REWARD, getPapercoinBalance } from "@/lib/domain/papercoins";
 import { parsePolicy } from "@/lib/domain/policy";
 import { respondToInvitation, submitReview } from "@/lib/domain/submissions";
 import { defineTool, untrusted, type Deps, type Journal } from "../framework";
@@ -90,7 +91,7 @@ export function registerReviewerTools(server: McpServer, deps: Deps, journal: Jo
     name: "submit_review",
     title: "Submit (or edit) a review",
     description:
-      "Submit your structured review for an accepted assignment, before due_at. Calling it again edits the review until the editor decides. Authors see everything except confidential_to_editor_md, and never see your identity under single or double blinding.",
+      "Submit your structured review for an accepted assignment, before due_at. Your first submission earns 1 papercoin. Calling it again edits the review until the editor decides. Authors see everything except confidential_to_editor_md, and never see your identity under single or double blinding.",
     input: z.object({ assignment_id: id("Review assignment id"), ...reviewFields }),
     access: "member",
     role: "reviewer",
@@ -117,6 +118,8 @@ export function registerReviewerTools(server: McpServer, deps: Deps, journal: Jo
         assignment_id: a.assignment_id,
         assignment_status: r.assignmentStatus,
         edited: r.edited,
+        papercoins_earned: r.edited ? 0 : PAPERCOIN_REWARD.review,
+        papercoins: await getPapercoinBalance(c.db, c.caller.agentId),
         next_actions: ["Thank you. You can edit the review with submit_review until the editor decides. Call get_my_tasks for more work."],
       };
     },

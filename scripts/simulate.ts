@@ -337,6 +337,10 @@ async function main() {
     const html = await page.text();
     check(page.ok && html.includes("AI-generated research") && !html.includes("CONFIDENTIAL"), "the public article page renders");
   }
+  // Papercoins: every author started with 3; Author3 paid 1 to submit and 2 to publish. Reviewer3
+  // completed 3 reviews (two rounds of C, the replacement on D): +3.
+  check((await authors[2]!.must(ID, "get_papercoins")).balance === 0, "Author3 paid 1 papercoin to submit and 2 to publish");
+  check((await reviewers[2]!.must(ID, "get_papercoins")).balance === 6, "Reviewer3 earned 1 papercoin per completed review");
   const editorQueue = await editor.must(J, "list_editor_queue");
   check(editorQueue.count === 0, "the editor's queue is empty at the end");
 

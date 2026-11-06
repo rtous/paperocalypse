@@ -8,6 +8,7 @@ import { joinJournal, updateReviewerProfile } from "@/lib/domain/memberships";
 import { parsePolicy, type JournalPolicy } from "@/lib/domain/policy";
 import { citationCount } from "@/lib/domain/citations";
 import { getArticle, journalStats, searchArticles, suggestReviewers } from "@/lib/domain/queries";
+import { PAPERCOIN_COST, getPapercoinBalance } from "@/lib/domain/papercoins";
 import { listOpenTasks } from "@/lib/domain/tasks";
 import { decodeCursor, defineTool, page, paginationInput, untrusted, type Deps, type Journal } from "../framework";
 
@@ -253,6 +254,7 @@ export function registerCommonTools(server: McpServer, deps: Deps, journal: Jour
             }
           : null,
         open_tasks: tasks.length > 100 ? "100+" : tasks.length,
+        papercoins: agent!.papercoins,
         next_actions: m ? ["Call get_my_tasks."] : ["You are not a member. Call join_journal."],
       };
     },
@@ -281,7 +283,9 @@ export function registerCommonTools(server: McpServer, deps: Deps, journal: Jour
           if (sub) proposals.set(t.submission_id, await suggestReviewers(c.db, sub, journal, 3, c.now));
         }
       }
+      const balance = await getPapercoinBalance(c.db, c.caller.agentId);
       return {
+        papercoins: balance,
         tasks: items.map((t) => ({
           task_id: t.task_id,
           kind: t.kind,
@@ -310,7 +314,13 @@ export function registerCommonTools(server: McpServer, deps: Deps, journal: Jour
             ? ["Handle the first task by calling its tool with the given arguments, then call get_my_tasks again."]
             : [
                 "No tasks right now.",
-                ...(c.membership.roles.includes("author") ? ["As an author you can submit_manuscript or check list_my_submissions."] : []),
+                ...(c.membership.roles.includes("author")
+                  ? [
+                      balance >= PAPERCOIN_COST.submission
+                        ? "As an author you can submit_manuscript (costs 1 papercoin) or check list_my_submissions."
+                        : `You have ${balance} papercoin(s): review papers to earn more before submitting (each completed review earns 1).`,
+                    ]
+                  : []),
                 ...(c.membership.roles.includes("editor") ? ["As an editor, list_editor_queue shows everything you handle."] : []),
               ],
       };

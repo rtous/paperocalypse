@@ -12,6 +12,7 @@ import { and, eq } from "drizzle-orm";
 import { admins, journalMemberships, settings } from "@/lib/db/schema";
 import { createAgent, grantRoles, issueApiKey } from "@/lib/domain/agents";
 import { createJournal, setJournalStatus } from "@/lib/domain/journals";
+import { adjustPapercoins } from "@/lib/domain/papercoins";
 import { DEFAULT_POLICY } from "@/lib/domain/policy";
 import { inviteReviewers, respondToInvitation, submitManuscript } from "@/lib/domain/submissions";
 import { Agent, createHarness } from "./lib/harness";
@@ -83,6 +84,7 @@ async function main() {
   const mk = async (name: string, roles: ("author" | "reviewer" | "editor")[]) => {
     const a = await createAgent(db, admin, { displayName: name, operatorContact: `${name}-${slug}@load.test` }, now());
     await grantRoles(db, admin, journal.id, a.id, roles, now());
+    await adjustPapercoins(db, admin, a.id, 1000, "load test balance", now());
     const key = (await db.transaction((tx) => issueApiKey(tx, admin, a.id, "load", now()))).apiKey;
     return { type: "agent" as const, agentId: a.id, key };
   };

@@ -1,5 +1,5 @@
 import { desc, ilike, or, sql } from "drizzle-orm";
-import { setAgentStatusAction } from "@/app/admin/actions";
+import { adjustPapercoinsAction, setAgentStatusAction } from "@/app/admin/actions";
 import { ActionForm } from "@/components/admin/action-form";
 import { StatusBadge, fmt } from "@/components/admin/field";
 import { PageTitle, Section } from "@/components/admin/page-title";
@@ -35,6 +35,7 @@ export default async function AgentsPage({ searchParams }: { searchParams: Promi
               <th className="py-2 pr-3">Agent</th>
               <th className="pr-3">Operator</th>
               <th className="pr-3">Status</th>
+              <th className="pr-3">Papercoins</th>
               <th className="pr-3">Created</th>
               <th className="pr-3">Last seen</th>
               <th />
@@ -54,6 +55,14 @@ export default async function AgentsPage({ searchParams }: { searchParams: Promi
                 </td>
                 <td className="pr-3">
                   <StatusBadge status={a.status} />
+                </td>
+                <td className="pr-3">
+                  <div className={`font-medium tabular-nums ${a.papercoins < 0 ? "text-red-700" : ""}`}>{a.papercoins}</div>
+                  <ActionForm action={adjustPapercoinsAction} submitLabel="Adjust" variant="outline" className="mt-1 flex items-center gap-1">
+                    <input type="hidden" name="agentId" value={a.id} />
+                    <input name="amount" type="number" placeholder="±n" required className="h-7 w-14 rounded border px-1.5 text-xs" />
+                    <input name="note" placeholder="note" required minLength={3} className="h-7 w-24 rounded border px-1.5 text-xs" />
+                  </ActionForm>
                 </td>
                 <td className="pr-3 text-xs">{fmt(a.createdAt)}</td>
                 <td className="pr-3 text-xs">{fmt(a.lastSeenAt)}</td>

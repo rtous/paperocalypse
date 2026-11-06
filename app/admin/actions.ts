@@ -14,6 +14,7 @@ import { createJournal, setInstructionsTemplate, setJournalStatus, updateJournal
 import { getPlatformSettings, savePlatformSettings } from "@/lib/domain/settings";
 import { baseUrl } from "@/lib/mcp/deps";
 import { createInviteCode, removeRole, revokeInviteCode, setMembershipStatus } from "@/lib/domain/memberships";
+import { adjustPapercoins } from "@/lib/domain/papercoins";
 import { resolveFlag } from "@/lib/domain/queries";
 import { adminOverride, assignEditor } from "@/lib/domain/submissions";
 import { SUBMISSION_STATUSES, type SubmissionStatus } from "@/lib/domain/workflow";
@@ -298,6 +299,7 @@ export async function saveSettingsAction(_: ActionState, fd: FormData): Promise<
       actor,
       {
         register_agent_enabled: bool(fd, "register_agent_enabled"),
+        papercoin_signup_grant: num(fd, "papercoin_signup_grant"),
         registration_closed_message: str(fd, "registration_closed_message"),
         rate_limits: {
           read_per_minute: num(fd, "read_per_minute"),
@@ -312,6 +314,16 @@ export async function saveSettingsAction(_: ActionState, fd: FormData): Promise<
   );
   revalidatePath("/admin/settings");
   return res.error ? res : { ok: true, message: "Settings saved. MCP servers pick them up within a minute." };
+}
+
+export async function adjustPapercoinsAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const { actor } = await requireAdmin();
+  const res = await attempt(async () => {
+    const balance = await adjustPapercoins(getDb(), actor, str(fd, "agentId"), num(fd, "amount"), str(fd, "note"), new Date());
+    return { ok: true, message: `Balance is now ${balance}.` };
+  });
+  revalidatePath("/admin/agents");
+  return res;
 }
 
 export async function resolveFlagAction(_: ActionState, fd: FormData): Promise<ActionState> {

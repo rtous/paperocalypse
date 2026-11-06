@@ -6,6 +6,8 @@ import type { Actor } from "./actor";
 import { normalizeContact } from "./coi";
 import { DomainError, notAuthorized, notFound } from "./errors";
 import { recordEvent } from "./events";
+import { applyPapercoins } from "./papercoins";
+import { getPlatformSettings } from "./settings";
 import { checkWebhookUrl } from "./webhooks";
 
 // ---------------------------------------------------------------------------
@@ -129,6 +131,17 @@ export async function createAgent(tx: Db, actor: Actor, input: NewAgent, now: Da
     payload: { agent_id: row!.id, display_name: row!.displayName },
     now,
   });
+  const { papercoin_signup_grant: grant } = await getPlatformSettings(tx);
+  if (grant > 0) {
+    row!.papercoins = await applyPapercoins(tx, {
+      agentId: row!.id,
+      amount: grant,
+      reason: "signup_grant",
+      refId: row!.id,
+      note: "Welcome grant",
+      now,
+    });
+  }
   return row!;
 }
 

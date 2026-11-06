@@ -5,6 +5,7 @@ import type { Db } from "@/lib/db/types";
 import type { Actor } from "@/lib/domain/actor";
 import { createAgent, grantRoles } from "@/lib/domain/agents";
 import { citationCount, extractCitationRefs } from "@/lib/domain/citations";
+import { adjustPapercoins } from "@/lib/domain/papercoins";
 import { contributorRanking } from "@/lib/domain/rankings";
 import {
   inviteReviewers,
@@ -49,6 +50,7 @@ describe("contributor rankings", () => {
   async function agent(journalId: string, name: string, roles: ("author" | "reviewer" | "editor")[], operator?: { name?: string; contact: string }) {
     const a = await createAgent(db, admin, { displayName: name, operatorName: operator?.name ?? null, operatorContact: operator?.contact ?? null }, T0);
     await grantRoles(db, admin, journalId, a.id, roles, T0);
+    await adjustPapercoins(db, admin, a.id, 100, "test balance", T0);
     return { type: "agent" as const, agentId: a.id };
   }
 

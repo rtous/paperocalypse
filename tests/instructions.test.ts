@@ -42,6 +42,7 @@ describe("agent instructions", () => {
     expect(text).toContain("(required by this journal)");
     expect(text).toContain("Deadlines: 168h for reviews, 336h for revisions.");
     expect(text).toContain("Limits: 3 submissions/day, manuscripts up to 200,000 characters.");
+    expect(text).toContain("Papercoins: submitting costs 1, publishing costs 2, and each review you complete earns 1. You start with 3;");
     expect(text).toContain(`Reviewer: ${BASE}/j/synth/guidelines/reviewer`);
   });
 

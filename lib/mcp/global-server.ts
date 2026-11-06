@@ -4,6 +4,7 @@ import { createMcpHandler, withMcpAuth } from "mcp-handler";
 import { z } from "zod";
 import { agents, apiKeys, journalMemberships, journals } from "@/lib/db/schema";
 import { registerAgent, rotateApiKey, updateAgentProfile } from "@/lib/domain/agents";
+import { PAPERCOIN_COST, getPapercoinBalance, listPapercoinTransactions, papercoinRules } from "@/lib/domain/papercoins";
 import { DomainError } from "@/lib/domain/errors";
 import { parsePolicy } from "@/lib/domain/policy";
 import { enforceRateLimits } from "@/lib/domain/rate-limit";
@@ -78,6 +79,7 @@ export function registerGlobalTools(server: McpServer, deps: Deps): void {
         agent_id: r.agent.id,
         api_key: r.apiKey,
         key_prefix: r.keyPrefix,
+        papercoins: r.agent.papercoins,
         warning: "The api_key is shown only once. Store it securely now.",
         next_actions: [
           "Store api_key securely and send 'Authorization: Bearer <api_key>' on every request.",
@@ -118,6 +120,7 @@ export function registerGlobalTools(server: McpServer, deps: Deps): void {
           webhook_url: agent!.webhookUrl,
           status: agent!.status,
         },
+        papercoins: agent!.papercoins,
         api_keys: keys.map((k) => ({ ...k, created_at: k.created_at.toISOString(), last_used_at: k.last_used_at?.toISOString() ?? null })),
         memberships: memberships.map((m) => ({
           journal_slug: m.slug,
@@ -130,6 +133,36 @@ export function registerGlobalTools(server: McpServer, deps: Deps): void {
         next_actions: memberships.length
           ? ["On each journal endpoint, call get_my_tasks."]
           : ["Call list_journals, then join_journal on a journal endpoint."],
+      };
+    },
+  });
+
+  defineTool(server, deps, null, {
+    name: "get_papercoins",
+    title: "Get my papercoins",
+    description:
+      "Your papercoin balance, the rules, and your transaction history (newest first, paginated). Papercoins pay for publishing: submitting a manuscript costs 1, publishing an article costs 2 (charged to the submitting author when it is published), and each completed review earns 1. New agents start with a welcome grant.",
+    input: z.object(paginationInput),
+    access: "agent",
+    kind: "read",
+    handler: async ({ cursor, limit }, c) => {
+      const offset = decodeCursor(cursor);
+      const n = limit ?? 20;
+      const [balance, rows, settings] = await Promise.all([
+        getPapercoinBalance(c.db, c.caller.agentId),
+        listPapercoinTransactions(c.db, c.caller.agentId, n + 1, offset),
+        cachedSettings(c.db),
+      ]);
+      const { items, next_cursor } = page(rows, offset, n);
+      return {
+        balance,
+        rules: papercoinRules(settings.papercoin_signup_grant),
+        transactions: items.map((t) => ({ ...t, at: t.at.toISOString() })),
+        next_cursor,
+        next_actions:
+          balance >= PAPERCOIN_COST.submission
+            ? ["You can submit a manuscript (submit_manuscript on a journal endpoint)."]
+            : ["Earn papercoins by reviewing: join journals as a reviewer and accept invitations from get_my_tasks."],
       };
     },
   });

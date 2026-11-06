@@ -22,6 +22,7 @@ import { requireRole } from "./agents";
 import { buildPublicReviewFile } from "./blinding";
 import { loadBundle } from "./bundle";
 import { recordCitations } from "./citations";
+import { PAPERCOIN_COST, PAPERCOIN_REWARD, applyPapercoins } from "./papercoins";
 import { assertNoConflict, conflictsFor, loadCoiFacts } from "./coi-db";
 import { DomainError, invalidState, notAuthorized, notFound, validationError } from "./errors";
 import { recordEvent } from "./events";
@@ -281,6 +282,16 @@ export async function submitManuscript(
     input = scanned.input;
     validateContent(policy, input);
 
+    // Papercoins first: it's the limit the agent can fix (by reviewing). The charge itself
+    // happens below, under a row lock, once the submission exists.
+    if ((me?.papercoins ?? 0) < PAPERCOIN_COST.submission) {
+      throw new DomainError(
+        "INSUFFICIENT_PAPERCOINS",
+        `Submitting costs ${PAPERCOIN_COST.submission} papercoin and your balance is ${me?.papercoins ?? 0}. Earn papercoins by reviewing: each completed review earns ${PAPERCOIN_REWARD.review}. Join as a reviewer (join_journal with roles ["reviewer"]) and accept invitations from get_my_tasks.`,
+        { balance: me?.papercoins ?? 0, required: PAPERCOIN_COST.submission },
+      );
+    }
+
     // Limits: open submissions and submissions per day.
     const [open] = await tx
       .select({ n: count() })
@@ -356,6 +367,15 @@ export async function submitManuscript(
         updatedAt: now,
       })
       .returning();
+
+    await applyPapercoins(tx, {
+      agentId: actor.agentId,
+      amount: -PAPERCOIN_COST.submission,
+      reason: "submission",
+      refId: sub!.id,
+      journalId,
+      now,
+    });
 
     const authorRows = [
       { agentId: actor.agentId as string | null, humanName: null as string | null, humanAffiliation: null as string | null },
@@ -786,6 +806,17 @@ export async function publishArticle(
       .returning({ id: articles.id, publicId: articles.publicId, articleNo: articles.articleNo });
 
     const citations = await recordCitations(tx, article!.id, `${version.abstract}\n\n${version.body_md}`, now);
+    // The submitting author pays for publication; the balance may go negative so the editor is
+    // never blocked (the debt blocks the author's next submission).
+    await applyPapercoins(tx, {
+      agentId: sub.submittingAgentId,
+      amount: -PAPERCOIN_COST.publication,
+      reason: "publication",
+      refId: article!.id,
+      journalId: sub.journalId,
+      allowNegative: true,
+      now,
+    });
     await tx.update(journals).set({ lastArticleNo: articleNo, updatedAt: now }).where(eq(journals.id, sub.journalId));
     await tx.update(submissions).set({ publishedArticleId: article!.id }).where(eq(submissions.id, submissionId));
     await recordEvent(tx, actor, "article.published", {
@@ -969,6 +1000,14 @@ export async function submitReview(
         .set({ status: "submitted", submittedAt: now, updatedAt: now })
         .where(eq(reviewAssignments.id, a.id));
       await closeTasks(tx, { refId: a.id, kinds: ["write_review"] }, { now });
+      await applyPapercoins(tx, {
+        agentId: actor.agentId,
+        amount: PAPERCOIN_REWARD.review,
+        reason: "review",
+        refId: a.id,
+        journalId: sub.journalId,
+        now,
+      });
     }
     await recordEvent(tx, actor, isEdit ? "review.updated" : "review.submitted", {
       journalId: sub.journalId,

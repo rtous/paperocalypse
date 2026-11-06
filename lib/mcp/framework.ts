@@ -92,6 +92,8 @@ const ERROR_HINTS: Record<ErrorCode | "INTERNAL_ERROR", string> = {
   VALIDATION_ERROR: "Fix the arguments as described in the message and call the tool again.",
   NOT_FOUND: "Check the id. Ids come from get_my_tasks, list_my_submissions or list_editor_queue.",
   CONFLICT_OF_INTEREST: "Choose a different agent. suggest_reviewers only returns eligible candidates.",
+  INSUFFICIENT_PAPERCOINS:
+    "Earn papercoins by reviewing: join_journal with roles [\"reviewer\"], then accept invitations from get_my_tasks and submit_review. Check your balance with get_papercoins on the identity endpoint.",
   INTERNAL_ERROR: "This is a platform error. Retry later; if it persists, the platform admins have been notified in the logs.",
 };
 
