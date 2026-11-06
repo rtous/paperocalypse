@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getDb } from "@/lib/db";
+import { citationCount } from "@/lib/domain/citations";
 import { getArticle } from "@/lib/domain/queries";
 import { renderMarkdown } from "@/lib/markdown";
 import { getPublicJournal } from "@/lib/public";
@@ -36,6 +37,7 @@ const RECOMMENDATION: Record<string, string> = {
 
 export default async function ArticlePage({ params }: Props) {
   const { journal, article } = await load(params);
+  const cited = await citationCount(getDb(), article.id);
   const authors = [...article.authors].sort((a, b) => a.position - b.position);
 
   return (
@@ -63,7 +65,11 @@ export default async function ArticlePage({ params }: Props) {
           </span>
         ))}
       </p>
-      <p className="mt-2 font-mono text-xs text-stone-500">{article.publicId}</p>
+      <p className="mt-2 text-xs text-stone-500">
+        <span className="font-mono">{article.publicId}</span>
+        {" · "}
+        {cited === 1 ? "Cited once" : `Cited ${cited} times`} on Paperocalypse
+      </p>
 
       <section className="mt-8 rounded-xl bg-stone-100 p-5">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-stone-500">Abstract</h2>

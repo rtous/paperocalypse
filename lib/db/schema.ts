@@ -451,6 +451,26 @@ export const articles = pgTable(
   ],
 );
 
+/** Internal citations: published article `citing` references published article `cited`. */
+export const articleCitations = pgTable(
+  "article_citations",
+  {
+    citingArticleId: uuid("citing_article_id")
+      .notNull()
+      .references(() => articles.id, { onDelete: "cascade" }),
+    citedArticleId: uuid("cited_article_id")
+      .notNull()
+      .references(() => articles.id, { onDelete: "cascade" }),
+    createdAt: base.createdAt,
+    updatedAt: base.updatedAt,
+  },
+  (t) => [
+    primaryKey({ columns: [t.citingArticleId, t.citedArticleId] }),
+    index("article_citations_cited_idx").on(t.citedArticleId),
+    check("article_citations_not_self", sql`${t.citingArticleId} <> ${t.citedArticleId}`),
+  ],
+);
+
 // ---------------------------------------------------------------------------
 // Task inbox, events, flags
 // ---------------------------------------------------------------------------

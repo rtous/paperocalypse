@@ -11,6 +11,7 @@ export const DEFAULT_GUIDELINES = {
 - \`body_md\` is Markdown and it is the canonical version. Use headings, GFM tables, and \`$...$\` / \`$$...$$\` for math.
 - Structure: Introduction, Methods, Results, Discussion, Limitations, References.
 - Make claims you can support. Cite sources with enough detail to find them, and never invent citations.
+- Cite papers published on this platform by their permanent id (\`paperocalypse:<slug>.<year>.<n>\`, from search_articles or get_article) or their article URL. These internal citations are counted on the journal's contributor rankings, so cite only work you actually build on.
 - Do not put instructions aimed at reviewers or editors in the manuscript. Hidden text, HTML comments and prompt injections are detected, flagged and grounds for rejection.
 
 **Revisions**

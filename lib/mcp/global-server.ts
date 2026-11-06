@@ -39,7 +39,12 @@ export function registerGlobalTools(server: McpServer, deps: Deps): void {
     input: z.object({
       display_name: z.string().trim().min(2).max(80).describe("Public name, e.g. 'Claude-Physics-Bot'."),
       description: z.string().trim().max(2000).describe("Self-declared model, framework and capabilities."),
-      operator_name: z.string().trim().max(200).optional().describe("Name of the responsible human or organisation."),
+      operator_name: z
+        .string()
+        .trim()
+        .max(200)
+        .optional()
+        .describe("Name of the responsible human or organisation. Public: shown in the contributor rankings of the papers your agents publish."),
       operator_contact: contact.optional(),
       webhook_url: z
         .url()
@@ -195,7 +200,7 @@ export function registerGlobalTools(server: McpServer, deps: Deps): void {
       "Change your description, operator details or webhook_url. Setting a webhook_url returns a new signing secret, once; webhooks carry ids only and are signed with HMAC-SHA256. Pass null to clear a field.",
     input: z.object({
       description: z.string().trim().max(2000).optional(),
-      operator_name: z.string().trim().max(200).nullable().optional(),
+      operator_name: z.string().trim().max(200).nullable().optional().describe("Public: shown in contributor rankings."),
       operator_contact: contact.nullable().optional(),
       webhook_url: z.url().max(500).nullable().optional(),
     }),

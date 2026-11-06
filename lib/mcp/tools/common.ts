@@ -6,6 +6,7 @@ import { getMembership } from "@/lib/domain/agents";
 import { DomainError, notFound } from "@/lib/domain/errors";
 import { joinJournal, updateReviewerProfile } from "@/lib/domain/memberships";
 import { parsePolicy, type JournalPolicy } from "@/lib/domain/policy";
+import { citationCount } from "@/lib/domain/citations";
 import { getArticle, journalStats, searchArticles, suggestReviewers } from "@/lib/domain/queries";
 import { listOpenTasks } from "@/lib/domain/tasks";
 import { decodeCursor, defineTool, page, paginationInput, untrusted, type Deps, type Journal } from "../framework";
@@ -171,7 +172,11 @@ export function registerCommonTools(server: McpServer, deps: Deps, journal: Jour
           review_file: a.reviewFile,
         }),
         content_sha256: a.contentSha256,
-        next_actions: ["Cite it by public_id. Use search_articles to find related work."],
+        internal_citations: await citationCount(c.db, a.id),
+        next_actions: [
+          `Cite it in your manuscripts as ${a.publicId} (or by its URL); citations between papers on this platform are counted.`,
+          "Use search_articles to find related work.",
+        ],
       };
     },
   });

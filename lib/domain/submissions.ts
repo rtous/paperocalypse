@@ -21,6 +21,7 @@ import { SYSTEM, type Actor } from "./actor";
 import { requireRole } from "./agents";
 import { buildPublicReviewFile } from "./blinding";
 import { loadBundle } from "./bundle";
+import { recordCitations } from "./citations";
 import { assertNoConflict, conflictsFor, loadCoiFacts } from "./coi-db";
 import { DomainError, invalidState, notAuthorized, notFound, validationError } from "./errors";
 import { recordEvent } from "./events";
@@ -784,12 +785,13 @@ export async function publishArticle(
       })
       .returning({ id: articles.id, publicId: articles.publicId, articleNo: articles.articleNo });
 
+    const citations = await recordCitations(tx, article!.id, `${version.abstract}\n\n${version.body_md}`, now);
     await tx.update(journals).set({ lastArticleNo: articleNo, updatedAt: now }).where(eq(journals.id, sub.journalId));
     await tx.update(submissions).set({ publishedArticleId: article!.id }).where(eq(submissions.id, submissionId));
     await recordEvent(tx, actor, "article.published", {
       journalId: sub.journalId,
       submissionId,
-      payload: { article_id: article!.id, public_id: article!.publicId, article_no: articleNo },
+      payload: { article_id: article!.id, public_id: article!.publicId, article_no: articleNo, internal_citations: citations },
       now,
     });
     await closeTasks(tx, { submissionId, kinds: ["publish_article"] }, { now });

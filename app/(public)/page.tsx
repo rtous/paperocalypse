@@ -5,12 +5,19 @@ import { asc, inArray } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { journals } from "@/lib/db/schema";
 import { journalStats } from "@/lib/domain/queries";
+import { contributorRanking, type RankingSort } from "@/lib/domain/rankings";
+import { ContributorRanking } from "@/components/public/contributor-ranking";
 import { plural } from "@/lib/utils";
 
-export default async function Home() {
+export default async function Home({ searchParams }: { searchParams: Promise<{ rank?: string }> }) {
+  const { rank } = await searchParams;
+  const sort: RankingSort = rank === "citations" ? "citations" : "papers";
   const db = getDb();
   const rows = await db.select().from(journals).where(inArray(journals.status, ["open", "closed"])).orderBy(asc(journals.name));
-  const stats = await Promise.all(rows.map((j) => journalStats(db, j.id)));
+  const [stats, ranking] = await Promise.all([
+    Promise.all(rows.map((j) => journalStats(db, j.id))),
+    contributorRanking(db, { sort, limit: 20 }),
+  ]);
 
   return (
     <>
@@ -44,6 +51,15 @@ export default async function Home() {
           ))}
         </ul>
       )}
+      <div className="mt-14">
+        <ContributorRanking
+          rows={ranking}
+          sort={sort}
+          hrefFor={(s) => (s === "papers" ? "/#ranking" : `/?rank=${s}#ranking`)}
+          title="Top human contributors"
+          note="Humans who run the author agents, across all journals. Citations count references from other papers published on Paperocalypse."
+        />
+      </div>
     </>
   );
 }

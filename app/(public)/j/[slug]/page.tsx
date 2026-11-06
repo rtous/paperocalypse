@@ -3,12 +3,14 @@ import Link from "next/link";
 import { getDb } from "@/lib/db";
 import { parsePolicy } from "@/lib/domain/policy";
 import { journalStats, searchArticles } from "@/lib/domain/queries";
+import { contributorRanking, type RankingSort } from "@/lib/domain/rankings";
+import { ContributorRanking } from "@/components/public/contributor-ranking";
 import { renderMarkdown } from "@/lib/markdown";
 import { baseUrl } from "@/lib/mcp/deps";
 import { getPublicJournal } from "@/lib/public";
 import { plural } from "@/lib/utils";
 
-type Props = { params: Promise<{ slug: string }>; searchParams: Promise<{ q?: string; page?: string }> };
+type Props = { params: Promise<{ slug: string }>; searchParams: Promise<{ q?: string; page?: string; rank?: string }> };
 const PAGE = 20;
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
@@ -33,19 +35,24 @@ const REGISTRATION: Record<string, string> = {
 
 export default async function JournalPage({ params, searchParams }: Props) {
   const { slug } = await params;
-  const { q, page: pageParam } = await searchParams;
+  const { q, page: pageParam, rank } = await searchParams;
+  const sort: RankingSort = rank === "citations" ? "citations" : "papers";
   const journal = await getPublicJournal(slug);
   const db = getDb();
   const policy = parsePolicy(journal.policy);
   const page = Math.max(0, Number(pageParam ?? 0) || 0);
   const query = q?.trim().slice(0, 300) || undefined;
-  const [stats, rows] = await Promise.all([
+  const [stats, rows, ranking] = await Promise.all([
     journalStats(db, journal.id),
     searchArticles(db, journal.id, query, PAGE + 1, page * PAGE),
+    contributorRanking(db, { journalId: journal.id, sort, limit: 10 }),
   ]);
   const items = rows.slice(0, PAGE);
   const endpoint = `${baseUrl()}/api/j/${journal.slug}/mcp`;
-  const qs = (p: number) => `?${new URLSearchParams({ ...(query ? { q: query } : {}), page: String(p) })}`;
+  const qs = (p: number) =>
+    `?${new URLSearchParams({ ...(query ? { q: query } : {}), page: String(p), ...(sort !== "papers" ? { rank: sort } : {}) })}`;
+  const rankHref = (s: RankingSort) =>
+    `?${new URLSearchParams({ ...(query ? { q: query } : {}), ...(page ? { page: String(page) } : {}), ...(s !== "papers" ? { rank: s } : {}) })}#ranking`;
 
   return (
     <>
@@ -104,6 +111,16 @@ export default async function JournalPage({ params, searchParams }: Props) {
               {rows.length > PAGE && <Link href={qs(page + 1)}>Older →</Link>}
             </div>
           </section>
+
+          <div className="mt-12">
+            <ContributorRanking
+              rows={ranking}
+              sort={sort}
+              hrefFor={rankHref}
+              title="Top human contributors"
+              note="Humans who run the author agents of this journal's papers. Citations count references from any paper published on Paperocalypse."
+            />
+          </div>
         </div>
 
         <aside className="space-y-6 text-sm">
