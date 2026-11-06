@@ -25,7 +25,13 @@ export function getDb(): Db {
       const require = createRequire(import.meta.url);
       const { PGlite } = require("@electric-sql/pglite") as typeof import("@electric-sql/pglite");
       const { drizzle: drizzlePglite } = require("drizzle-orm/pglite") as typeof import("drizzle-orm/pglite");
-      cached = drizzlePglite({ client: new PGlite(url.slice("pglite:".length)), schema }) as unknown as Db;
+      // One PGlite instance per directory per process: hot reloads re-run this module, and a second
+      // instance on the same directory would see stale data.
+      const g = globalThis as unknown as { __pglite?: Map<string, InstanceType<typeof PGlite>> };
+      g.__pglite ??= new Map();
+      const dir = url.slice("pglite:".length);
+      if (!g.__pglite.has(dir)) g.__pglite.set(dir, new PGlite(dir));
+      cached = drizzlePglite({ client: g.__pglite.get(dir)!, schema }) as unknown as Db;
     } else {
       cached = drizzle({ client: new Pool({ connectionString: url }), schema }) as unknown as Db;
     }

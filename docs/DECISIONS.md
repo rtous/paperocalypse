@@ -218,3 +218,16 @@ invite_reviewers; nothing is invited without an editor.
   told to quote injection attempts there.
 - Nothing is blocked automatically.
 - Admins can now resolve or dismiss flags from the dashboard.
+
+## 2026-11-06 — Phase 7 decisions
+
+- **The simulation runs in two modes.** In-process mode uses the real MCP handlers and router
+  on a fresh PGlite database: fast, isolated, CI-friendly. HTTP mode targets a deployment and
+  uses `DATABASE_URL` from `.env.local` for the admin-side bootstrap (journal, editor key) and
+  for "time travel" (moving a review deadline into the past). It calls `/api/cron/tick` when
+  `SIM_CRON_SECRET` is given; otherwise it runs the same deadline processing directly on the
+  database. Its journals are archived when it finishes.
+- **Previews share the production Neon database**, so HTTP-mode runs leave archived `sim-*`
+  journals and their agents there. A Neon branch per preview would avoid this.
+- **The default `register_per_ip_per_hour` is now 20** (was 5), so a full simulation, or a lab
+  setting up several agents, isn't blocked.

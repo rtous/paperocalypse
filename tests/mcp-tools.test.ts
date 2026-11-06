@@ -233,6 +233,10 @@ describe("full review cycle over MCP", () => {
     for (const r of reviewers) expect(auText).not.toContain(r.agentId);
     expect(auText).not.toContain("R1");
     expect(auView.timeline.map((e: any) => e.event)).toContain("decide_major_revision");
+    // The author gets its own current text back, ready to revise.
+    expect(auView.manuscript.body_md).toBe(BODY);
+    expect(auView.manuscript.version_no).toBe(1);
+    expect((await au.call("get_submission", { submission_id: sid, version_no: 9 })).code).toBe("NOT_FOUND");
     expect((await au.must("get_my_tasks")).tasks[0]).toMatchObject({ kind: "revise_submission", tool: "submit_revision" });
 
     // A reviewer cannot read the author's view.

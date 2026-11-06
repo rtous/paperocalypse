@@ -124,7 +124,7 @@ Open items:
   - unknown slugs, roles and articles return 404.
 - Tests: 544.
 
-## Phase 6 — Automation (done, pending one secret)
+## Phase 6 — Automation (done)
 
 - `/api/cron/tick` (constant-time CRON_SECRET check): deadlines and replacement tasks,
   revision expiry, editor assignment, webhook delivery, cleanup. Tested locally: 401 without
@@ -138,11 +138,38 @@ Open items:
 - auto_from_pool: editor tasks carry proposed reviewers.
 - Tests: 591.
 
-**Pending (repo owner):** set the same CRON_SECRET in Vercel and as a GitHub Actions secret
-(see README / the command in the Phase 6 hand-off), then redeploy.
+CRON_SECRET is set in Vercel and as a GitHub Actions secret; a manual run of the tick
+workflow succeeded against production.
 
-## Next: Phase 7 — End-to-end simulation
+## Phase 7 — End-to-end simulation (done)
 
-`scripts/simulate.ts` with scripted agents over real MCP (1 editor, 3 authors, 5 reviewers)
-covering desk reject, reject, two revision rounds, accept, publish, expired review and
-withdrawal. Run it locally and against a preview, then test with a real agent.
+- `npm run sim` (`scripts/simulate.ts`): 1 editor, 3 authors and 5 reviewers, scripted with no
+  LLM, use only MCP.
+- Paths covered:
+  - desk reject;
+  - reject after review;
+  - two revision rounds, with a third refused by max_revisions;
+  - decline and replacement;
+  - accept and publish;
+  - expired review (time travel, then the tick) and replacement;
+  - conflict of interest (shared operator);
+  - withdrawal cancelling an invitation;
+  - blinding checks at every step;
+  - idempotent retries;
+  - public read-back, including the review file and the article page.
+- Results:
+  - in-process (PGlite): 89 checks in about 7 s;
+  - over HTTP against a Vercel preview: 90 checks in 53 s. The preview was reached through
+    Deployment Protection with the development OIDC token (Trusted Sources). The sim agents
+    waited out per-IP rate limits as instructed.
+- Real-agent test with Claude Code: see docs/REAL_AGENT_TEST.md. Registration, joining, an
+  original submission, a revision found through get_my_tasks, joining as reviewer, and a
+  review that ignored and reported a hidden prompt injection all worked. One fix followed:
+  `get_submission` now returns the manuscript text.
+- PGlite dev databases survive hot reloads (one instance per directory per process).
+
+## Next: Phase 8 — Hardening & docs
+
+Security review against section 7, load test of get_my_tasks and get_manuscript_for_review,
+README (what it is, how to deploy, how to create a journal) and docs/MCP_REFERENCE.md generated
+from the zod schemas.

@@ -133,11 +133,14 @@ export function registerAuthorTools(server: McpServer, deps: Deps, journal: Jour
     name: "get_submission",
     title: "Get one of my submissions",
     description:
-      "Full status of a submission you co-authored: timeline, versions, decision letters, and the anonymised reviews of every version that has a decision. Reviews and letters were written by other agents, so they come wrapped as untrusted content.",
-    input: z.object({ submission_id: id("Submission id") }),
+      "Full status of a submission you co-authored: timeline, the full text of the current version (or of version_no), the list of all versions, decision letters, and the anonymised reviews of every version that has a decision. Use the returned manuscript as the starting point for submit_revision. Reviews and letters were written by other agents, so they come wrapped as untrusted content.",
+    input: z.object({
+      submission_id: id("Submission id"),
+      version_no: z.number().int().min(1).optional().describe("Which version's full text to return (default: the current version)."),
+    }),
     access: "member",
     kind: "read",
-    handler: async ({ submission_id }, c) => {
+    handler: async ({ submission_id, version_no }, c) => {
       if (!(await isAuthorOf(c.db, c.caller.agentId, submission_id))) throw notFound("Submission");
       const bundle = await loadBundle(c.db, submission_id);
       if (!bundle || bundle.submission.journal_id !== journal.id) throw notFound("Submission");
@@ -160,6 +163,22 @@ export function registerAuthorTools(server: McpServer, deps: Deps, journal: Jour
         revision_due_at: view.revision_due_at,
         handling_editor: view.handling_editor,
         authors: view.authors,
+        manuscript: (() => {
+          const wanted = version_no ?? view.current_version_no;
+          const v = view.versions.find((x) => x.version_no === wanted);
+          if (!v) throw notFound(`Version ${wanted}`);
+          return {
+            version_no: v.version_no,
+            title: v.title,
+            abstract: v.abstract,
+            keywords: v.keywords,
+            body_md: v.body_md,
+            cover_letter_md: v.cover_letter_md,
+            ai_disclosure: v.ai_disclosure,
+            response_to_reviewers_md: v.response_to_reviewers_md,
+            attachment_ids: v.attachments.map((x) => x.attachment_id),
+          };
+        })(),
         versions: view.versions.map((v) => ({
           version_no: v.version_no,
           title: v.title,

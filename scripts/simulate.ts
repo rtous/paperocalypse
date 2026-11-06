@@ -11,7 +11,8 @@
  *                                                 # from .env.local to create the journal and editor)
  *
  * HTTP mode options (env): SIM_CRON_SECRET to call /api/cron/tick (otherwise deadlines are processed
- * directly on the database), VERCEL_PROTECTION_BYPASS for protected preview deployments.
+ * directly on the database). Protected previews are reached with VERCEL_OIDC_TOKEN from .env.local
+ * (`vercel env pull`), or VERCEL_PROTECTION_BYPASS.
  * The simulation journal is archived at the end unless --keep is passed.
  */
 import { randomUUID } from "node:crypto";
@@ -40,6 +41,18 @@ const BASE = (baseArg ?? "http://sim.local").replace(/\/+$/, "");
 let db: Db;
 let fetchImpl: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 let closeDb = async () => {};
+
+/**
+ * Headers that get past Vercel Deployment Protection on preview deployments: the short-lived
+ * development OIDC token from `vercel env pull` (Trusted Sources), or a bypass secret. Only sent to
+ * *.vercel.app hosts.
+ */
+function protectionHeaders(): Record<string, string> {
+  if (MODE !== "http" || !new URL(BASE).hostname.endsWith(".vercel.app")) return {};
+  if (process.env.VERCEL_PROTECTION_BYPASS) return { "x-vercel-protection-bypass": process.env.VERCEL_PROTECTION_BYPASS };
+  if (process.env.VERCEL_OIDC_TOKEN) return { "x-vercel-trusted-oidc-idp-token": process.env.VERCEL_OIDC_TOKEN };
+  return {};
+}
 
 async function setup() {
   if (MODE === "in-process") {
@@ -76,6 +89,7 @@ async function setup() {
 // ---------------------------------------------------------------------------
 
 let checks = 0;
+let rateLimitWaits = 0;
 const t0 = Date.now();
 const log = (msg: string) => console.log(`  ${msg}`);
 function section(title: string) {
@@ -100,9 +114,8 @@ class Agent {
   private async client(path: string): Promise<Client> {
     const existing = this.clients.get(path);
     if (existing) return existing;
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = { ...protectionHeaders() };
     if (this.key) headers.authorization = `Bearer ${this.key}`;
-    if (process.env.VERCEL_PROTECTION_BYPASS) headers["x-vercel-protection-bypass"] = process.env.VERCEL_PROTECTION_BYPASS;
     const transport = new StreamableHTTPClientTransport(new URL(BASE + path), {
       fetch: fetchImpl,
       requestInit: { headers },
@@ -113,11 +126,22 @@ class Agent {
     return c;
   }
 
+  /** Call a tool. Like a well-behaved agent, wait out RATE_LIMITED (retry_after_seconds) and retry. */
   async call(path: string, tool: string, input: Record<string, unknown> = {}) {
     const c = await this.client(path);
-    const r = await c.callTool({ name: tool, arguments: input });
-    const data = (r.structuredContent ?? {}) as any;
-    return { ok: !r.isError, data, code: data?.error?.code as string | undefined };
+    for (let attempt = 0; ; attempt++) {
+      const r = await c.callTool({ name: tool, arguments: input });
+      const data = (r.structuredContent ?? {}) as any;
+      const code = data?.error?.code as string | undefined;
+      if (code === "RATE_LIMITED" && attempt < 5) {
+        const wait = Number(data.error.retry_after_seconds ?? 5) + 1;
+        rateLimitWaits++;
+        log(`… ${this.name} rate-limited on ${tool}; waiting ${wait}s as instructed`);
+        await new Promise((res) => setTimeout(res, wait * 1000));
+        continue;
+      }
+      return { ok: !r.isError, data, code };
+    }
   }
 
   async must(path: string, tool: string, input: Record<string, unknown> = {}) {
@@ -176,7 +200,9 @@ const review = (assignment_id: string, recommendation: string, tag: string) => (
 
 async function tick(J: string) {
   if (MODE === "http" && process.env.SIM_CRON_SECRET) {
-    const res = await fetch(`${BASE}/api/cron/tick`, { headers: { authorization: `Bearer ${process.env.SIM_CRON_SECRET}` } });
+    const res = await fetch(`${BASE}/api/cron/tick`, {
+      headers: { ...protectionHeaders(), authorization: `Bearer ${process.env.SIM_CRON_SECRET}` },
+    });
     check(res.ok, `cron tick over HTTP (${res.status})`);
     return (await res.json()) as any;
   }
@@ -398,9 +424,7 @@ async function main() {
   const artText = JSON.stringify(art);
   check(!artText.includes("CONFIDENTIAL") && !artText.includes("Sim Reviewer"), "the public review file is anonymised and has no confidential comments");
   if (MODE === "http") {
-    const page = await fetch(`${BASE}/j/${slug}/articles/1`, {
-      headers: process.env.VERCEL_PROTECTION_BYPASS ? { "x-vercel-protection-bypass": process.env.VERCEL_PROTECTION_BYPASS } : {},
-    });
+    const page = await fetch(`${BASE}/j/${slug}/articles/1`, { headers: protectionHeaders() });
     const html = await page.text();
     check(page.ok && html.includes("AI-generated research") && !html.includes("CONFIDENTIAL"), "the public article page renders");
   }
@@ -413,7 +437,7 @@ async function main() {
     await setJournalStatus(db, admin, journal.id, "archived", now());
   }
   for (const x of [editor, anon, ...authors, ...reviewers]) await x.close();
-  console.log(`\n✔ Simulation passed: ${checks} checks in ${((Date.now() - t0) / 1000).toFixed(1)} s${KEEP ? ` (journal /${slug} kept open)` : " (journal archived)"}`);
+  console.log(`\n✔ Simulation passed: ${checks} checks in ${((Date.now() - t0) / 1000).toFixed(1)} s, ${rateLimitWaits} rate-limit waits${KEEP ? ` (journal /${slug} kept open)` : " (journal archived)"}`);
 }
 
 main()
