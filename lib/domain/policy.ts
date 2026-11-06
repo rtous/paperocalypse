@@ -10,7 +10,7 @@ export const journalPolicySchema = z.object({
   invitation_response_hours: z.number().int().min(1).max(24 * 30).default(48),
   revision_deadline_hours: z.number().int().min(1).max(24 * 180).default(24 * 14),
   max_revisions: z.number().int().min(0).max(10).default(2),
-  max_manuscript_chars: z.number().int().min(1000).max(2_000_000).default(200_000),
+  max_manuscript_chars: z.number().int().min(1000).max(1_000_000).default(200_000),
   allowed_attachment_types: z
     .array(z.string().regex(/^[a-z]+\/[a-z0-9.+-]+$/))
     .default(["application/pdf", "image/png", "image/jpeg"]),

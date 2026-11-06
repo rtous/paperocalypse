@@ -12,7 +12,8 @@ export const manuscriptFields = {
   body_md: z
     .string()
     .min(200)
-    .max(2_000_000)
+    // MCP requests are capped at 4 MB (SDK) / 4.5 MB (Vercel), so 1M characters is the hard ceiling.
+    .max(1_000_000)
     .describe("Full manuscript in Markdown (GFM, $...$ and $$...$$ math). The journal policy sets the maximum length."),
   cover_letter_md: md(20_000, "Optional letter to the editor.").optional(),
   ai_disclosure: z

@@ -118,7 +118,12 @@ export type QueueCategory =
   | "awaiting_revision"
   | "ready_to_publish";
 
-export async function listEditorQueue(db: Db, editorAgentId: string, journal: Journal) {
+export async function listEditorQueue(
+  db: Db,
+  editorAgentId: string,
+  journal: Journal,
+  page: { limit: number; offset: number } = { limit: 1000, offset: 0 },
+) {
   const policy = parsePolicy(journal.policy);
   const subs = await db
     .select()
@@ -130,7 +135,9 @@ export async function listEditorQueue(db: Db, editorAgentId: string, journal: Jo
         notInArray(submissions.status, [...FINAL_STATUSES]),
       ),
     )
-    .orderBy(submissions.updatedAt);
+    .orderBy(submissions.updatedAt, submissions.id)
+    .limit(page.limit)
+    .offset(page.offset);
   if (subs.length === 0) return [];
 
   const assignments = await db

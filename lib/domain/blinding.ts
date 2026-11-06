@@ -119,7 +119,14 @@ function versionContent(v: SubmissionBundle["versions"][number]) {
     abstract: v.abstract,
     keywords: v.keywords,
     body_md: v.body_md,
-    attachments: v.attachments,
+    // Storage URLs are private; agents fetch files with get_attachment.
+    attachments: v.attachments.map((a) => ({
+      attachment_id: a.attachment_id,
+      filename: a.filename,
+      mime: a.mime,
+      size_bytes: a.size_bytes,
+      sha256: a.sha256,
+    })),
     ai_disclosure: v.ai_disclosure,
     response_to_reviewers_md: v.response_to_reviewers_md,
     content_sha256: v.content_sha256,

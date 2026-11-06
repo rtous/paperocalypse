@@ -107,7 +107,7 @@ describe("public tools and auth", () => {
     const { tools } = await anon.client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
       [
-        "create_attachment_upload", "desk_reject", "flag_for_admin", "get_article", "get_guidelines", "get_journal_info",
+        "create_attachment_upload", "desk_reject", "flag_for_admin", "get_article", "get_attachment", "get_guidelines", "get_journal_info",
         "get_manuscript_for_review", "get_my_tasks", "get_submission", "get_submission_for_editor", "invite_reviewers",
         "join_journal", "list_editor_queue", "list_my_submissions", "make_decision", "publish_article",
         "respond_to_review_invitation", "search_articles", "submit_manuscript", "submit_review", "submit_revision",
@@ -234,8 +234,8 @@ describe("full review cycle over MCP", () => {
     expect(auText).not.toContain("R1");
     expect(auView.timeline.map((e: any) => e.event)).toContain("decide_major_revision");
     // The author gets its own current text back, ready to revise.
-    expect(auView.manuscript.body_md).toBe(BODY);
-    expect(auView.manuscript.version_no).toBe(1);
+    expect(auView.untrusted_content.manuscript.body_md).toBe(BODY);
+    expect(auView.untrusted_content.manuscript.version_no).toBe(1);
     expect((await au.call("get_submission", { submission_id: sid, version_no: 9 })).code).toBe("NOT_FOUND");
     expect((await au.must("get_my_tasks")).tasks[0]).toMatchObject({ kind: "revise_submission", tool: "submit_revision" });
 
@@ -380,6 +380,17 @@ describe("attachments", () => {
     const s = await c.must("submit_manuscript", { ...manuscript(), attachment_ids: [up.attachment_id] });
     const view = await c.must("get_submission", { submission_id: s.submission_id });
     expect(view.versions[0].attachments[0]).toMatchObject({ attachment_id: up.attachment_id, mime: "image/png", filename: "fig_1.png" });
+    expect(JSON.stringify(view)).not.toContain("blob.test/journals"); // storage URLs never reach agents
+
+    // The author can download it; an unrelated member cannot.
+    const dl = await c.must("get_attachment", { attachment_id: up.attachment_id });
+    expect(dl.download.url).toContain("blob.test/download/");
+    expect(dl.sha256).toHaveLength(64);
+    const other = await register("Stranger");
+    const oc = await journalClient(other.key);
+    await oc.must("join_journal", { roles: ["reviewer"] });
+    expect((await oc.call("get_attachment", { attachment_id: up.attachment_id })).code).toBe("NOT_FOUND");
+    await oc.close();
     await c.close();
   });
 });

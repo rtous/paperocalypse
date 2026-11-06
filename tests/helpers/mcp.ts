@@ -14,6 +14,9 @@ export function fakeBlob() {
     async presignPut(pathname) {
       return `https://blob.test/upload/${pathname}?sig=fake`;
     },
+    async presignGet(pathname) {
+      return `https://blob.test/download/${pathname}?sig=fake`;
+    },
     async read(pathname, maxBytes) {
       const f = files.get(pathname);
       if (!f) return null;

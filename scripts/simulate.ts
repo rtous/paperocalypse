@@ -16,7 +16,6 @@
  * The simulation journal is archived at the end unless --keep is passed.
  */
 import { randomUUID } from "node:crypto";
-import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { and, eq, sql } from "drizzle-orm";
 import { admins, reviewAssignments } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
@@ -25,6 +24,7 @@ import { processDeadlines } from "@/lib/domain/deadlines";
 import { DEFAULT_GUIDELINES } from "@/lib/domain/default-content";
 import { createJournal, setJournalStatus } from "@/lib/domain/journals";
 import { DEFAULT_POLICY } from "@/lib/domain/policy";
+import { Agent, createHarness, type Harness } from "./lib/harness";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -33,56 +33,12 @@ import { DEFAULT_POLICY } from "@/lib/domain/policy";
 // ---------------------------------------------------------------------------
 
 const args = process.argv.slice(2);
-const baseArg = args.includes("--base") ? args[args.indexOf("--base") + 1] : undefined;
 const KEEP = args.includes("--keep");
-const MODE = baseArg ? "http" : "in-process";
-const BASE = (baseArg ?? "http://sim.local").replace(/\/+$/, "");
 
+let h: Harness;
 let db: Db;
-let fetchImpl: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
-let closeDb = async () => {};
-
-/**
- * Headers that get past Vercel Deployment Protection on preview deployments: the short-lived
- * development OIDC token from `vercel env pull` (Trusted Sources), or a bypass secret. Only sent to
- * *.vercel.app hosts.
- */
-function protectionHeaders(): Record<string, string> {
-  if (MODE !== "http" || !new URL(BASE).hostname.endsWith(".vercel.app")) return {};
-  if (process.env.VERCEL_PROTECTION_BYPASS) return { "x-vercel-protection-bypass": process.env.VERCEL_PROTECTION_BYPASS };
-  if (process.env.VERCEL_OIDC_TOKEN) return { "x-vercel-trusted-oidc-idp-token": process.env.VERCEL_OIDC_TOKEN };
-  return {};
-}
-
-async function setup() {
-  if (MODE === "in-process") {
-    process.env.API_KEY_PEPPER ??= "simulation-pepper-0123456789";
-    const { PGlite } = await import("@electric-sql/pglite");
-    const { drizzle } = await import("drizzle-orm/pglite");
-    const { migrate } = await import("drizzle-orm/pglite/migrator");
-    const schema = await import("@/lib/db/schema");
-    const { mcpRouter } = await import("@/lib/mcp/router");
-    const client = new PGlite();
-    const pg = drizzle({ client, schema });
-    await migrate(pg, { migrationsFolder: "drizzle" });
-    db = pg as unknown as Db;
-    const blob = {
-      async presignPut(p: string) {
-        return `https://blob.invalid/${p}`;
-      },
-      async read() {
-        return null;
-      },
-    };
-    const route = mcpRouter({ db, blob, now: () => new Date(), baseUrl: BASE });
-    fetchImpl = (input, init) => route(new Request(input, init));
-    closeDb = () => client.close();
-  } else {
-    const { getDb } = await import("@/lib/db");
-    db = getDb();
-    fetchImpl = (input, init) => fetch(input, init);
-  }
-}
+let MODE: Harness["mode"];
+let BASE: string;
 
 // ---------------------------------------------------------------------------
 // Logging and assertions
@@ -105,60 +61,12 @@ function check(cond: unknown, msg: string): asserts cond {
 // Agents
 // ---------------------------------------------------------------------------
 
-class Agent {
-  agentId = "";
-  key: string | null = null;
-  private clients = new Map<string, Client>();
-  constructor(readonly name: string) {}
-
-  private async client(path: string): Promise<Client> {
-    const existing = this.clients.get(path);
-    if (existing) return existing;
-    const headers: Record<string, string> = { ...protectionHeaders() };
-    if (this.key) headers.authorization = `Bearer ${this.key}`;
-    const transport = new StreamableHTTPClientTransport(new URL(BASE + path), {
-      fetch: fetchImpl,
-      requestInit: { headers },
-    });
-    const c = new Client({ name: `sim-${this.name}`, version: "1.0.0" });
-    await c.connect(transport);
-    this.clients.set(path, c);
-    return c;
-  }
-
-  /** Call a tool. Like a well-behaved agent, wait out RATE_LIMITED (retry_after_seconds) and retry. */
-  async call(path: string, tool: string, input: Record<string, unknown> = {}) {
-    const c = await this.client(path);
-    for (let attempt = 0; ; attempt++) {
-      const r = await c.callTool({ name: tool, arguments: input });
-      const data = (r.structuredContent ?? {}) as any;
-      const code = data?.error?.code as string | undefined;
-      if (code === "RATE_LIMITED" && attempt < 5) {
-        const wait = Number(data.error.retry_after_seconds ?? 5) + 1;
-        rateLimitWaits++;
-        log(`… ${this.name} rate-limited on ${tool}; waiting ${wait}s as instructed`);
-        await new Promise((res) => setTimeout(res, wait * 1000));
-        continue;
-      }
-      return { ok: !r.isError, data, code };
-    }
-  }
-
-  async must(path: string, tool: string, input: Record<string, unknown> = {}) {
-    const r = await this.call(path, tool, input);
-    if (!r.ok) throw new Error(`${this.name} → ${tool} failed: ${JSON.stringify(r.data)}`);
-    return r.data;
-  }
-
-  async useKey(key: string) {
-    this.key = key;
-    for (const c of this.clients.values()) await c.close();
-    this.clients.clear();
-  }
-
-  async close() {
-    for (const c of this.clients.values()) await c.close();
-  }
+/** A scripted agent on the harness, logging rate-limit waits. */
+function newAgent(name: string) {
+  return new Agent(h, name, (m) => {
+    rateLimitWaits++;
+    log(m);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +109,7 @@ const review = (assignment_id: string, recommendation: string, tag: string) => (
 async function tick(J: string) {
   if (MODE === "http" && process.env.SIM_CRON_SECRET) {
     const res = await fetch(`${BASE}/api/cron/tick`, {
-      headers: { ...protectionHeaders(), authorization: `Bearer ${process.env.SIM_CRON_SECRET}` },
+      headers: { ...h.protectionHeaders(), authorization: `Bearer ${process.env.SIM_CRON_SECRET}` },
     });
     check(res.ok, `cron tick over HTTP (${res.status})`);
     return (await res.json()) as any;
@@ -211,8 +119,9 @@ async function tick(J: string) {
 }
 
 async function main() {
+  h = await createHarness(args);
+  ({ db, mode: MODE, base: BASE } = h);
   console.log(`Paperocalypse simulation — ${MODE} — ${BASE}`);
-  await setup();
 
   // ---------------------------------------------------------------- bootstrap (admin side)
   section("Bootstrap: journal and editor (admin)");
@@ -250,7 +159,7 @@ async function main() {
     now(),
   );
   await setJournalStatus(db, admin, journal.id, "open", now());
-  const editor = new Agent("Editor");
+  const editor = newAgent("Editor");
   const ed = await createAgent(db, admin, { displayName: "Sim Editor", description: "scripted editor", operatorContact: "editor@sim.test" }, now());
   await grantRoles(db, admin, journal.id, ed.id, ["editor"], now());
   editor.agentId = ed.id;
@@ -261,8 +170,8 @@ async function main() {
 
   // ---------------------------------------------------------------- registration
   section("Agents register and join over MCP");
-  const authors = [1, 2, 3].map((i) => new Agent(`Author${i}`));
-  const reviewers = [1, 2, 3, 4, 5].map((i) => new Agent(`Reviewer${i}`));
+  const authors = [1, 2, 3].map((i) => newAgent(`Author${i}`));
+  const reviewers = [1, 2, 3, 4, 5].map((i) => newAgent(`Reviewer${i}`));
   const run = randomUUID().slice(0, 6);
   for (const a of [...authors, ...reviewers]) {
     // Reviewer5 shares Author1's operator, so it is conflicted for Author1's papers.
@@ -416,7 +325,7 @@ async function main() {
 
   // ---------------------------------------------------------------- public read-back
   section("Public read-back (no API key)");
-  const anon = new Agent("Anonymous");
+  const anon = newAgent("Anonymous");
   const found = await anon.must(J, "search_articles", { query: "convergence" });
   check(found.untrusted_content.items.some((x: any) => x.article_no === 1), "search_articles finds the published article");
   const art = await anon.must(J, "get_article", { article_no: 1 });
@@ -424,12 +333,12 @@ async function main() {
   const artText = JSON.stringify(art);
   check(!artText.includes("CONFIDENTIAL") && !artText.includes("Sim Reviewer"), "the public review file is anonymised and has no confidential comments");
   if (MODE === "http") {
-    const page = await fetch(`${BASE}/j/${slug}/articles/1`, { headers: protectionHeaders() });
+    const page = await fetch(`${BASE}/j/${slug}/articles/1`, { headers: h.protectionHeaders() });
     const html = await page.text();
     check(page.ok && html.includes("AI-generated research") && !html.includes("CONFIDENTIAL"), "the public article page renders");
   }
   const editorQueue = await editor.must(J, "list_editor_queue");
-  check(editorQueue.total === 0, "the editor's queue is empty at the end");
+  check(editorQueue.count === 0, "the editor's queue is empty at the end");
 
   // ---------------------------------------------------------------- done
   if (!KEEP) {
@@ -442,11 +351,11 @@ async function main() {
 
 main()
   .then(async () => {
-    await closeDb();
+    await h?.close();
     process.exit(0);
   })
   .catch(async (e) => {
     console.error(`\n✘ ${e instanceof Error ? e.message : e}`);
-    await closeDb();
+    await h?.close();
     process.exit(1);
   });

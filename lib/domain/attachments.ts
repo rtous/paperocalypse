@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, inArray, lt } from "drizzle-orm";
-import { attachments, journals, type Attachment } from "@/lib/db/schema";
+import { and, eq, inArray, lt, sql } from "drizzle-orm";
+import { attachments, journals, reviewAssignments, submissionAuthors, submissionVersions, submissions, type Attachment } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "./actor";
 import { requireRole } from "./agents";
@@ -11,6 +11,7 @@ import { parsePolicy } from "./policy";
 /** Storage operations the domain needs; implemented by lib/blob.ts (Vercel Blob) and fakes in tests. */
 export interface BlobGateway {
   presignPut(pathname: string, opts: { contentType: string; maxBytes: number; validUntil: number }): Promise<string>;
+  presignGet(pathname: string, validUntil: number): Promise<string>;
   read(
     pathname: string,
     maxBytes: number,
@@ -159,4 +160,63 @@ export async function cleanupExpiredUploads(db: Db, now: Date): Promise<number> 
     .where(and(eq(attachments.status, "pending"), lt(attachments.uploadExpiresAt, cutoff)))
     .returning({ id: attachments.id });
   return deleted.length;
+}
+
+const DOWNLOAD_TTL_MS = 10 * 60_000;
+
+/**
+ * A short-lived download link for an attachment of a submission the agent may see: as an author,
+ * as the handling editor, or as a reviewer who accepted (or submitted) a review of it.
+ */
+export async function getAttachmentDownload(
+  db: Db,
+  blob: BlobGateway,
+  agentId: string,
+  journalId: string,
+  attachmentId: string,
+  now: Date,
+) {
+  const [row] = await db
+    .select()
+    .from(attachments)
+    .where(and(eq(attachments.id, attachmentId), eq(attachments.journalId, journalId), eq(attachments.status, "uploaded")));
+  if (!row) throw notFound("Attachment");
+
+  const holders = await db
+    .selectDistinct({ submissionId: submissionVersions.submissionId })
+    .from(submissionVersions)
+    .where(sql`${submissionVersions.attachments} @> ${JSON.stringify([{ attachment_id: attachmentId }])}::jsonb`);
+  let allowed = row.agentId === agentId;
+  for (const { submissionId } of holders) {
+    if (allowed) break;
+    const [s] = await db.select({ editor: submissions.handlingEditorId }).from(submissions).where(eq(submissions.id, submissionId));
+    if (s?.editor === agentId) allowed = true;
+    const [author] = await db
+      .select({ id: submissionAuthors.id })
+      .from(submissionAuthors)
+      .where(and(eq(submissionAuthors.submissionId, submissionId), eq(submissionAuthors.agentId, agentId)));
+    if (author) allowed = true;
+    const [review] = await db
+      .select({ id: reviewAssignments.id })
+      .from(reviewAssignments)
+      .where(
+        and(
+          eq(reviewAssignments.submissionId, submissionId),
+          eq(reviewAssignments.reviewerAgentId, agentId),
+          inArray(reviewAssignments.status, ["accepted", "submitted"] as const),
+        ),
+      );
+    if (review) allowed = true;
+  }
+  if (!allowed) throw notFound("Attachment");
+
+  const validUntil = now.getTime() + DOWNLOAD_TTL_MS;
+  return {
+    downloadUrl: await blob.presignGet(row.pathname, validUntil),
+    expiresAt: new Date(validUntil),
+    filename: row.filename,
+    mime: row.mime,
+    sizeBytes: row.sizeBytes!,
+    sha256: row.sha256!,
+  };
 }

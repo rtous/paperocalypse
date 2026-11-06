@@ -32,6 +32,12 @@ export const vercelBlob: BlobGateway = {
     return presignedUrl;
   },
 
+  async presignGet(pathname, validUntil) {
+    const signed = await issueSignedToken({ token: token(), pathname, operations: ["get"], validUntil });
+    const { presignedUrl } = await presignUrl(signed, { operation: "get", access: "private", pathname, validUntil });
+    return presignedUrl;
+  },
+
   async read(pathname, maxBytes) {
     const res = await get(pathname, { access: "private", token: token() });
     if (!res || res.statusCode !== 200) return null;
