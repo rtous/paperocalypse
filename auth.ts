@@ -9,7 +9,10 @@ import { upsertOperatorFromLogin } from "@/lib/domain/operators";
 export const devLoginEnabled =
   process.env.NODE_ENV === "development" && process.env.AUTH_DEV_LOGIN === "true";
 
-const providers: NextAuthConfig["providers"] = [GitHub];
+// prompt=select_account makes GitHub show its account picker on every sign-in. Without it, a
+// previously authorized GitHub session is reused silently, so after signing out you couldn't
+// sign in as someone else.
+const providers: NextAuthConfig["providers"] = [GitHub({ authorization: { params: { prompt: "select_account" } } })];
 if (devLoginEnabled) {
   providers.push(
     Credentials({
