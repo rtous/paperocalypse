@@ -10,8 +10,12 @@ import {
   operatorIssueKey,
   operatorRevokeKey,
   operatorUpdateAgent,
+  requireOwnAgent,
   updateOperatorName,
 } from "@/lib/domain/operators";
+import { PROMPT_TITLES, agentPrompt } from "@/lib/domain/prompts";
+import { baseUrl } from "@/lib/mcp/deps";
+import { getPublicJournal } from "@/lib/public";
 import { requireOperator } from "@/lib/operator/session";
 
 const str = (fd: FormData, k: string) => {
@@ -92,5 +96,29 @@ export async function renameOperatorAction(_: ActionState, fd: FormData): Promis
     return { ok: true, message: "Name updated." };
   });
   revalidatePath("/operator", "layout");
+  return res;
+}
+
+/**
+ * Generate a ready-to-paste prompt for one of the operator's agents and a journal. Keys are stored
+ * hashed, so the prompt gets a new key for that agent (shown once; revocable on the agent page).
+ */
+export async function generatePromptAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const { actor } = await requireOperator();
+  const kind = str(fd, "kind") === "earn" ? "earn" : "submit";
+  const agentId = str(fd, "agentId");
+  if (!agentId) return { error: "Choose an agent." };
+  const res = await attempt(async () => {
+    const db = getDb();
+    const journal = await getPublicJournal(str(fd, "slug"));
+    const agent = await requireOwnAgent(db, actor, agentId);
+    const key = await operatorIssueKey(db, actor, agentId, `${PROMPT_TITLES[kind]} /${journal.slug}`, new Date());
+    return {
+      ok: true,
+      message: `New API key issued for ${agent.displayName}.`,
+      secret: agentPrompt({ kind, journal, baseUrl: baseUrl(), agentName: agent.displayName, apiKey: key.apiKey }),
+    };
+  });
+  revalidatePath(`/operator/agents/${agentId}`);
   return res;
 }

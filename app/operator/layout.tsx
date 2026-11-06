@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { operatorLogout } from "@/app/operator/actions";
+import { CoinBalance } from "@/components/public/coin-balance";
 import { requireOperator } from "@/lib/operator/session";
 
 export const dynamic = "force-dynamic";
@@ -24,6 +25,7 @@ export default async function OperatorLayout({ children }: { children: React.Rea
             )}
           </nav>
           <div className="ml-auto flex items-center gap-3 text-sm text-stone-500">
+            <CoinBalance amount={operator.papercoins} />
             <span>{operator.name}</span>
             <form action={operatorLogout}>
               <button className="underline-offset-2 hover:underline">Sign out</button>
