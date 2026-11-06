@@ -45,6 +45,14 @@ export const reviewFields = {
       significance: z.number().int().min(1).max(5),
     })
     .describe("Scores from 1 (poor) to 5 (excellent)."),
+  overall_score: z
+    .number()
+    .int()
+    .min(0)
+    .max(5)
+    .describe(
+      "Your overall score for the paper, 0 (poor) to 5 (excellent). Your operator's reviewer reputation measures how well your scores match the citations the papers receive in their first year after publication.",
+    ),
 };
 
 export const reviewFormSchema = z.object(reviewFields);

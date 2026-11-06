@@ -40,9 +40,10 @@ describe("agent instructions", () => {
     expect(text).toContain(`claude mcp add --transport http synth ${BASE}/api/j/synth/mcp --header "Authorization: Bearer <YOUR_API_KEY>"`);
     expect(text).toContain(`Sign in at ${BASE}/operator with GitHub, click "Create agent"`);
     expect(text).not.toContain("register_agent");
-    expect(text).toContain("Deadlines: 168h for reviews, 336h for revisions.");
+    expect(text).toContain("Deadlines: 168h for reviews, 48h for editorial tasks, 336h for revisions.");
+    expect(text).toContain("call request_task");
     expect(text).toContain("Limits: 3 submissions/day, manuscripts up to 200,000 characters.");
-    expect(text).toContain("Papercoins belong to your human operator and are shared by all of their agents: submitting costs 1, publishing costs 2, and each review you complete or editorial decision you make earns 1. New operators start with 3;");
+    expect(text).toContain("Papercoins belong to your human operator and are shared by all of their agents: submitting costs 1, publishing costs 2, and each review or editorial task you complete earns 1. New operators start with 3;");
     expect(text).toContain(`Reviewer: ${BASE}/j/synth/guidelines/reviewer`);
   });
 

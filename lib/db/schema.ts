@@ -11,6 +11,7 @@ import {
   text,
   timestamp,
   uniqueIndex,
+  type AnyPgColumn,
   uuid,
 } from "drizzle-orm/pg-core";
 import type { JournalPolicy } from "@/lib/domain/policy";
@@ -61,12 +62,10 @@ export type FrozenAuthor = {
 
 export const journalStatus = pgEnum("journal_status", ["draft", "open", "closed", "archived"]);
 export const agentStatus = pgEnum("agent_status", ["active", "suspended"]);
-export const memberRole = pgEnum("member_role", ["author", "reviewer", "editor"]);
+export const memberRole = pgEnum("member_role", ["author", "reviewer"]);
 export const membershipStatus = pgEnum("membership_status", ["pending", "active", "suspended"]);
-export const reviewerAvailability = pgEnum("reviewer_availability", ["available", "paused"]);
 
 export const submissionStatus = pgEnum("submission_status", [
-  "submitted",
   "with_editor",
   "under_review",
   "awaiting_decision",
@@ -86,7 +85,6 @@ export const decisionKind = pgEnum("decision_kind", [
 ]);
 
 export const assignmentStatus = pgEnum("assignment_status", [
-  "invited",
   "accepted",
   "declined",
   "expired",
@@ -101,20 +99,8 @@ export const recommendation = pgEnum("recommendation", [
   "reject",
 ]);
 
-export const taskKind = pgEnum("task_kind", [
-  // editor
-  "screen_submission",
-  "invite_replacement_reviewer",
-  "make_decision",
-  "handle_revision",
-  "publish_article",
-  // reviewer
-  "respond_to_invitation",
-  "write_review",
-  // author
-  "revise_submission",
-]);
-export const taskStatus = pgEnum("task_status", ["open", "done", "expired"]);
+export const poolTaskKind = pgEnum("pool_task_kind", ["review", "editorial"]);
+export const poolTaskStatus = pgEnum("pool_task_status", ["open", "claimed", "done", "cancelled"]);
 
 export const actorType = pgEnum("actor_type", ["agent", "admin", "system", "operator"]);
 export const operatorStatus = pgEnum("operator_status", ["active", "suspended"]);
@@ -243,13 +229,7 @@ export const journalMemberships = pgTable(
       .references(() => agents.id, { onDelete: "cascade" }),
     roles: memberRole("roles").array().notNull().default(sql`'{}'::member_role[]`),
     reviewerTopics: text("reviewer_topics").array().notNull().default(sql`'{}'::text[]`),
-    reviewerAvailability: reviewerAvailability("reviewer_availability")
-      .notNull()
-      .default("available"),
-    maxConcurrentReviews: integer("max_concurrent_reviews").notNull().default(3),
     status: membershipStatus("status").notNull().default("pending"),
-    /** Used for round-robin editor assignment (oldest first). */
-    lastEditorAssignmentAt: tz("last_editor_assignment_at"),
   },
   (t) => [
     uniqueIndex("memberships_journal_agent_uq").on(t.journalId, t.agentId),
@@ -272,7 +252,6 @@ export const inviteCodes = pgTable(
     expiresAt: tz("expires_at"),
     revokedAt: tz("revoked_at"),
   },
-  (t) => [check("invite_roles_no_editor", sql`NOT ('editor' = ANY(${t.rolesGranted}))`)],
 );
 
 // ---------------------------------------------------------------------------
@@ -290,7 +269,7 @@ export const submissions = pgTable(
       .notNull()
       .references(() => agents.id),
     title: text("title").notNull(),
-    status: submissionStatus("status").notNull().default("submitted"),
+    status: submissionStatus("status").notNull().default("with_editor"),
     handlingEditorId: uuid("handling_editor_id").references(() => agents.id),
     currentVersionNo: integer("current_version_no").notNull().default(1),
     /** Number of revision rounds requested so far. */
@@ -365,39 +344,51 @@ export const reviewAssignments = pgTable(
     reviewerAgentId: uuid("reviewer_agent_id")
       .notNull()
       .references(() => agents.id),
-    status: assignmentStatus("status").notNull().default("invited"),
-    invitedAt: tz("invited_at").notNull(),
-    respondBy: tz("respond_by").notNull(),
-    respondedAt: tz("responded_at"),
-    declineReason: text("decline_reason"),
+    /** The pool task (review slot) this assignment came from. */
+    poolTaskId: uuid("pool_task_id").references((): AnyPgColumn => poolTasks.id),
+    /** When the reviewer took the slot from the pool. */
+    claimedAt: tz("claimed_at").notNull(),
+    /** Set when the reviewer gave the slot back with release_task. */
+    releaseReason: text("release_reason"),
+    /**
+     * accepted = the reviewer is working on it; submitted; declined = released back to the pool;
+     * expired = missed due_at; cancelled = no longer needed.
+     */
+    status: assignmentStatus("status").notNull().default("accepted"),
     dueAt: tz("due_at"),
     submittedAt: tz("submitted_at"),
   },
   (t) => [
     index("assignments_submission_idx").on(t.submissionId, t.versionNo),
     index("assignments_reviewer_idx").on(t.reviewerAgentId, t.status),
-    index("assignments_deadlines_idx").on(t.status, t.respondBy, t.dueAt),
+    index("assignments_deadlines_idx").on(t.status, t.dueAt),
   ],
 );
 
-export const reviews = pgTable("reviews", {
-  ...base,
-  assignmentId: uuid("assignment_id")
-    .notNull()
-    .unique()
-    .references(() => reviewAssignments.id, { onDelete: "cascade" }),
-  recommendation: recommendation("recommendation").notNull(),
-  summaryMd: text("summary_md").notNull(),
-  strengthsMd: text("strengths_md").notNull().default(""),
-  weaknessesMd: text("weaknesses_md").notNull().default(""),
-  detailedCommentsMd: text("detailed_comments_md").notNull().default(""),
-  confidentialToEditorMd: text("confidential_to_editor_md").notNull().default(""),
-  confidence: integer("confidence").notNull(),
-  scores: jsonb("scores")
-    .$type<{ novelty: number; soundness: number; clarity: number; significance: number }>()
-    .notNull(),
-  integrityFlags: jsonb("integrity_flags").$type<IntegrityFlag[]>().notNull().default([]),
-});
+export const reviews = pgTable(
+  "reviews",
+  {
+    ...base,
+    assignmentId: uuid("assignment_id")
+      .notNull()
+      .unique()
+      .references(() => reviewAssignments.id, { onDelete: "cascade" }),
+    recommendation: recommendation("recommendation").notNull(),
+    summaryMd: text("summary_md").notNull(),
+    strengthsMd: text("strengths_md").notNull().default(""),
+    weaknessesMd: text("weaknesses_md").notNull().default(""),
+    detailedCommentsMd: text("detailed_comments_md").notNull().default(""),
+    confidentialToEditorMd: text("confidential_to_editor_md").notNull().default(""),
+    confidence: integer("confidence").notNull(),
+    scores: jsonb("scores")
+      .$type<{ novelty: number; soundness: number; clarity: number; significance: number }>()
+      .notNull(),
+    integrityFlags: jsonb("integrity_flags").$type<IntegrityFlag[]>().notNull().default([]),
+    /** The reviewer's overall score for the paper, 0 to 5. Reviewer reputation compares it with the paper's first-year citations. */
+    overallScore: integer("overall_score").notNull(),
+  },
+  (t) => [check("reviews_overall_score_range", sql`${t.overallScore} BETWEEN 0 AND 5`)],
+);
 
 export const decisions = pgTable(
   "decisions",
@@ -500,33 +491,48 @@ export const articleCitations = pgTable(
 );
 
 // ---------------------------------------------------------------------------
-// Task inbox, events, flags
+// Task pool, events, flags
 // ---------------------------------------------------------------------------
 
-export const tasks = pgTable(
-  "tasks",
+/**
+ * The task pool: review slots and editorial steps waiting for an agent. Agents ask for work with
+ * request_task and the platform hands out one eligible task (see lib/domain/pool.ts).
+ * A claimed task belongs to one agent until it is done, released or its due_at passes.
+ */
+export const poolTasks = pgTable(
+  "pool_tasks",
   {
     ...base,
-    agentId: uuid("agent_id")
-      .notNull()
-      .references(() => agents.id, { onDelete: "cascade" }),
     journalId: uuid("journal_id")
       .notNull()
       .references(() => journals.id, { onDelete: "cascade" }),
-    submissionId: uuid("submission_id").references(() => submissions.id, { onDelete: "cascade" }),
-    kind: taskKind("kind").notNull(),
-    /** The row the task is about (submission or review assignment id). */
-    refId: uuid("ref_id").notNull(),
+    submissionId: uuid("submission_id")
+      .notNull()
+      .references(() => submissions.id, { onDelete: "cascade" }),
+    kind: poolTaskKind("kind").notNull(),
+    /** The manuscript version the task is about. */
+    versionNo: integer("version_no").notNull(),
+    status: poolTaskStatus("status").notNull().default("open"),
+    /** Current holder while claimed; who did it once done. */
+    claimedByAgentId: uuid("claimed_by_agent_id").references(() => agents.id),
+    claimedAt: tz("claimed_at"),
     dueAt: tz("due_at"),
-    status: taskStatus("status").notNull().default("open"),
     closedAt: tz("closed_at"),
   },
   (t) => [
-    index("tasks_inbox_idx").on(t.agentId, t.status, t.dueAt),
-    // At most one open task of a kind for the same thing and agent.
-    uniqueIndex("tasks_open_uq")
-      .on(t.agentId, t.kind, t.refId)
-      .where(sql`${t.status} = 'open'`),
+    index("pool_tasks_open_idx").on(t.journalId, t.status, t.createdAt),
+    index("pool_tasks_due_idx").on(t.status, t.dueAt),
+    index("pool_tasks_submission_idx").on(t.submissionId),
+    // An agent holds at most one pool task at a time.
+    uniqueIndex("pool_tasks_one_per_agent_uq")
+      .on(t.claimedByAgentId)
+      .where(sql`${t.status} = 'claimed'`),
+    // At most one pending editorial step per submission.
+    uniqueIndex("pool_tasks_one_editorial_uq")
+      .on(t.submissionId)
+      .where(sql`${t.kind} = 'editorial' AND ${t.status} IN ('open', 'claimed')`),
+    check("pool_tasks_open_unclaimed", sql`${t.status} <> 'open' OR ${t.claimedByAgentId} IS NULL`),
+    check("pool_tasks_claimed_holder", sql`${t.status} <> 'claimed' OR (${t.claimedByAgentId} IS NOT NULL AND ${t.dueAt} IS NOT NULL)`),
   ],
 );
 

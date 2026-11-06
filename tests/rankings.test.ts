@@ -5,19 +5,12 @@ import type { Db } from "@/lib/db/types";
 import type { Actor } from "@/lib/domain/actor";
 import { grantRoles } from "@/lib/domain/agents";
 import { updateOperatorName } from "@/lib/domain/operators";
-import { citationCount, extractCitationRefs } from "@/lib/domain/citations";
+import { citationStats, extractCitationRefs } from "@/lib/domain/citations";
 import { adjustPapercoins } from "@/lib/domain/papercoins";
 import { contributorRanking } from "@/lib/domain/rankings";
-import {
-  inviteReviewers,
-  makeDecision,
-  publishArticle,
-  respondToInvitation,
-  submitManuscript,
-  submitReview,
-} from "@/lib/domain/submissions";
+import { submitManuscript, submitReview } from "@/lib/domain/submissions";
 import { createTestDb } from "./helpers/db";
-import { LETTER, T0, agentFor, createAdmin, createJournal, hours, manuscript, review } from "./helpers/fixtures";
+import { T0, agentFor, createAdmin, createJournal, decide, hours, manuscript, review, sendOut, takeReview } from "./helpers/fixtures";
 
 describe("extractCitationRefs", () => {
   it("finds permanent ids and article URLs, deduplicated", () => {
@@ -48,7 +41,7 @@ describe("contributor rankings", () => {
   });
   afterAll(async () => close());
 
-  async function agent(journalId: string, name: string, roles: ("author" | "reviewer" | "editor")[], operator?: { name?: string; contact: string }) {
+  async function agent(journalId: string, name: string, roles: ("author" | "reviewer")[], operator?: { name?: string; contact: string }) {
     const a = await agentFor(db, admin, name, { email: operator?.contact, operatorName: operator?.name });
     await grantRoles(db, admin, journalId, a.id, roles, T0);
     await adjustPapercoins(db, admin, a.operatorId, 100, "test balance", T0);
@@ -57,7 +50,7 @@ describe("contributor rankings", () => {
 
   async function setupJournal() {
     const j = await createJournal(db, { require_operator_contact: false, max_submissions_per_agent_per_day: 50, max_open_submissions_per_agent: 50 });
-    const editor = await agent(j.id, `Editor-${j.slug}`, ["editor"], { contact: `ed-${j.slug}@x.org` });
+    const editor = await agent(j.id, `Editor-${j.slug}`, ["reviewer"], { contact: `ed-${j.slug}@x.org` });
     const r1 = await agent(j.id, `R1-${j.slug}`, ["reviewer"], { contact: `r1-${j.slug}@x.org` });
     const r2 = await agent(j.id, `R2-${j.slug}`, ["reviewer"], { contact: `r2-${j.slug}@x.org` });
     return { j, editor, r1, r2 };
@@ -67,13 +60,9 @@ describe("contributor rankings", () => {
   async function publish(ctx: Awaited<ReturnType<typeof setupJournal>>, author: Actor & { type: "agent" }, body: string, coAuthorAgentIds: string[] = []) {
     clock = hours(1, clock);
     const { submissionId } = await submitManuscript(db, author, ctx.j.id, manuscript({ bodyMd: body, coAuthorAgentIds }), clock);
-    const { assignments } = await inviteReviewers(db, ctx.editor, submissionId, [ctx.r1.agentId, ctx.r2.agentId], clock);
-    for (const [i, r] of [ctx.r1, ctx.r2].entries()) {
-      await respondToInvitation(db, r, assignments[i]!.assignmentId, true, null, clock);
-      await submitReview(db, r, assignments[i]!.assignmentId, review(), clock);
-    }
-    await makeDecision(db, ctx.editor, submissionId, "accept", LETTER, clock);
-    return publishArticle(db, ctx.editor, submissionId, clock);
+    await sendOut(db, ctx.editor, ctx.j.id, submissionId, clock);
+    for (const r of [ctx.r1, ctx.r2]) await submitReview(db, r, await takeReview(db, r, ctx.j.id, submissionId, clock), review(), clock);
+    return (await decide(db, ctx.editor, ctx.j.id, submissionId, "accept", clock)).article!;
   }
 
   it("counts papers and internal citations per operator, across agents and journals", async () => {
@@ -97,19 +86,23 @@ describe("contributor rankings", () => {
     await publish(B, bob, `See ${a1.publicId} and ${b1.publicId}. `.repeat(10));
     await publish(B, quinn, `Building on ${a1.publicId}, and citing a missing paperocalypse:nope.2026.99. `.repeat(5));
 
-    expect(await citationCount(db, a1.articleId)).toBe(3);
-    expect(await citationCount(db, a2.articleId)).toBe(1);
-    expect(await citationCount(db, b1.articleId)).toBe(1);
+    const cites = async (id: string) => (await citationStats(db, { id, publishedAt: T0 }, clock)).citations;
+    expect(await cites(a1.articleId)).toBe(3);
+    expect(await cites(a2.articleId)).toBe(1);
+    // Bob citing his own b1 is a self-citation and doesn't count.
+    expect(await cites(b1.articleId)).toBe(0);
 
-    // Global, by papers: Alice 2/4, Bob 2/1, Charlie 1/1 (co-author of b1), Quinn 1/0.
+    // Global, by papers: Alice 2/4, Bob 2/0, Charlie 1/0 (co-author of b1), Quinn 1/0.
     const byPapers = await contributorRanking(db, { sort: "papers" });
     const mine = byPapers.filter((r) => ["Alice Smith", "Bob", "Charlie", "Quinn"].includes(r.name));
     expect(mine.map((r) => [r.name, r.papers, r.citations])).toEqual([
       ["Alice Smith", 2, 4],
-      ["Bob", 2, 1],
-      ["Charlie", 1, 1],
+      ["Bob", 2, 0],
+      ["Charlie", 1, 0],
       ["Quinn", 1, 0],
     ]);
+    // No paper is a year old yet, so every author keeps the starting score.
+    expect(mine.every((r) => r.score === 5 && r.isNew)).toBe(true);
     // Ties share a rank.
     expect(mine[0]!.rank).toBe(mine[1]!.rank);
     expect(mine[0]!.agents).toEqual(["Alice-Bot-1", "Alice-Bot-2"]);

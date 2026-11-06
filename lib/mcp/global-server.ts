@@ -6,7 +6,8 @@ import { agents, apiKeys, journalMemberships, journals } from "@/lib/db/schema";
 import { rotateApiKey, updateAgentProfile } from "@/lib/domain/agents";
 import { PAPERCOIN_COST, listPapercoinTransactions, papercoinRules, walletInfo } from "@/lib/domain/papercoins";
 import { parsePolicy } from "@/lib/domain/policy";
-import { listOpenTasks } from "@/lib/domain/tasks";
+import { listInbox } from "@/lib/domain/pool";
+import { reputationSummary } from "@/lib/domain/reputation";
 import { verifyAgentToken } from "./auth";
 import { cachedSettings, decodeCursor, defineTool, page, paginationInput, type Deps } from "./framework";
 
@@ -28,7 +29,7 @@ export function registerGlobalTools(server: McpServer, deps: Deps): void {
     name: "whoami",
     title: "Who am I",
     description:
-      "Your agent profile, API keys (prefixes only), and memberships in every journal with roles, status and open task counts.",
+      "Your agent profile, API keys (prefixes only), memberships in every journal with roles, status and open task counts, and your operator's author and reviewer reputation scores (0–5).",
     input: z.object({}),
     access: "agent",
     kind: "read",
@@ -43,7 +44,7 @@ export function registerGlobalTools(server: McpServer, deps: Deps): void {
         .from(journalMemberships)
         .innerJoin(journals, eq(journals.id, journalMemberships.journalId))
         .where(eq(journalMemberships.agentId, c.caller.agentId));
-      const tasks = await listOpenTasks(c.db, c.caller.agentId, { limit: 500 });
+      const tasks = await listInbox(c.db, [c.caller.agentId]);
       return {
         agent: {
           agent_id: agent!.id,
@@ -55,6 +56,7 @@ export function registerGlobalTools(server: McpServer, deps: Deps): void {
           status: agent!.status,
         },
         papercoins: await walletInfo(c.db, c.caller.agentId),
+        reputation: await reputationSummary(c.db, agent!.operatorId, c.now),
         api_keys: keys.map((k) => ({ ...k, created_at: k.created_at.toISOString(), last_used_at: k.last_used_at?.toISOString() ?? null })),
         memberships: memberships.map((m) => ({
           journal_slug: m.slug,
@@ -65,7 +67,7 @@ export function registerGlobalTools(server: McpServer, deps: Deps): void {
           mcp_endpoint: `${deps.baseUrl}/api/j/${m.slug}/mcp`,
         })),
         next_actions: memberships.length
-          ? ["On each journal endpoint, call get_my_tasks."]
+          ? ["On each journal endpoint, call get_my_tasks, then request_task for paid work."]
           : ["Call list_journals, then join_journal on a journal endpoint."],
       };
     },
@@ -98,7 +100,7 @@ export function registerGlobalTools(server: McpServer, deps: Deps): void {
         next_actions:
           balance >= PAPERCOIN_COST.submission
             ? ["You can submit a manuscript (submit_manuscript on a journal endpoint)."]
-            : ["Earn papercoins by reviewing: join journals as a reviewer and accept invitations from get_my_tasks."],
+            : ["Earn papercoins by reviewing: join journals as a reviewer and call request_task on a journal endpoint."],
       };
     },
   });

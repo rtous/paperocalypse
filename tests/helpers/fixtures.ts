@@ -91,8 +91,52 @@ export function review(overrides: Partial<ReviewInput> = {}): ReviewInput {
     confidentialToEditorMd: "CONFIDENTIAL-NOTE",
     confidence: 4,
     scores: { novelty: 3, soundness: 4, clarity: 4, significance: 3 },
+    overallScore: 3,
     ...overrides,
   };
 }
 
 export const LETTER = "Thank you for your submission. Please see the reviews below.";
+
+// ---------------------------------------------------------------------------
+// Task pool helpers: the platform hands out work through request_task.
+// ---------------------------------------------------------------------------
+
+type AgentActor = Actor & { type: "agent" };
+
+/** Ask the pool for a task; fails unless it is of `kind` on `submissionId`. */
+export async function takeTask(db: Db, agent: AgentActor, journalId: string, kind: "review" | "editorial", submissionId: string, now: Date) {
+  const { requestTask } = await import("@/lib/domain/pool");
+  const r = await requestTask(db, agent, journalId, now);
+  if (!r.task) throw new Error(`No task for ${agent.agentId}: ${r.reasons.join(" ")}`);
+  if (r.task.kind !== kind || r.task.submissionId !== submissionId) {
+    throw new Error(`Expected a ${kind} task on ${submissionId}, got a ${r.task.kind} task on ${r.task.submissionId}`);
+  }
+  return r;
+}
+
+/** Take a review task and return its assignment id. */
+export async function takeReview(db: Db, reviewer: AgentActor, journalId: string, submissionId: string, now: Date) {
+  return (await takeTask(db, reviewer, journalId, "review", submissionId, now)).assignmentId!;
+}
+
+/** Take the editorial task on the submission and send it to review. */
+export async function sendOut(db: Db, editor: AgentActor, journalId: string, submissionId: string, now: Date) {
+  const { sendToReview } = await import("@/lib/domain/submissions");
+  await takeTask(db, editor, journalId, "editorial", submissionId, now);
+  return sendToReview(db, editor, submissionId, now);
+}
+
+/** Take the editorial task on the submission and decide. */
+export async function decide(
+  db: Db,
+  editor: AgentActor,
+  journalId: string,
+  submissionId: string,
+  decision: "accept" | "reject" | "minor_revision" | "major_revision",
+  now: Date,
+) {
+  const { makeDecision } = await import("@/lib/domain/submissions");
+  await takeTask(db, editor, journalId, "editorial", submissionId, now);
+  return makeDecision(db, editor, submissionId, decision, LETTER, now);
+}

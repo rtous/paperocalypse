@@ -1,5 +1,6 @@
 /**
- * Load test for the hot read paths: get_my_tasks, get_manuscript_for_review, list_editor_queue.
+ * Load test for the hot paths: get_my_tasks, get_manuscript_for_review, and request_task over a large
+ * pool (request + release of an editorial task, which scans the open tasks).
  *
  *   npm run loadtest                                  # in-process, fresh PGlite, 300 submissions
  *   npm run loadtest -- --base https://<preview>      # over HTTP (seeds a small journal via DATABASE_URL,
@@ -10,12 +11,13 @@
  */
 import { and, eq } from "drizzle-orm";
 import { admins, journalMemberships, settings } from "@/lib/db/schema";
+import { requestTask } from "@/lib/domain/pool";
 import { createAgent, grantRoles, issueApiKey } from "@/lib/domain/agents";
 import { createJournal, setJournalStatus } from "@/lib/domain/journals";
 import { upsertOperatorFromLogin } from "@/lib/domain/operators";
 import { adjustPapercoins } from "@/lib/domain/papercoins";
 import { DEFAULT_POLICY } from "@/lib/domain/policy";
-import { inviteReviewers, respondToInvitation, submitManuscript } from "@/lib/domain/submissions";
+import { sendToReview, submitManuscript } from "@/lib/domain/submissions";
 import { Agent, createHarness } from "./lib/harness";
 
 
@@ -82,7 +84,7 @@ async function main() {
   );
   await setJournalStatus(db, admin, journal.id, "open", now());
 
-  const mk = async (name: string, roles: ("author" | "reviewer" | "editor")[]) => {
+  const mk = async (name: string, roles: ("author" | "reviewer")[]) => {
     const op = (await upsertOperatorFromLogin(db, { email: `${name}-${slug}@load.test`, name: `Operator of ${name}` }, now()))!;
     const a = await createAgent(db, admin, { displayName: name, operatorId: op.id }, now());
     await grantRoles(db, admin, journal.id, a.id, roles, now());
@@ -90,22 +92,19 @@ async function main() {
     const key = (await db.transaction((tx) => issueApiKey(tx, admin, a.id, "load", now()))).apiKey;
     return { type: "agent" as const, agentId: a.id, key };
   };
-  const editor = await mk("LoadEditor", ["editor"]);
+  const editor = await mk("LoadEditor", ["reviewer"]);
   const authors = await Promise.all(Array.from({ length: big ? 5 : 2 }, (_, i) => mk(`LoadAuthor${i}`, ["author"])));
   const hot = await mk("HotReviewer", ["reviewer"]);
-  const other = await mk("OtherReviewer", ["reviewer"]);
   await db
     .update(journalMemberships)
-    .set({ maxConcurrentReviews: 20, reviewerTopics: ["load", "testing"] })
+    .set({ reviewerTopics: ["load", "testing"] })
     .where(and(eq(journalMemberships.journalId, journal.id)));
 
   const body = "# Introduction\n\n" + "A sentence of a long manuscript, with $x^2$ math and **bold** text. ".repeat(2200); // ~150k chars
-  const assignments: string[] = [];
-  for (let i = 0; i < SUBMISSIONS; i++) {
-    const author = authors[i % authors.length]!;
-    const { submissionId } = await submitManuscript(
+  const submit = (i: number) =>
+    submitManuscript(
       db,
-      author,
+      authors[i % authors.length]!,
       journal.id,
       {
         title: `Load manuscript ${i}`,
@@ -116,25 +115,22 @@ async function main() {
       },
       now(),
     );
-    // Every other submission goes to review until both reviewers reach their limit of 20; the
-    // rest stay with the editor as screening tasks. The hot reviewer accepts, so
-    // get_manuscript_for_review returns the full 150k-character text.
-    if (i % 2 === 0 && assignments.length < 20) {
-      const reviewers = [hot.agentId, other.agentId];
-      try {
-        const r = await inviteReviewers(db, editor, submissionId, reviewers, now());
-        const mine = r.assignments.find((a) => a.reviewerAgentId === hot.agentId);
-        if (mine) {
-          await respondToInvitation(db, hot, mine.assignmentId, true, null, now());
-          assignments.push(mine.assignmentId);
-        }
-      } catch {
-        // A reviewer reached its limit; leave the submission with the editor.
-      }
-    }
+  // The first 20 are screened and sent to review, then HotReviewer takes one review (an agent holds
+  // one pool task at a time), so get_manuscript_for_review returns the full 150k-character text.
+  // The rest stay in the pool as editorial tasks, for request_task to scan.
+  const SENT = Math.min(20, SUBMISSIONS);
+  for (let i = 0; i < SENT; i++) {
+    await submit(i);
+    const r = await requestTask(db, editor, journal.id, now());
+    if (r.task) await sendToReview(db, editor, r.task.submissionId, now());
+  }
+  const hotTask = await requestTask(db, hot, journal.id, now());
+  const assignments = hotTask.task && hotTask.assignmentId ? [hotTask.assignmentId] : [];
+  for (let i = SENT; i < SUBMISSIONS; i++) {
+    await submit(i);
     if (h.mode === "http" && i % 10 === 9) console.log(`  seeded ${i + 1}/${SUBMISSIONS}`);
   }
-  console.log(`  seeded in ${((Date.now() - t0) / 1000).toFixed(1)} s; HotReviewer has ${assignments.length} accepted reviews`);
+  console.log(`  seeded in ${((Date.now() - t0) / 1000).toFixed(1)} s; ${SUBMISSIONS - SENT} editorial tasks in the pool`);
 
   // ---------------------------------------------------------------- load
   const J = `/api/j/${slug}/mcp`;
@@ -146,21 +142,30 @@ async function main() {
   await ed.must(J, "get_my_tasks");
   await rv.must(J, "get_my_tasks");
 
-  type Case = { name: string; agent: Agent; tool: string; args: (i: number) => Record<string, unknown> };
+  type Case = { name: string; agent: Agent; run: (a: Agent, i: number) => Promise<unknown>; concurrency?: number };
   const cases: Case[] = [
-    { name: "get_my_tasks (editor, 20)", agent: ed, tool: "get_my_tasks", args: () => ({ limit: 20 }) },
-    { name: "get_my_tasks (editor, 100)", agent: ed, tool: "get_my_tasks", args: () => ({ limit: 100 }) },
-    { name: "get_my_tasks (reviewer)", agent: rv, tool: "get_my_tasks", args: () => ({}) },
-    { name: "get_manuscript_for_review (150k)", agent: rv, tool: "get_manuscript_for_review", args: (i) => ({ assignment_id: assignments[i % assignments.length] }) },
-    { name: "list_editor_queue", agent: ed, tool: "list_editor_queue", args: () => ({}) },
+    { name: "get_my_tasks (editor)", agent: ed, run: (a) => a.must(J, "get_my_tasks", { limit: 20 }) },
+    { name: "get_my_tasks (reviewer)", agent: rv, run: (a) => a.must(J, "get_my_tasks", {}) },
+    { name: "get_manuscript_for_review (150k)", agent: rv, run: (a, i) => a.must(J, "get_manuscript_for_review", { assignment_id: assignments[i % assignments.length] }) },
+    {
+      // One agent holds one task at a time, so these run one after another.
+      name: "request_task + release_task (editorial pool)",
+      agent: ed,
+      concurrency: 1,
+      run: async (a) => {
+        const r = await a.must(J, "request_task", {});
+        if (r.task) await a.must(J, "release_task", { task_id: r.task.task_id });
+        return r;
+      },
+    },
   ];
 
   const rows: string[] = [];
   for (const c of cases) {
     const q0 = h.queryCount();
-    const results = await pool(CALLS, CONCURRENCY, async (i) => {
+    const results = await pool(CALLS, c.concurrency ?? CONCURRENCY, async (i) => {
       const t = performance.now();
-      const r = await c.agent.must(J, c.tool, c.args(i));
+      const r = await c.run(c.agent, i);
       return { ms: performance.now() - t, bytes: JSON.stringify(r).length };
     });
     const ms = results.map((r) => r.ms);

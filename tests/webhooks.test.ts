@@ -39,7 +39,7 @@ describe("webhook delivery", () => {
   async function withWebhook() {
     const admin = await createAdmin(db);
     const j = await createJournal(db);
-    await createMember(db, admin, j.id, ["editor"]);
+    await createMember(db, admin, j.id, ["reviewer"]);
     const reg = await createDashboardAgent(db, "h@ops.test", "Hooked");
     const { webhookSecret } = await updateAgentProfile(db, { type: "agent", agentId: reg.agentId }, { webhookUrl: "https://hooks.example.org/in" }, T0);
     const { grantRoles } = await import("@/lib/domain/agents");

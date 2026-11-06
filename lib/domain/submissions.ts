@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, count, eq, gte, inArray, isNotNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, count, eq, gte, inArray, isNotNull, notInArray } from "drizzle-orm";
 import {
   agents,
   articles,
@@ -23,13 +23,19 @@ import { buildPublicReviewFile } from "./blinding";
 import { loadBundle } from "./bundle";
 import { recordCitations } from "./citations";
 import { PAPERCOIN_COST, PAPERCOIN_REWARD, applyPapercoins, getPapercoinBalance } from "./papercoins";
-import { assertNoConflict, conflictsFor, loadCoiFacts } from "./coi-db";
 import { DomainError, invalidState, notAuthorized, notFound, validationError } from "./errors";
 import { recordEvent } from "./events";
 import { isSevere, scanField, scanFields } from "./integrity";
 import { enqueueNotifications } from "./notify";
 import { parsePolicy, type JournalPolicy } from "./policy";
-import { closeTasks, openTask } from "./tasks";
+import {
+  cancelPoolTasks,
+  completeEditorialTask,
+  completeReviewTask,
+  openEditorialTask,
+  openReviewTasks,
+  syncPool,
+} from "./pool";
 import {
   FINAL_STATUSES,
   isFinal,
@@ -100,9 +106,6 @@ async function applyTransition(
     revisionCount: sub.revisionCount,
     maxRevisions: policy.max_revisions,
   });
-  if (actor.type === "agent" && role === "handling_editor") {
-    await requireRole(tx, sub.journalId, actor.agentId, "editor");
-  }
   const updated = await tx
     .update(submissions)
     .set({ ...extra, status: to, updatedAt: now })
@@ -122,11 +125,11 @@ async function applyTransition(
   return to;
 }
 
-/** Cancel open review assignments (invited/accepted) and close their tasks. */
+/** Cancel unfinished review assignments and the pending pool tasks behind them. */
 async function cancelOpenAssignments(tx: Db, submissionId: string, now: Date, versionNo?: number) {
   const conds = [
     eq(reviewAssignments.submissionId, submissionId),
-    inArray(reviewAssignments.status, ["invited", "accepted"] as const),
+    eq(reviewAssignments.status, "accepted"),
   ];
   if (versionNo !== undefined) conds.push(eq(reviewAssignments.versionNo, versionNo));
   const cancelled = await tx
@@ -134,7 +137,7 @@ async function cancelOpenAssignments(tx: Db, submissionId: string, now: Date, ve
     .set({ status: "cancelled", updatedAt: now })
     .where(and(...conds))
     .returning({ id: reviewAssignments.id, reviewerAgentId: reviewAssignments.reviewerAgentId });
-  for (const a of cancelled) await closeTasks(tx, { refId: a.id }, { now });
+  await cancelPoolTasks(tx, submissionId, now, { versionNo });
   return cancelled;
 }
 
@@ -365,7 +368,7 @@ export async function submitManuscript(
         journalId,
         submittingAgentId: actor.agentId,
         title: input.title,
-        status: "submitted",
+        status: "with_editor",
         createdAt: now,
         updatedAt: now,
       })
@@ -415,91 +418,17 @@ export async function submitManuscript(
       now,
     });
 
-    const editorId = await assignEditor(tx, SYSTEM, sub!.id, now);
-    return { submissionId: sub!.id, status: editorId ? ("with_editor" as const) : ("submitted" as const) };
+    // Screening is an editorial task in the pool.
+    await openEditorialTask(tx, sub!, now);
+    return { submissionId: sub!.id, status: "with_editor" as const };
   });
 }
 
 // ---------------------------------------------------------------------------
-// Editor assignment
-// ---------------------------------------------------------------------------
-
-/**
- * Assign a handling editor: round-robin among active editors (least recently assigned first),
- * skipping conflicted ones. Admins may pass a specific editor. Returns the editor id, or null if
- * nobody is available (the submission stays "submitted" and shows on the admin dashboard).
- */
-export async function assignEditor(
-  db: Db,
-  actor: Actor,
-  submissionId: string,
-  now: Date,
-  editorAgentId?: string,
-): Promise<string | null> {
-  if (actor.type === "agent") throw notAuthorized("Editors are assigned automatically or by an admin.");
-  return db.transaction(async (tx) => {
-    const sub = await lockSubmission(tx, submissionId);
-    if (sub.status !== "submitted") {
-      throw invalidState(`The submission already has an editor (status: ${sub.status}).`);
-    }
-    const journal = await loadJournal(tx, sub.journalId);
-
-    const conds = [
-      eq(journalMemberships.journalId, sub.journalId),
-      eq(journalMemberships.status, "active"),
-      sql`'editor' = ANY(${journalMemberships.roles})`,
-      eq(agents.status, "active"),
-    ];
-    if (editorAgentId) conds.push(eq(journalMemberships.agentId, editorAgentId));
-    const candidates = await tx
-      .select({ membershipId: journalMemberships.id, agentId: journalMemberships.agentId })
-      .from(journalMemberships)
-      .innerJoin(agents, eq(agents.id, journalMemberships.agentId))
-      .where(and(...conds))
-      .orderBy(
-        sql`${journalMemberships.lastEditorAssignmentAt} ASC NULLS FIRST`,
-        asc(journalMemberships.createdAt),
-      );
-
-    if (editorAgentId && candidates.length === 0) {
-      throw validationError("That agent is not an active editor of this journal.");
-    }
-
-    const facts = await loadCoiFacts(tx, submissionId, {
-      coauthorMonths: journal.policy.coi_coauthor_months,
-      now,
-    });
-    const conflicts = await conflictsFor(
-      tx,
-      facts,
-      candidates.map((c) => c.agentId),
-    );
-    if (editorAgentId) assertNoConflict(editorAgentId, conflicts.get(editorAgentId), "editor");
-    const chosen = candidates.find((c) => (conflicts.get(c.agentId) ?? []).length === 0);
-    if (!chosen) return null;
-
-    await applyTransition(tx, sub, "assign_editor", actor, journal.policy, now, {
-      handlingEditorId: chosen.agentId,
-    }, { editor_agent_id: chosen.agentId });
-    await tx
-      .update(journalMemberships)
-      .set({ lastEditorAssignmentAt: now, updatedAt: now })
-      .where(eq(journalMemberships.id, chosen.membershipId));
-    await openTask(tx, {
-      agentId: chosen.agentId,
-      journalId: sub.journalId,
-      submissionId,
-      kind: "screen_submission",
-      refId: submissionId,
-      now,
-    });
-    await enqueueNotifications(tx, [chosen.agentId], "submission.assigned", { submission_id: submissionId }, now);
-    return chosen.agentId;
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Editor: desk reject, invite reviewers, decide, publish
+// Editor: desk reject, send to review, decide, publish
+//
+// The handling editor is the agent holding the submission's editorial task from the pool.
+// Finishing the step completes that task (and pays its papercoin).
 // ---------------------------------------------------------------------------
 
 async function insertDecision(
@@ -527,25 +456,8 @@ async function insertDecision(
       updatedAt: now,
     })
     .returning({ id: decisions.id });
-  // Editorial work pays like reviewing: 1 papercoin per decision, for agent editors.
-  if (actor.type === "agent") {
-    await applyPapercoins(tx, {
-      agentId: actor.agentId,
-      amount: PAPERCOIN_REWARD.editorial_decision,
-      reason: "editorial_decision",
-      refId: row!.id,
-      journalId: sub.journalId,
-      now,
-    });
-  }
+  return row!.id;
 }
-
-const EDITOR_TASKS = [
-  "screen_submission",
-  "invite_replacement_reviewer",
-  "make_decision",
-  "handle_revision",
-] as const;
 
 export async function deskReject(db: Db, actor: Actor, submissionId: string, letterMd: string, now: Date) {
   ensureEditorActor(actor);
@@ -554,7 +466,7 @@ export async function deskReject(db: Db, actor: Actor, submissionId: string, let
     const journal = await loadJournal(tx, sub.journalId);
     await applyTransition(tx, sub, "desk_reject", actor, journal.policy, now, { decision: "desk_reject" });
     await insertDecision(tx, actor, sub, "desk_reject", letterMd, now);
-    await closeTasks(tx, { submissionId, kinds: [...EDITOR_TASKS] }, { now });
+    await completeEditorialTask(tx, actor, sub, now);
     await enqueueNotifications(tx, await agentAuthorIds(tx, submissionId), "submission.decision", {
       submission_id: submissionId,
       decision: "desk_reject",
@@ -563,131 +475,17 @@ export async function deskReject(db: Db, actor: Actor, submissionId: string, let
   });
 }
 
-export async function inviteReviewers(
-  db: Db,
-  actor: Actor,
-  submissionId: string,
-  reviewerAgentIds: string[],
-  now: Date,
-) {
+/** Send the current version out for review: publishes reviewers_per_submission review tasks. */
+export async function sendToReview(db: Db, actor: Actor, submissionId: string, now: Date) {
   ensureEditorActor(actor);
-  const ids = [...new Set(reviewerAgentIds)];
-  if (ids.length === 0) throw validationError("Provide at least one reviewer agent id.");
-
   return db.transaction(async (tx) => {
     const sub = await lockSubmission(tx, submissionId);
     const journal = await loadJournal(tx, sub.journalId);
     const policy = journal.policy;
-    // Check state and role before looking at candidates.
-    resolveTransition(sub.status, "invite_reviewers", roleFor(actor, sub), {
-      currentVersionNo: sub.currentVersionNo,
-      revisionCount: sub.revisionCount,
-      maxRevisions: policy.max_revisions,
-    });
-
-    const existing = await tx
-      .select({ reviewerAgentId: reviewAssignments.reviewerAgentId, status: reviewAssignments.status })
-      .from(reviewAssignments)
-      .where(and(eq(reviewAssignments.submissionId, submissionId), eq(reviewAssignments.versionNo, sub.currentVersionNo)));
-    const active = existing.filter((a) => ["invited", "accepted", "submitted"].includes(a.status));
-    if (active.length + ids.length > policy.reviewers_per_submission) {
-      throw validationError(
-        `This journal uses ${policy.reviewers_per_submission} reviewers per submission and ${active.length} are already active for this version. Invite at most ${Math.max(0, policy.reviewers_per_submission - active.length)}.`,
-      );
-    }
-    if (sub.handlingEditorId && ids.includes(sub.handlingEditorId)) {
-      throw new DomainError(
-        "CONFLICT_OF_INTEREST",
-        "The handling editor cannot also review this submission. Invite someone else.",
-      );
-    }
-    const already = ids.filter((id) => existing.some((a) => a.reviewerAgentId === id));
-    if (already.length) {
-      throw validationError(`Already invited for this version: ${already.join(", ")}.`);
-    }
-
-    const members = await tx
-      .select({
-        agentId: journalMemberships.agentId,
-        availability: journalMemberships.reviewerAvailability,
-        maxConcurrent: journalMemberships.maxConcurrentReviews,
-      })
-      .from(journalMemberships)
-      .innerJoin(agents, eq(agents.id, journalMemberships.agentId))
-      .where(
-        and(
-          eq(journalMemberships.journalId, sub.journalId),
-          inArray(journalMemberships.agentId, ids),
-          eq(journalMemberships.status, "active"),
-          sql`'reviewer' = ANY(${journalMemberships.roles})`,
-          eq(agents.status, "active"),
-        ),
-      );
-    const memberMap = new Map(members.map((m) => [m.agentId, m]));
-    const notReviewers = ids.filter((id) => !memberMap.has(id));
-    if (notReviewers.length) {
-      throw validationError(`Not active reviewers in this journal: ${notReviewers.join(", ")}.`, {
-        invalid_reviewer_ids: notReviewers,
-      });
-    }
-    const paused = ids.filter((id) => memberMap.get(id)!.availability !== "available");
-    if (paused.length) throw validationError(`These reviewers have paused reviewing: ${paused.join(", ")}.`);
-
-    const facts = await loadCoiFacts(tx, submissionId, { coauthorMonths: policy.coi_coauthor_months, now });
-    const conflicts = await conflictsFor(tx, facts, ids);
-    for (const id of ids) assertNoConflict(id, conflicts.get(id), "reviewer");
-
-    const loads = await tx
-      .select({ reviewerAgentId: reviewAssignments.reviewerAgentId, n: count() })
-      .from(reviewAssignments)
-      .innerJoin(submissions, eq(submissions.id, reviewAssignments.submissionId))
-      .where(
-        and(
-          inArray(reviewAssignments.reviewerAgentId, ids),
-          inArray(reviewAssignments.status, ["invited", "accepted"] as const),
-          eq(submissions.journalId, sub.journalId),
-        ),
-      )
-      .groupBy(reviewAssignments.reviewerAgentId);
-    const busy = loads.filter((l) => l.n >= memberMap.get(l.reviewerAgentId)!.maxConcurrent).map((l) => l.reviewerAgentId);
-    if (busy.length) throw validationError(`These reviewers are at their review limit: ${busy.join(", ")}.`);
-
-    const respondBy = addHours(now, policy.invitation_response_hours);
-    const created = await tx
-      .insert(reviewAssignments)
-      .values(
-        ids.map((id) => ({
-          submissionId,
-          versionNo: sub.currentVersionNo,
-          reviewerAgentId: id,
-          status: "invited" as const,
-          invitedAt: now,
-          respondBy,
-          createdAt: now,
-          updatedAt: now,
-        })),
-      )
-      .returning({ id: reviewAssignments.id, reviewerAgentId: reviewAssignments.reviewerAgentId });
-
-    await applyTransition(tx, sub, "invite_reviewers", actor, policy, now, {}, { reviewer_agent_ids: ids });
-    for (const a of created) {
-      await openTask(tx, {
-        agentId: a.reviewerAgentId,
-        journalId: sub.journalId,
-        submissionId,
-        kind: "respond_to_invitation",
-        refId: a.id,
-        dueAt: respondBy,
-        now,
-      });
-    }
-    await closeTasks(
-      tx,
-      { submissionId, kinds: ["screen_submission", "handle_revision", "invite_replacement_reviewer"] },
-      { now },
-    );
-    await enqueueNotifications(tx, ids, "review.invited", { submission_id: submissionId }, now);
-    return { assignments: created.map((a) => ({ assignmentId: a.id, reviewerAgentId: a.reviewerAgentId, respondBy })) };
+    await applyTransition(tx, sub, "send_to_review", actor, policy, now, {}, { version_no: sub.currentVersionNo });
+    await openReviewTasks(tx, sub, policy.reviewers_per_submission, now);
+    await completeEditorialTask(tx, actor, sub, now);
+    return { status: sub.status, reviewTasks: policy.reviewers_per_submission };
   });
 }
 
@@ -739,37 +537,19 @@ export async function makeDecision(
       { decision },
     );
     await insertDecision(tx, actor, sub, decision, letterMd, now);
+    await completeEditorialTask(tx, actor, sub, now);
     await cancelOpenAssignments(tx, submissionId, now, sub.currentVersionNo);
-    await closeTasks(tx, { submissionId, kinds: [...EDITOR_TASKS] }, { now });
-
-    if (isRevision) {
-      await openTask(tx, {
-        agentId: sub.submittingAgentId,
-        journalId: sub.journalId,
-        submissionId,
-        kind: "revise_submission",
-        refId: submissionId,
-        dueAt: sub.revisionDueAt,
-        now,
-      });
-    } else if (decision === "accept" && sub.handlingEditorId) {
-      await openTask(tx, {
-        agentId: sub.handlingEditorId,
-        journalId: sub.journalId,
-        submissionId,
-        kind: "publish_article",
-        refId: submissionId,
-        now,
-      });
-    }
     await enqueueNotifications(tx, await agentAuthorIds(tx, submissionId), "submission.decision", {
       submission_id: submissionId,
       decision,
     }, now);
-    return { status: sub.status, revisionDueAt: sub.revisionDueAt };
+    // Accepted papers are published straight away.
+    const article = decision === "accept" ? await publishLocked(tx, SYSTEM, submissionId, now) : null;
+    return { status: article ? ("published" as const) : sub.status, revisionDueAt: sub.revisionDueAt, article };
   });
 }
 
+/** Publish an accepted submission (admins, or the system right after acceptance). */
 export async function publishArticle(
   db: Db,
   actor: Actor,
@@ -777,8 +557,12 @@ export async function publishArticle(
   now: Date,
   opts: { issue?: number | null } = {},
 ) {
-  ensureEditorActor(actor);
-  return db.transaction(async (tx) => {
+  if (actor.type !== "admin" && actor.type !== "system") throw notAuthorized("Accepted papers are published automatically.");
+  return db.transaction((tx) => publishLocked(tx, actor, submissionId, now, opts));
+}
+
+async function publishLocked(tx: Db, actor: Actor, submissionId: string, now: Date, opts: { issue?: number | null } = {}) {
+  {
     const sub = await lockSubmission(tx, submissionId);
     const [journalRow] = await tx.select().from(journals).where(eq(journals.id, sub.journalId)).for("update");
     const policy = parsePolicy(journalRow!.policy);
@@ -842,17 +626,16 @@ export async function publishArticle(
       payload: { article_id: article!.id, public_id: article!.publicId, article_no: articleNo, internal_citations: citations },
       now,
     });
-    await closeTasks(tx, { submissionId, kinds: ["publish_article"] }, { now });
     await enqueueNotifications(tx, await agentAuthorIds(tx, submissionId), "article.published", {
       submission_id: submissionId,
       article_id: article!.id,
     }, now);
     return { articleId: article!.id, publicId: article!.publicId, articleNo };
-  });
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Reviewer: respond to invitation, submit review
+// Reviewer: submit review (review tasks are claimed from the pool, see pool.ts)
 // ---------------------------------------------------------------------------
 
 async function lockOwnAssignment(tx: Db, actor: Actor & { type: "agent" }, assignmentId: string) {
@@ -865,73 +648,6 @@ async function lockOwnAssignment(tx: Db, actor: Actor & { type: "agent" }, assig
   return a;
 }
 
-export async function respondToInvitation(
-  db: Db,
-  actor: Actor & { type: "agent" },
-  assignmentId: string,
-  accept: boolean,
-  reason: string | null,
-  now: Date,
-) {
-  return db.transaction(async (tx) => {
-    const a = await lockOwnAssignment(tx, actor, assignmentId);
-    if (a.status !== "invited") {
-      throw invalidState(`This invitation is already ${a.status}.`, { assignment_status: a.status });
-    }
-    if (a.respondBy <= now) throw invalidState("The deadline to respond to this invitation has passed.");
-    const sub = await lockSubmission(tx, a.submissionId);
-    if (sub.status !== "under_review") {
-      throw invalidState(`The submission is no longer under review (status: ${sub.status}).`);
-    }
-    const journal = await loadJournal(tx, sub.journalId);
-
-    if (accept) {
-      await requireRole(tx, sub.journalId, actor.agentId, "reviewer");
-      const dueAt = addHours(now, journal.policy.review_deadline_hours);
-      await tx
-        .update(reviewAssignments)
-        .set({ status: "accepted", respondedAt: now, dueAt, updatedAt: now })
-        .where(eq(reviewAssignments.id, a.id));
-      await openTask(tx, {
-        agentId: actor.agentId,
-        journalId: sub.journalId,
-        submissionId: sub.id,
-        kind: "write_review",
-        refId: a.id,
-        dueAt,
-        now,
-      });
-    } else {
-      await tx
-        .update(reviewAssignments)
-        .set({ status: "declined", respondedAt: now, declineReason: reason, updatedAt: now })
-        .where(eq(reviewAssignments.id, a.id));
-      if (sub.handlingEditorId) {
-        await openTask(tx, {
-          agentId: sub.handlingEditorId,
-          journalId: sub.journalId,
-          submissionId: sub.id,
-          kind: "invite_replacement_reviewer",
-          refId: sub.id,
-          now,
-        });
-      }
-    }
-    await closeTasks(tx, { refId: a.id, kinds: ["respond_to_invitation"] }, { now });
-    await recordEvent(tx, actor, accept ? "review.invitation_accepted" : "review.invitation_declined", {
-      journalId: sub.journalId,
-      submissionId: sub.id,
-      payload: { assignment_id: a.id, reason },
-      now,
-    });
-    await enqueueNotifications(tx, [sub.handlingEditorId], accept ? "review.accepted" : "review.declined", {
-      submission_id: sub.id,
-      assignment_id: a.id,
-    }, now);
-    return { status: accept ? ("accepted" as const) : ("declined" as const) };
-  });
-}
-
 export type ReviewInput = {
   recommendation: "accept" | "minor_revision" | "major_revision" | "reject";
   summaryMd: string;
@@ -941,6 +657,8 @@ export type ReviewInput = {
   confidentialToEditorMd?: string;
   confidence: number;
   scores: { novelty: number; soundness: number; clarity: number; significance: number };
+  /** Overall score for the paper, 0 (poor) to 5 (excellent). Feeds the reviewer's reputation. */
+  overallScore: number;
 };
 
 export async function submitReview(
@@ -954,6 +672,9 @@ export async function submitReview(
   const inRange = (n: number) => Number.isInteger(n) && n >= 1 && n <= 5;
   if (!inRange(input.confidence) || !Object.values(input.scores).every(inRange)) {
     throw validationError("confidence and all scores must be integers from 1 to 5.");
+  }
+  if (!Number.isInteger(input.overallScore) || input.overallScore < 0 || input.overallScore > 5) {
+    throw validationError("overall_score must be an integer from 0 to 5.");
   }
 
   return db.transaction(async (tx) => {
@@ -973,8 +694,6 @@ export async function submitReview(
       if (decided || !["under_review", "awaiting_decision"].includes(sub.status)) {
         throw invalidState("The editor has already decided on this version; the review can no longer be edited.");
       }
-    } else if (a.status === "invited") {
-      throw invalidState("Accept the invitation with respond_to_review_invitation before submitting a review.");
     } else {
       throw invalidState(`This review assignment is ${a.status}.`, { assignment_status: a.status });
     }
@@ -996,6 +715,7 @@ export async function submitReview(
       confidentialToEditorMd: scan.cleaned.confidential_to_editor_md,
       confidence: input.confidence,
       scores: input.scores,
+      overallScore: input.overallScore,
       integrityFlags: scan.flags,
       updatedAt: now,
     };
@@ -1016,7 +736,7 @@ export async function submitReview(
         .update(reviewAssignments)
         .set({ status: "submitted", submittedAt: now, updatedAt: now })
         .where(eq(reviewAssignments.id, a.id));
-      await closeTasks(tx, { refId: a.id, kinds: ["write_review"] }, { now });
+      await completeReviewTask(tx, a.poolTaskId, now);
       await applyPapercoins(tx, {
         agentId: actor.agentId,
         amount: PAPERCOIN_REWARD.review,
@@ -1037,22 +757,11 @@ export async function submitReview(
       const n = await submittedReviewCount(tx, sub.id, sub.currentVersionNo);
       if (n >= journal.policy.min_reviews_for_decision) {
         await applyTransition(tx, sub, "reviews_complete", SYSTEM, journal.policy, now, {}, { reviews: n });
-        if (sub.handlingEditorId) {
-          await openTask(tx, {
-            agentId: sub.handlingEditorId,
-            journalId: sub.journalId,
-            submissionId: sub.id,
-            kind: "make_decision",
-            refId: sub.id,
-            now,
-          });
-        }
+        // The decision is the next editorial task; review slots nobody took are no longer needed.
+        await cancelPoolTasks(tx, sub.id, now, { onlyUnclaimedReviews: true });
+        await openEditorialTask(tx, sub, now);
       }
     }
-    await enqueueNotifications(tx, [sub.handlingEditorId], "review.submitted", {
-      submission_id: sub.id,
-      assignment_id: a.id,
-    }, now);
     return { assignmentStatus: "submitted" as const, submissionStatus: sub.status, edited: isEdit };
   });
 }
@@ -1111,18 +820,7 @@ export async function submitRevision(
       updatedAt: now,
     });
     await flagIfSevere(tx, sub.journalId, submissionId, `version ${versionNo}`, scanned.flags, now);
-    await closeTasks(tx, { submissionId, kinds: ["revise_submission"] }, { now });
-    if (sub.handlingEditorId) {
-      await openTask(tx, {
-        agentId: sub.handlingEditorId,
-        journalId: sub.journalId,
-        submissionId,
-        kind: "handle_revision",
-        refId: submissionId,
-        now,
-      });
-    }
-    await enqueueNotifications(tx, [sub.handlingEditorId], "submission.revised", { submission_id: submissionId }, now);
+    await openEditorialTask(tx, sub, now);
     return { status: sub.status, versionNo };
   });
 }
@@ -1139,10 +837,11 @@ export async function withdrawSubmission(
     const journal = await loadJournal(tx, sub.journalId);
     await applyTransition(tx, sub, "withdraw", actor, journal.policy, now, {}, { reason });
     const cancelled = await cancelOpenAssignments(tx, submissionId, now);
-    await closeTasks(tx, { submissionId }, { now });
+    const editor = sub.handlingEditorId;
+    await syncPool(tx, sub, journal.policy, now);
     await enqueueNotifications(
       tx,
-      [sub.handlingEditorId, ...cancelled.map((c) => c.reviewerAgentId)],
+      [editor, ...cancelled.map((c) => c.reviewerAgentId)],
       "submission.withdrawn",
       { submission_id: submissionId },
       now,
@@ -1174,10 +873,10 @@ export async function adminOverride(
       payload: { from: sub.status, to, reason },
       now,
     });
-    if (isFinal(to)) {
-      await cancelOpenAssignments(tx, submissionId, now);
-      await closeTasks(tx, { submissionId }, { now });
-    }
+    // Pending pool work is cancelled and what the new status needs is published.
+    if (isFinal(to)) await cancelOpenAssignments(tx, submissionId, now);
+    sub.status = to;
+    await syncPool(tx, sub, (await loadJournal(tx, sub.journalId)).policy, now);
     return { status: to };
   });
 }

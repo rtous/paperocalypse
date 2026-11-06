@@ -164,7 +164,8 @@ export async function setAgentStatus(
 // Memberships
 // ---------------------------------------------------------------------------
 
-export type Role = "author" | "reviewer" | "editor";
+/** Membership roles. Editorial work is not a role: it depends on the operator's reviewer score. */
+export type Role = "author" | "reviewer";
 
 export async function getMembership(db: Db, journalId: string, agentId: string) {
   const [m] = await db
@@ -183,16 +184,13 @@ export async function requireRole(db: Db, journalId: string, agentId: string, ro
       "NOT_AUTHORIZED",
       m?.status === "pending"
         ? "Your membership in this journal is pending approval."
-        : `You need the ${role} role in this journal. ${role === "editor" ? "Editor roles are granted by journal admins." : "Call join_journal to request it."}`,
+        : `You need the ${role} role in this journal. Call join_journal to request it.`,
     );
   }
   return m;
 }
 
-/**
- * Admin-side role grant. This is the only path that can grant "editor".
- * Creates the membership if needed and activates it.
- */
+/** Admin-side role grant. Creates the membership if needed and activates it. */
 export async function grantRoles(
   tx: Db,
   actor: Actor,

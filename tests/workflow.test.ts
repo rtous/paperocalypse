@@ -14,7 +14,6 @@ import {
 // test catches accidental edits to the table.
 const ED: ActorRole[] = ["handling_editor", "admin"];
 const NON_FINAL: SubmissionStatus[] = [
-  "submitted",
   "with_editor",
   "under_review",
   "awaiting_decision",
@@ -23,10 +22,8 @@ const NON_FINAL: SubmissionStatus[] = [
 ];
 type Row = [SubmissionStatus, WorkflowAction, SubmissionStatus, ActorRole[], ("revision" | "remaining")[]];
 const EXPECTED: Row[] = [
-  ["submitted", "assign_editor", "with_editor", ["system", "admin"], []],
   ["with_editor", "desk_reject", "rejected", ED, []],
-  ["with_editor", "invite_reviewers", "under_review", ED, []],
-  ["under_review", "invite_reviewers", "under_review", ED, []],
+  ["with_editor", "send_to_review", "under_review", ED, []],
   ["under_review", "reviews_complete", "awaiting_decision", ["system"], []],
   ["awaiting_decision", "decide_reject", "rejected", ED, []],
   ["awaiting_decision", "decide_major_revision", "revision_requested", ED, ["remaining"]],
@@ -38,14 +35,13 @@ const EXPECTED: Row[] = [
   ["with_editor", "decide_accept", "accepted", ED, ["revision"]],
   ["revision_requested", "submit_revision", "with_editor", ["author"], []],
   ["revision_requested", "revision_expired", "withdrawn", ["system"], []],
-  ["accepted", "publish", "published", ED, []],
+  ["accepted", "publish", "published", ["system", "admin"], []],
   ...NON_FINAL.map((s): Row => [s, "withdraw", "withdrawn", ["author"], []]),
 ];
 
 const ACTIONS: WorkflowAction[] = [
-  "assign_editor",
   "desk_reject",
-  "invite_reviewers",
+  "send_to_review",
   "reviews_complete",
   "decide_reject",
   "decide_major_revision",
@@ -144,7 +140,7 @@ describe("admin override", () => {
   });
 
   it("requires a reason and a change", () => {
-    expect(codeOf(() => resolveAdminOverride("submitted", "rejected", " "))).toBe("VALIDATION_ERROR");
-    expect(codeOf(() => resolveAdminOverride("submitted", "submitted", "no-op change"))).toBe("INVALID_STATE");
+    expect(codeOf(() => resolveAdminOverride("with_editor", "rejected", " "))).toBe("VALIDATION_ERROR");
+    expect(codeOf(() => resolveAdminOverride("with_editor", "with_editor", "no-op change"))).toBe("INVALID_STATE");
   });
 });

@@ -1,14 +1,14 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { and, eq, sql } from "drizzle-orm";
-import { assignEditorAction, overrideAction } from "@/app/admin/actions";
+import { asc, eq } from "drizzle-orm";
+import { overrideAction } from "@/app/admin/actions";
 import { ActionForm } from "@/components/admin/action-form";
 import { EventList } from "@/components/admin/event-list";
 import { Field, StatusBadge, fmt, selectClass } from "@/components/admin/field";
 import { PageTitle, Section } from "@/components/admin/page-title";
 import { Textarea } from "@/components/ui/textarea";
 import { getDb } from "@/lib/db";
-import { agents, journalMemberships, journals } from "@/lib/db/schema";
+import { agents, journals, poolTasks } from "@/lib/db/schema";
 import { serializeForEditor } from "@/lib/domain/blinding";
 import { loadBundle } from "@/lib/domain/bundle";
 import { listSubmissionEvents } from "@/lib/domain/events";
@@ -23,19 +23,14 @@ export default async function SubmissionPage({ params }: { params: Promise<{ id:
   if (!bundle) notFound();
   const view = serializeForEditor(bundle);
   const [journal] = await db.select().from(journals).where(eq(journals.id, bundle.submission.journal_id));
-  const [history, editors] = await Promise.all([
+  const [history, pool] = await Promise.all([
     listSubmissionEvents(db, id),
     db
-      .select({ id: agents.id, name: agents.displayName })
-      .from(journalMemberships)
-      .innerJoin(agents, eq(agents.id, journalMemberships.agentId))
-      .where(
-        and(
-          eq(journalMemberships.journalId, bundle.submission.journal_id),
-          eq(journalMemberships.status, "active"),
-          sql`'editor' = ANY(${journalMemberships.roles})`,
-        ),
-      ),
+      .select({ task: poolTasks, holder: agents.displayName })
+      .from(poolTasks)
+      .leftJoin(agents, eq(agents.id, poolTasks.claimedByAgentId))
+      .where(eq(poolTasks.submissionId, id))
+      .orderBy(asc(poolTasks.createdAt)),
   ]);
   const current = view.versions.at(-1)!;
 
@@ -89,19 +84,19 @@ export default async function SubmissionPage({ params }: { params: Promise<{ id:
           </Section>
 
           <Section title={`Reviews (${view.reviews.length})`}>
-            {view.assignments.length === 0 && <p className="text-sm text-stone-500">No reviewers invited.</p>}
+            {view.assignments.length === 0 && <p className="text-sm text-stone-500">No reviewer has taken a review task yet.</p>}
             <ul className="space-y-1 text-sm">
               {view.assignments.map((a) => (
                 <li key={a.assignment_id}>
                   v{a.version_no} · {a.reviewer_label} ({a.reviewer.display_name}) · <StatusBadge status={a.status} /> · due{" "}
-                  {fmt(a.due_at ?? a.respond_by)}
+                  {fmt(a.due_at)}
                 </li>
               ))}
             </ul>
             {view.reviews.map((r) => (
               <details key={r.assignment_id} className="mt-3 rounded-lg border p-3">
                 <summary className="cursor-pointer text-sm">
-                  v{r.version_no} · {r.reviewer_label}: <b>{r.recommendation}</b> (confidence {r.confidence})
+                  v{r.version_no} · {r.reviewer_label}: <b>{r.recommendation}</b> · score {r.overall_score}/5 (confidence {r.confidence})
                 </summary>
                 <div className="prose prose-sm mt-2 max-w-none" dangerouslySetInnerHTML={{ __html: renderMarkdown(r.summary_md) }} />
                 {r.confidential_to_editor_md && (
@@ -130,21 +125,21 @@ export default async function SubmissionPage({ params }: { params: Promise<{ id:
         </div>
 
         <div>
-          {view.status === "submitted" && (
-            <Section title="Assign editor">
-              <ActionForm action={assignEditorAction} submitLabel="Assign">
-                <input type="hidden" name="submissionId" value={id} />
-                <select name="editorAgentId" className={selectClass} defaultValue="">
-                  <option value="">Next in rotation</option>
-                  {editors.map((e) => (
-                    <option key={e.id} value={e.id}>
-                      {e.name}
-                    </option>
-                  ))}
-                </select>
-              </ActionForm>
-            </Section>
-          )}
+          <Section title={`Pool tasks (${pool.length})`}>
+            {pool.length === 0 ? (
+              <p className="text-sm text-stone-500">None.</p>
+            ) : (
+              <ul className="space-y-1 text-sm">
+                {pool.map(({ task, holder }) => (
+                  <li key={task.id}>
+                    v{task.versionNo} · {task.kind} · <StatusBadge status={task.status} />
+                    {holder && ` · ${holder}`}
+                    {task.status === "claimed" && ` · due ${fmt(task.dueAt)}`}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Section>
           <Section title="Admin override">
             <ActionForm action={overrideAction} submitLabel="Override status" variant="destructive" confirm="Override the workflow? This is logged.">
               <input type="hidden" name="submissionId" value={id} />
@@ -165,7 +160,8 @@ export default async function SubmissionPage({ params }: { params: Promise<{ id:
               </Field>
             </ActionForm>
             <p className="mt-3 text-xs text-stone-500">
-              Moving to a final state cancels open review assignments and closes all tasks. Other moves do not create tasks.
+              Overriding cancels the submission&apos;s pending pool tasks and unfinished reviews, then publishes the tasks the new
+              status needs (an editorial task for “with editor” or “awaiting decision”, review tasks for “under review”).
             </p>
           </Section>
         </div>

@@ -73,7 +73,6 @@ export async function createInviteCode(
   requireAdmin(actor);
   const roles = [...new Set(opts.roles)];
   if (roles.length === 0) throw validationError("Choose at least one role.");
-  if (roles.includes("editor")) throw validationError("Invite codes cannot grant the editor role.");
   if (!Number.isInteger(opts.maxUses) || opts.maxUses < 1 || opts.maxUses > 10_000) {
     throw validationError("max uses must be between 1 and 10,000.");
   }
@@ -152,7 +151,6 @@ export async function consumeInviteCode(tx: Db, journalId: string, code: string,
 /**
  * Join a journal (or add roles). Outcome depends on registration_mode:
  * open → active; invite_code → active if the code grants the roles; admin_approval → pending.
- * Agents can never self-grant "editor".
  */
 export async function joinJournal(
   db: Db,
@@ -163,9 +161,6 @@ export async function joinJournal(
 ) {
   const roles = [...new Set(input.roles)];
   if (roles.length === 0) throw validationError("Request at least one role: author and/or reviewer.");
-  if ((roles as string[]).includes("editor")) {
-    throw new DomainError("NOT_AUTHORIZED", "The editor role is granted only by journal admins.");
-  }
 
   return db.transaction(async (tx) => {
     const [journal] = await tx.select().from(journals).where(eq(journals.id, journalId));
@@ -242,7 +237,7 @@ export async function updateReviewerProfile(
   db: Db,
   actor: Actor & { type: "agent" },
   journalId: string,
-  input: { topics?: string[]; availability?: "available" | "paused"; maxConcurrentReviews?: number },
+  input: { topics?: string[] },
   now: Date,
 ) {
   return db.transaction(async (tx) => {
@@ -254,15 +249,10 @@ export async function updateReviewerProfile(
     if (!m || !m.roles.includes("reviewer")) {
       throw new DomainError("NOT_AUTHORIZED", "You need the reviewer role. Call join_journal with roles [\"reviewer\"].");
     }
-    if (input.maxConcurrentReviews !== undefined && (input.maxConcurrentReviews < 1 || input.maxConcurrentReviews > 20)) {
-      throw validationError("max_concurrent_reviews must be between 1 and 20.");
-    }
     const [updated] = await tx
       .update(journalMemberships)
       .set({
         ...(input.topics ? { reviewerTopics: input.topics.map((t) => t.trim().toLowerCase()).filter(Boolean).slice(0, 30) } : {}),
-        ...(input.availability ? { reviewerAvailability: input.availability } : {}),
-        ...(input.maxConcurrentReviews !== undefined ? { maxConcurrentReviews: input.maxConcurrentReviews } : {}),
         updatedAt: now,
       })
       .where(eq(journalMemberships.id, m.id))

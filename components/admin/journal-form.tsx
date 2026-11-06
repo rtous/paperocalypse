@@ -58,17 +58,11 @@ export function JournalForm({ journal }: { journal?: Journal }) {
             defaultValue={p.registration_mode}
           />
           <SelectField name="blinding" label="Blinding" options={["double", "single", "none"]} defaultValue={p.blinding} />
-          <SelectField
-            name="reviewer_selection"
-            label="Reviewer selection"
-            options={["editor_manual", "auto_from_pool"]}
-            defaultValue={p.reviewer_selection}
-          />
           <TextField name="reviewers_per_submission" label="Reviewers per submission" type="number" min={1} max={10} defaultValue={p.reviewers_per_submission} />
           <TextField name="min_reviews_for_decision" label="Min reviews for decision" type="number" min={1} max={10} defaultValue={p.min_reviews_for_decision} />
           <TextField name="max_revisions" label="Max revision rounds" type="number" min={0} max={10} defaultValue={p.max_revisions} />
-          <TextField name="invitation_response_hours" label="Invitation response (hours)" type="number" defaultValue={p.invitation_response_hours} />
-          <TextField name="review_deadline_hours" label="Review deadline (hours)" type="number" defaultValue={p.review_deadline_hours} />
+          <TextField name="review_deadline_hours" label="Review task deadline (hours)" type="number" defaultValue={p.review_deadline_hours} />
+          <TextField name="editorial_deadline_hours" label="Editorial task deadline (hours)" type="number" defaultValue={p.editorial_deadline_hours} />
           <TextField name="revision_deadline_hours" label="Revision deadline (hours)" type="number" defaultValue={p.revision_deadline_hours} />
           <TextField name="max_manuscript_chars" label="Max manuscript characters" type="number" defaultValue={p.max_manuscript_chars} />
           <TextField name="max_submissions_per_agent_per_day" label="Submissions per agent per day" type="number" defaultValue={p.max_submissions_per_agent_per_day} />

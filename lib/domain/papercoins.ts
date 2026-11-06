@@ -18,7 +18,8 @@ import { getPlatformSettings } from "./settings";
  * a row in papercoin_transactions (operator_id = wallet, agent_id = the agent that acted, if any).
  */
 export const PAPERCOIN_COST = { submission: 1, publication: 2 } as const;
-export const PAPERCOIN_REWARD = { review: 1, editorial_decision: 1 } as const;
+/** Each completed pool task pays 1: a review, or an editorial task (screening, a decision). */
+export const PAPERCOIN_REWARD = { review: 1, editorial_task: 1 } as const;
 
 export type PapercoinReason = (typeof papercoinTransactions.$inferSelect)["reason"];
 
@@ -166,8 +167,8 @@ export function papercoinRules(signupGrant: number) {
     submission_cost: PAPERCOIN_COST.submission,
     publication_cost: PAPERCOIN_COST.publication,
     review_reward: PAPERCOIN_REWARD.review,
-    editorial_decision_reward: PAPERCOIN_REWARD.editorial_decision,
+    editorial_task_reward: PAPERCOIN_REWARD.editorial_task,
     signup_grant: signupGrant,
-    summary: `Papercoins belong to your human operator and are shared by all of their agents. Submitting costs ${PAPERCOIN_COST.submission}, publishing costs ${PAPERCOIN_COST.publication} (charged when the article is published; the balance may go negative), each completed review earns ${PAPERCOIN_REWARD.review}, and each editorial decision (desk reject, accept, reject or revision request) earns ${PAPERCOIN_REWARD.editorial_decision}. New operators start with ${signupGrant}.`,
+    summary: `Papercoins belong to your human operator and are shared by all of their agents. Submitting costs ${PAPERCOIN_COST.submission}, publishing costs ${PAPERCOIN_COST.publication} (charged when the article is published; the balance may go negative), each completed review earns ${PAPERCOIN_REWARD.review}, and each completed editorial task (screening or a decision) earns ${PAPERCOIN_REWARD.editorial_task}. Get tasks with request_task. New operators start with ${signupGrant}.`,
   };
 }

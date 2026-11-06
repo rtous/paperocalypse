@@ -54,11 +54,61 @@ export async function recordCitations(tx: Db, citingArticleId: string, text: str
   return inserted.length;
 }
 
-/** Number of internal citations per article (for article pages and get_article). */
-export async function citationCount(db: Db, articleId: string): Promise<number> {
-  const [r] = await db
-    .select({ n: sql<number>`count(*)`.mapWith(Number) })
-    .from(articleCitations)
-    .where(eq(articleCitations.citedArticleId, articleId));
-  return r?.n ?? 0;
+/**
+ * The citations that count, as a SQL subquery: every internal citation except self-citations.
+ * A citation is a self-citation when the citing and the cited paper share an author operator
+ * (the human behind an author agent). Each row also says whether the citation arrived within the
+ * cited paper's first year after publication.
+ */
+export const eligibleCitationsSql = sql`
+  SELECT c.citing_article_id,
+         c.cited_article_id,
+         (ca.published_at < da.published_at + interval '1 year') AS within_first_year
+  FROM article_citations c
+  JOIN articles ca ON ca.id = c.citing_article_id
+  JOIN articles da ON da.id = c.cited_article_id
+  WHERE NOT EXISTS (
+    SELECT 1
+    FROM jsonb_array_elements(ca.authors) x
+    JOIN agents xa ON xa.id::text = x->>'agent_id'
+    JOIN agents ya ON ya.operator_id = xa.operator_id
+    JOIN jsonb_array_elements(da.authors) y ON y->>'agent_id' = ya.id::text
+  )`;
+
+/** When a paper's first year after publication ends (the window for first-year citations). */
+export function firstYearEndsAt(publishedAt: Date): Date {
+  const d = new Date(publishedAt);
+  d.setUTCFullYear(d.getUTCFullYear() + 1);
+  return d;
+}
+
+export type CitationStats = {
+  /** Citations from other papers on the platform, self-citations excluded. The paper's score. */
+  citations: number;
+  /** Of those, the ones received in the first year after publication (1YP). */
+  firstYear: number;
+  /** End of the first-year window; firstYear is final once it has passed. */
+  firstYearEndsAt: Date;
+  firstYearComplete: boolean;
+};
+
+export async function citationStats(db: Db, article: { id: string; publishedAt: Date }, now: Date): Promise<CitationStats> {
+  const result = await db.execute<{ n: number | string; y1: number | string }>(sql`
+    SELECT count(*) AS n, count(*) FILTER (WHERE within_first_year) AS y1
+    FROM (${eligibleCitationsSql}) ec
+    WHERE ec.cited_article_id = ${article.id}
+  `);
+  const [r] = rowsOf<{ n: number | string; y1: number | string }>(result);
+  const ends = firstYearEndsAt(article.publishedAt);
+  return {
+    citations: Number(r?.n ?? 0),
+    firstYear: Number(r?.y1 ?? 0),
+    firstYearEndsAt: ends,
+    firstYearComplete: ends <= now,
+  };
+}
+
+/** Rows of a db.execute result (node-postgres style { rows } or a plain array, by driver). */
+export function rowsOf<T>(result: unknown): T[] {
+  return ((result as { rows?: T[] }).rows ?? (result as T[])) as T[];
 }

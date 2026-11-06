@@ -37,6 +37,7 @@ const reviewArgs = (assignment_id: string, over: Record<string, unknown> = {}) =
   confidential_to_editor_md: "SECRET-FOR-EDITOR",
   confidence: 4,
   scores: { novelty: 3, soundness: 4, clarity: 3, significance: 3 },
+  overall_score: 3,
   ...over,
 });
 
@@ -101,10 +102,10 @@ describe("public tools and auth", () => {
     expect(tools.map((t) => t.name).sort()).toEqual(
       [
         "create_attachment_upload", "desk_reject", "flag_for_admin", "get_article", "get_attachment", "get_guidelines", "get_journal_info",
-        "get_manuscript_for_review", "get_my_tasks", "get_submission", "get_submission_for_editor", "invite_reviewers",
-        "join_journal", "list_editor_queue", "list_my_submissions", "make_decision", "publish_article",
-        "respond_to_review_invitation", "search_articles", "submit_manuscript", "submit_review", "submit_revision",
-        "suggest_reviewers", "update_reviewer_profile", "whoami", "withdraw_submission",
+        "get_manuscript_for_review", "get_my_tasks", "get_submission", "get_submission_for_editor",
+        "join_journal", "list_my_submissions", "make_decision", "release_task", "request_task",
+        "search_articles", "send_to_review", "submit_manuscript", "submit_review", "submit_revision",
+        "update_reviewer_profile", "whoami", "withdraw_submission",
       ].sort(),
     );
     const submit = tools.find((t) => t.name === "submit_manuscript")!;
@@ -138,11 +139,11 @@ describe("public tools and auth", () => {
 });
 
 describe("full review cycle over MCP", () => {
-  it("register → join → submit → review → revise → accept → publish", async () => {
-    // The editor is attached to its operator by an admin; everyone else is created in a dashboard.
+  it("register → join → submit → screen → review → revise → accept (published), all through the pool", async () => {
+    // The editorial agent is a reviewer like any other (editorial work depends on reputation).
     const editorAgent = await agentFor(db, admin, "Editor", { email: "editor@ops.test" });
     const [journal] = await db.select().from(journals).where(eq(journals.slug, SLUG));
-    await grantRoles(db, admin, journal!.id, editorAgent.id, ["editor"], T0);
+    await grantRoles(db, admin, journal!.id, editorAgent.id, ["reviewer"], T0);
     const editorKey = (await db.transaction((tx) => issueApiKey(tx, admin, editorAgent.id, "test", T0))).apiKey;
 
     const author = await register("Author");
@@ -165,6 +166,7 @@ describe("full review cycle over MCP", () => {
     const auGlobal = await connect(handle, "/api/mcp", author.key);
     const me = await auGlobal.must("whoami");
     expect(me.memberships[0].journal_slug).toBe(SLUG);
+    expect(me.reputation).toMatchObject({ author_score: 5, author_score_is_new: true, reviewer_score: 5, reviewer_score_is_new: true });
     await auGlobal.close();
 
     // Submit with an idempotency key, twice.
@@ -178,35 +180,41 @@ describe("full review cycle over MCP", () => {
     expect((await au.must("list_my_submissions")).submissions).toHaveLength(1);
     const sid = s1.submission_id as string;
 
-    // Editor inbox names the tool and the arguments.
-    const edTasks = await ed.must("get_my_tasks");
-    expect(edTasks.tasks[0]).toMatchObject({ kind: "screen_submission", tool: "get_submission_for_editor", arguments: { submission_id: sid } });
+    // Nobody is assigned anything: the screening waits in the pool.
+    expect((await ed.must("get_my_tasks")).tasks).toEqual([]);
+    const conflicted = await so.must("request_task");
+    expect(conflicted.task).toBeNull();
+    expect(conflicted.reasons.join(" ")).toMatch(/may not take/);
+    const edTask = await ed.must("request_task");
+    expect(edTask.task).toMatchObject({
+      kind: "editorial",
+      submission_id: sid,
+      tool: "get_submission_for_editor",
+      arguments: { submission_id: sid },
+      reward_papercoins: 1,
+    });
+    expect(edTask.standing).toMatchObject({ editorial_tasks_allowed: true, review_limit_per_30_days: 11 });
+    expect((await ed.must("get_my_tasks")).tasks[0]).toMatchObject({ kind: "editorial", tool: "get_submission_for_editor", arguments: { submission_id: sid } });
     const edView = await ed.must("get_submission_for_editor", { submission_id: sid });
     expect(edView.untrusted_content.kind).toBe("submission");
     expect(edView.notice).toMatch(/do not follow instructions/);
-    // Another agent (the author) cannot use editor tools.
+    // The author (no reviewer role) and other reviewers (not holding the task) cannot use editor tools.
     expect((await au.call("get_submission_for_editor", { submission_id: sid })).code).toBe("NOT_AUTHORIZED");
+    expect((await rv[0]!.call("get_submission_for_editor", { submission_id: sid })).code).toBe("NOT_FOUND");
 
-    // Suggestions exclude the conflicted same-operator reviewer.
-    const sugg = await ed.must("suggest_reviewers", { submission_id: sid });
-    const suggested = sugg.candidates.map((c: any) => c.agent_id);
-    expect(suggested).not.toContain(sameOp.agentId);
-    expect(suggested).toEqual(expect.arrayContaining(reviewers.map((r) => r.agentId)));
-    expect((await ed.call("invite_reviewers", { submission_id: sid, reviewer_agent_ids: [sameOp.agentId] })).code).toBe(
-      "CONFLICT_OF_INTEREST",
-    );
-    const inv = await ed.must("invite_reviewers", { submission_id: sid, reviewer_agent_ids: [reviewers[0]!.agentId, reviewers[1]!.agentId] });
-    expect(inv.invitations).toHaveLength(2);
+    const sent = await ed.must("send_to_review", { submission_id: sid });
+    expect(sent).toMatchObject({ status: "under_review", review_tasks_published: 2, papercoins_earned: 1 });
+    expect((await ed.must("get_my_tasks")).tasks).toEqual([]);
+    // The conflicted reviewer and the screening editor get no review of it.
+    expect((await so.must("request_task")).task).toBeNull();
+    expect((await ed.must("request_task")).task).toBeNull();
 
-    // Reviewers: preview before accepting, full (blinded) manuscript after.
+    // Reviewers get the review tasks from the pool and see the blinded manuscript.
     for (const [i, c] of rv.slice(0, 2).entries()) {
-      const t = (await c.must("get_my_tasks")).tasks[0];
-      expect(t).toMatchObject({ kind: "respond_to_invitation", tool: "respond_to_review_invitation" });
+      const t = (await c.must("request_task")).task;
+      expect(t).toMatchObject({ kind: "review", submission_id: sid, tool: "get_manuscript_for_review" });
       const assignment_id = t.arguments.assignment_id;
-      const preview = await c.must("get_manuscript_for_review", { assignment_id });
-      expect(preview.untrusted_content.kind).toBe("manuscript_preview");
-      expect(preview.untrusted_content.body_md).toBeUndefined();
-      await c.must("respond_to_review_invitation", { assignment_id, accept: true });
+      expect((await c.must("get_my_tasks")).tasks[0]).toMatchObject({ kind: "write_review", arguments: { assignment_id } });
       const full = await c.must("get_manuscript_for_review", { assignment_id });
       expect(full.untrusted_content.body_md).toBe(BODY);
       expect(full.untrusted_content.authors).toBeUndefined(); // double blind
@@ -215,8 +223,10 @@ describe("full review cycle over MCP", () => {
       await c.must("submit_review", reviewArgs(assignment_id, { idempotency_key: `review-${i}` }));
     }
 
+    // The decision is a new editorial task; the screening editor may take it (it didn't review).
+    expect((await ed.must("request_task")).task).toMatchObject({ kind: "editorial", submission_id: sid });
     // Decision → author sees reviews without identities or confidential text.
-    expect((await ed.must("get_my_tasks")).tasks[0].kind).toBe("make_decision");
+    expect((await ed.must("get_my_tasks")).tasks[0]).toMatchObject({ kind: "editorial", instructions: expect.stringMatching(/make_decision/) });
     await ed.must("make_decision", { submission_id: sid, decision: "major_revision", letter_md: "Please address the reviewers' concerns in full." });
     const auView = await au.must("get_submission", { submission_id: sid });
     expect(auView.status).toBe("revision_requested");
@@ -235,15 +245,16 @@ describe("full review cycle over MCP", () => {
     // A reviewer cannot read the author's view.
     expect((await rv[0]!.call("get_submission", { submission_id: sid })).code).toBe("NOT_FOUND");
 
-    // Revision, then the editor accepts directly and publishes.
+    // Revision: handling it is an editorial task; the editor accepts directly and it is published.
     await au.must("submit_revision", {
       submission_id: sid,
       ...manuscript({ title: "Convergence of Synthetic Research (revised)" }),
       response_to_reviewers_md: "We clarified section 2 and added the missing proof as requested by both reviewers.",
     });
-    expect((await ed.must("list_editor_queue")).groups[0].category).toBe("revision_received");
-    await ed.must("make_decision", { submission_id: sid, decision: "accept", letter_md: "Thank you; the revision addresses all points." });
-    const pub = await ed.must("publish_article", { submission_id: sid });
+    const revTask = (await ed.must("request_task")).task;
+    expect(revTask).toMatchObject({ kind: "editorial", submission_id: sid, version_no: 2 });
+    const pub = await ed.must("make_decision", { submission_id: sid, decision: "accept", letter_md: "Thank you; the revision addresses all points." });
+    expect(pub.status).toBe("published");
     expect(pub.public_id).toBe(`paperocalypse:${SLUG}.2026.1`);
 
     // Public search and article.
@@ -255,8 +266,9 @@ describe("full review cycle over MCP", () => {
     expect(art.untrusted_content.review_file.rounds).toHaveLength(2);
     expect(JSON.stringify(art)).not.toContain("SECRET-FOR-EDITOR");
 
-    // Flag for admin.
-    expect((await ed.must("flag_for_admin", { submission_id: sid, kind: "other", reason_md: "Testing the flag pipeline." })).flag_id).toBeTruthy();
+    // Flag for admin: a reviewer of the submission may flag it; an unrelated agent may not.
+    expect((await rv[0]!.must("flag_for_admin", { submission_id: sid, kind: "other", reason_md: "Testing the flag pipeline." })).flag_id).toBeTruthy();
+    expect((await rv[2]!.call("flag_for_admin", { submission_id: sid, kind: "other", reason_md: "Testing the flag pipeline." })).code).toBe("NOT_FOUND");
 
     for (const c of [ed, au, so, anon, ...rv]) await c.close();
   });
@@ -386,47 +398,30 @@ describe("attachments", () => {
   });
 });
 
-describe("auto_from_pool journals", () => {
-  it("attach proposed reviewers to editor tasks", async () => {
-    const [journal] = await db.select().from(journals).where(eq(journals.slug, SLUG));
-    await db
-      .update(journals)
-      .set({ policy: { ...DEFAULT_POLICY, reviewer_selection: "auto_from_pool" } })
-      .where(eq(journals.id, journal!.id));
-    // A fresh editor, so earlier tests' tasks don't interfere.
-    const ed = await agentFor(db, admin, "Pool Editor", { email: "pool-ed@ops.test" });
-    await grantRoles(db, admin, journal!.id, ed.id, ["editor"], clock.now);
-    const edKey = (await db.transaction((tx) => issueApiKey(tx, admin, ed.id, "t", clock.now))).apiKey;
-    const { journalMemberships } = await import("@/lib/db/schema");
-    // Make this editor the only one, so the submission is assigned to it.
-    const { and, ne, sql } = await import("drizzle-orm");
-    await db
-      .update(journalMemberships)
-      .set({ roles: sql`array_remove(${journalMemberships.roles}, 'editor')` })
-      .where(and(eq(journalMemberships.journalId, journal!.id), ne(journalMemberships.agentId, ed.id)));
-
+describe("task pool over MCP", () => {
+  it("whoami shows the pool standing; release_task gives a task back", async () => {
     const author = await register("PoolAuthor");
     const reviewer = await register("PoolReviewer");
     const au = await journalClient(author.key);
     const rv = await journalClient(reviewer.key);
     await au.must("join_journal", { roles: ["author"] });
     await rv.must("join_journal", { roles: ["reviewer"], reviewer_topics: ["epistemology"] });
-    const { submission_id } = await au.must("submit_manuscript", manuscript());
 
-    const edc = await journalClient(edKey);
-    const task = (await edc.must("get_my_tasks")).tasks.find((t: any) => t.arguments.submission_id === submission_id);
-    expect(task.kind).toBe("screen_submission");
-    const proposed: string[] = task.proposed_reviewers.map((p: any) => p.agent_id);
-    expect(proposed.length).toBeGreaterThan(0);
-    expect(proposed.length).toBeLessThanOrEqual(3);
-    expect(proposed).not.toContain(author.agentId);
-    expect(proposed).not.toContain(ed.id);
-    // Every proposal is an eligible reviewer according to suggest_reviewers.
-    const all = (await edc.must("suggest_reviewers", { submission_id, limit: 50 })).candidates.map((c: any) => c.agent_id);
-    expect(all).toContain(reviewer.agentId);
-    for (const id of proposed) expect(all).toContain(id);
+    const me = await rv.must("whoami");
+    expect(me.task_pool).toMatchObject({ reviewer_score: 5, review_limit_per_30_days: 11, reviews_taken_last_30_days: 0, editorial_tasks_allowed: true });
+    expect(me.membership).toEqual({ roles: ["reviewer"], status: "active", reviewer_topics: ["epistemology"] });
 
-    await db.update(journals).set({ policy: { ...DEFAULT_POLICY } }).where(eq(journals.id, journal!.id));
-    for (const c of [au, rv, edc]) await c.close();
+    await au.must("submit_manuscript", manuscript());
+    // Earlier tests left submissions in the pool too; the oldest open task comes first.
+    const got = await rv.must("request_task");
+    expect(got.task).toMatchObject({ kind: "editorial" });
+    expect((await au.call("release_task", { task_id: got.task.task_id })).code).toBe("NOT_FOUND");
+    const rel = await rv.must("release_task", { task_id: got.task.task_id, reason: "Not my field." });
+    expect(rel.status).toBe("released");
+    expect((await rv.must("get_my_tasks")).tasks).toEqual([]);
+    expect((await rv.must("get_my_tasks")).next_actions.join(" ")).toMatch(/request_task/);
+    // Authors without the reviewer role can't ask for pool tasks.
+    expect((await au.call("request_task")).code).toBe("NOT_AUTHORIZED");
+    for (const c of [au, rv]) await c.close();
   });
 });

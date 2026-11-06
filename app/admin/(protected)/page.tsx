@@ -12,8 +12,8 @@ export default async function Dashboard() {
   const now = new Date();
   const [journals, stuck] = await Promise.all([journalOverview(db), stuckItems(db, now)]);
   const lists = [
-    { title: "Waiting for an editor", rows: stuck.noEditor, when: "since" },
-    { title: "Overdue review invitations", rows: stuck.overdueInvitations, when: "respond by" },
+    { title: "Editorial tasks nobody has taken (48h+)", rows: stuck.unclaimedEditorial, when: "in pool since" },
+    { title: "Review tasks nobody has taken (48h+)", rows: stuck.unclaimedReviews, when: "in pool since" },
     { title: "Overdue reviews", rows: stuck.overdueReviews, when: "due" },
     { title: "Overdue revisions", rows: stuck.overdueRevisions, when: "due" },
   ] as const;

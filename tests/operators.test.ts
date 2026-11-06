@@ -25,14 +25,25 @@ import {
 import { adjustPapercoins, getPapercoinBalance, walletInfo } from "@/lib/domain/papercoins";
 import {
   deskReject,
-  inviteReviewers,
-  makeDecision,
-  respondToInvitation,
   submitManuscript,
   submitReview,
 } from "@/lib/domain/submissions";
 import { createTestDb } from "./helpers/db";
-import { LETTER, T0, createAdmin, createJournal, createMember, createOperator, hours, manuscript, review } from "./helpers/fixtures";
+import {
+  LETTER,
+  T0,
+  createAdmin,
+  createJournal,
+  createMember,
+  createOperator,
+  decide,
+  hours,
+  manuscript,
+  review,
+  sendOut,
+  takeReview,
+  takeTask,
+} from "./helpers/fixtures";
 
 let db: Db;
 let close: () => Promise<void>;
@@ -90,7 +101,7 @@ describe("operator accounts", () => {
 
   it("can't act on submissions directly", async () => {
     const j = await createJournal(db);
-    await createMember(db, admin, j.id, ["editor"]);
+    await createMember(db, admin, j.id, ["reviewer"]);
     const author = await createMember(db, admin, j.id, ["author"]);
     const { submissionId } = await submitManuscript(db, author, j.id, manuscript(), T0);
     const { actor } = await createOperator(db, "meddler@lab.org");
@@ -111,28 +122,34 @@ describe("operator accounts", () => {
 describe("operator dashboard data", () => {
   it("shows tasks, submissions, reviews, editorial work and coins of the operator's agents only", async () => {
     const j = await createJournal(db, { max_submissions_per_agent_per_day: 50, max_open_submissions_per_agent: 50 });
+    const J = j.id;
     const mine = await createOperator(db, "me@dash.org", "Me");
     const theirs = await createOperator(db, "them@dash.org", "Them");
-    const mk = async (o: typeof mine, name: string, roles: ("author" | "reviewer" | "editor")[]) => {
+    const neutral = await createOperator(db, "neutral@dash.org", "Neutral");
+    const other = await createOperator(db, "other@dash.org", "Other");
+    const mk = async (o: typeof mine, name: string, roles: ("author" | "reviewer")[]) => {
       const r = await createOperatorAgent(db, o.actor, { displayName: name, description: "" }, T0);
-      await grantRoles(db, admin, j.id, r.agent.id, roles, T0);
+      await grantRoles(db, admin, J, r.agent.id, roles, T0);
       await adjustPapercoins(db, admin, r.agent.operatorId, 50, "test", T0);
       return { type: "agent" as const, agentId: r.agent.id };
     };
-    const neutral = await createOperator(db, "neutral@dash.org", "Neutral");
-    // Editors are never assigned to their own operator's papers, so a neutral editor exists too.
-    const myEditor = await mk(mine, "My-Editor", ["editor"]);
-    await mk(neutral, "Neutral-Editor", ["editor"]);
+    const myEditor = await mk(mine, "My-Editor", ["reviewer"]);
+    const neutralEditor = await mk(neutral, "Neutral-Editor", ["reviewer"]);
     const myAuthor = await mk(mine, "My-Author", ["author"]);
     const myReviewer = await mk(mine, "My-Reviewer", ["reviewer"]);
     const neutralReviewer = await mk(neutral, "Neutral-Reviewer", ["reviewer"]);
+    const otherReviewer = await mk(other, "Other-Reviewer", ["reviewer"]);
     const theirAuthor = await mk(theirs, "Their-Author", ["author"]);
 
-    // Their paper goes to my editor (first in rotation); mine goes to the neutral editor.
-    const theirSub = await submitManuscript(db, theirAuthor, j.id, manuscript({ title: "Their paper" }), T0);
-    const mySub = await submitManuscript(db, myAuthor, j.id, manuscript({ title: "My paper" }), T0);
-    const { assignments } = await inviteReviewers(db, myEditor, theirSub.submissionId, [myReviewer.agentId, neutralReviewer.agentId], hours(1));
-    await respondToInvitation(db, myReviewer, assignments[0]!.assignmentId, true, null, hours(2));
+    // My editor screens their paper; the neutral editor screens mine and their second one.
+    const theirSub = await submitManuscript(db, theirAuthor, J, manuscript({ title: "Their paper" }), T0);
+    const mySub = await submitManuscript(db, myAuthor, J, manuscript({ title: "My paper" }), hours(0.5));
+    const theirB = await submitManuscript(db, theirAuthor, J, manuscript({ title: "Their B" }), hours(0.7));
+    await sendOut(db, myEditor, J, theirSub.submissionId, hours(1));
+    await sendOut(db, neutralEditor, J, mySub.submissionId, hours(1.1));
+    await sendOut(db, neutralEditor, J, theirB.submissionId, hours(1.2));
+    // My reviewer can't review my paper (conflict) or their paper (my editor screened it): it gets B.
+    const myAssignment = await takeReview(db, myReviewer, J, theirB.submissionId, hours(2));
 
     const tasks = await operatorTasks(db, mine.operator.id);
     expect(tasks.map((t) => [t.agentName, t.kind])).toEqual([["My-Reviewer", "write_review"]]);
@@ -143,35 +160,37 @@ describe("operator dashboard data", () => {
     expect(await operatorAuthorsSubmission(db, mine.operator.id, theirSub.submissionId)).toBe(false);
 
     const myReviews = await operatorReviews(db, mine.operator.id);
-    expect(myReviews.map((r) => [r.agentName, r.submissionTitle, r.status])).toEqual([["My-Reviewer", "Their paper", "accepted"]]);
+    expect(myReviews.map((r) => [r.agentName, r.submissionTitle, r.status])).toEqual([["My-Reviewer", "Their B", "accepted"]]);
 
-    expect((await operatorEditorial(db, mine.operator.id)).map((e) => e.title)).toEqual(["Their paper"]);
-    expect((await operatorEditorial(db, neutral.operator.id)).map((e) => e.title)).toEqual(["My paper"]);
+    expect((await operatorEditorial(db, mine.operator.id)).map((e) => [e.title, e.taskStatus])).toEqual([["Their paper", "done"]]);
+    expect((await operatorEditorial(db, neutral.operator.id)).map((e) => e.title).sort()).toEqual(["My paper", "Their B"]);
     expect(await operatorEditorial(db, theirs.operator.id)).toEqual([]);
 
     const agentsList = await operatorAgents(db, mine.operator.id);
     expect(agentsList.map((a) => a.displayName)).toEqual(["My-Author", "My-Editor", "My-Reviewer"]);
     expect(agentsList.find((a) => a.displayName === "My-Reviewer")!.openTasks).toBe(1);
 
-    // Editorial decisions pay the editor 1 papercoin each.
+    // Each editorial task pays the editor 1 papercoin; reviews pay 1. All go to my shared wallet.
     const before = await getPapercoinBalance(db, myEditor.agentId);
-    const theirSub2 = await submitManuscript(db, theirAuthor, j.id, manuscript({ title: "Their second paper" }), hours(3));
+    const theirSub2 = await submitManuscript(db, theirAuthor, J, manuscript({ title: "Their second paper" }), hours(3));
+    await takeTask(db, myEditor, J, "editorial", theirSub2.submissionId, hours(3));
     await deskReject(db, myEditor, theirSub2.submissionId, LETTER, hours(3));
     expect(await getPapercoinBalance(db, myEditor.agentId)).toBe(before + 1);
-    await submitReview(db, myReviewer, assignments[0]!.assignmentId, review(), hours(4));
-    await respondToInvitation(db, neutralReviewer, assignments[1]!.assignmentId, true, null, hours(4));
-    await submitReview(db, neutralReviewer, assignments[1]!.assignmentId, review(), hours(4));
-    await makeDecision(db, myEditor, theirSub.submissionId, "major_revision", LETTER, hours(5));
-    // My reviewer's review and my editor's two decisions all land in my (shared) wallet.
+    await submitReview(db, myReviewer, myAssignment, review(), hours(4));
+    for (const r of [neutralReviewer, otherReviewer]) {
+      await submitReview(db, r, await takeReview(db, r, J, theirSub.submissionId, hours(4)), review(), hours(4));
+    }
+    // The neutral and other operators reviewed it, so the decision goes to my editor.
+    await decide(db, myEditor, J, theirSub.submissionId, "major_revision", hours(5));
     expect(await getPapercoinBalance(db, myEditor.agentId)).toBe(before + 3);
     expect(await getPapercoinBalance(db, myReviewer.agentId)).toBe(before + 3);
     // Admin decisions pay nobody.
-    const theirSub3 = await submitManuscript(db, theirAuthor, j.id, manuscript({ title: "Third" }), hours(6));
+    const theirSub3 = await submitManuscript(db, theirAuthor, J, manuscript({ title: "Third" }), hours(6));
     await deskReject(db, admin, theirSub3.submissionId, LETTER, hours(6));
     expect(await getPapercoinBalance(db, myEditor.agentId)).toBe(before + 3);
 
     const history = await operatorPapercoinHistory(db, mine.operator.id);
-    expect(history.filter((h) => h.reason === "editorial_decision")).toHaveLength(2);
+    expect(history.filter((h) => h.reason === "editorial_decision")).toHaveLength(3);
     expect(history.filter((h) => h.reason === "review")).toHaveLength(1);
     expect(JSON.stringify(history)).not.toContain("Neutral-");
   });

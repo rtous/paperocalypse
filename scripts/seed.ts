@@ -5,7 +5,7 @@
  *   npm run db:seed            # uses DATABASE_URL from .env.local
  *   npm run db:seed -- --new-key
  */
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { resolveAdmin, envAdminEmails } from "@/lib/admin/allowlist";
 import { getDb } from "@/lib/db";
 import { agents, journalMemberships, journals } from "@/lib/db/schema";
@@ -54,12 +54,12 @@ async function main() {
     .select({ id: agents.id })
     .from(journalMemberships)
     .innerJoin(agents, eq(agents.id, journalMemberships.agentId))
-    .where(and(eq(journalMemberships.journalId, journal.id), sql`'editor' = ANY(${journalMemberships.roles})`))
+    .where(and(eq(journalMemberships.journalId, journal.id), eq(agents.displayName, "Demo Editor")))
     .limit(1);
 
   const newKey = process.argv.includes("--new-key");
   if (existingEditor && !newKey) {
-    console.log(`Editor agent already exists (${existingEditor.id}). Pass --new-key to issue another key.`);
+    console.log(`Demo editorial agent already exists (${existingEditor.id}). Pass --new-key to issue another key.`);
     return;
   }
 
@@ -67,6 +67,8 @@ async function main() {
     let editorId = existingEditor?.id;
     if (!editorId) {
       // Every agent belongs to an operator: the demo editor belongs to the first admin's account.
+      // It joins as a reviewer; editorial tasks come from the pool (new operators start with a
+      // reviewer score of 5, enough for editorial work).
       const operator = (await upsertOperatorFromLogin(tx, { email, name: admin.name ?? "Platform admin" }, now))!;
       const editor = await createAgent(
         tx,
@@ -74,13 +76,13 @@ async function main() {
         { displayName: "Demo Editor", description: "Editor agent for the demo journal", operatorId: operator.id },
         now,
       );
-      await grantRoles(tx, actor, journal.id, editor.id, ["editor"], now);
+      await grantRoles(tx, actor, journal.id, editor.id, ["reviewer"], now);
       editorId = editor.id;
       console.log(`Created editor agent ${editorId}.`);
     }
     return issueApiKey(tx, actor, editorId, "seed", now);
   });
-  console.log("\nEditor API key (shown once, store it now):\n");
+  console.log("\nDemo editorial agent API key (shown once, store it now):\n");
   console.log(`  ${key.apiKey}\n`);
 }
 

@@ -1,12 +1,12 @@
 import { and, asc, eq, lt } from "drizzle-orm";
-import { journals, reviewAssignments, submissions } from "@/lib/db/schema";
+import { journals, submissions } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import { SYSTEM } from "./actor";
 import { recordEvent } from "./events";
 import { enqueueNotifications } from "./notify";
 import { parsePolicy } from "./policy";
-import { assignEditor } from "./submissions";
-import { closeTasks, openTask } from "./tasks";
+import { expireClaims } from "./pool";
+import { publishArticle } from "./submissions";
 import { resolveTransition } from "./workflow";
 
 /**
@@ -14,28 +14,10 @@ import { resolveTransition } from "./workflow";
  * lock, so running this twice (or concurrently) is safe. Batch-limited per kind.
  */
 export async function processDeadlines(db: Db, now: Date, batchSize = 100) {
-  const result = { invitationsExpired: 0, reviewsExpired: 0, revisionsExpired: 0, editorsAssigned: 0 };
+  const result = { claimsExpired: 0, revisionsExpired: 0, published: 0 };
 
-  // 1. Invitations not answered in time, and accepted reviews past due.
-  const overdueInvites = await db
-    .select({ id: reviewAssignments.id })
-    .from(reviewAssignments)
-    .where(and(eq(reviewAssignments.status, "invited"), lt(reviewAssignments.respondBy, now)))
-    .orderBy(asc(reviewAssignments.respondBy))
-    .limit(batchSize);
-  for (const { id } of overdueInvites) {
-    if (await expireAssignment(db, id, "invited", now)) result.invitationsExpired++;
-  }
-
-  const overdueReviews = await db
-    .select({ id: reviewAssignments.id })
-    .from(reviewAssignments)
-    .where(and(eq(reviewAssignments.status, "accepted"), lt(reviewAssignments.dueAt, now)))
-    .orderBy(asc(reviewAssignments.dueAt))
-    .limit(batchSize);
-  for (const { id } of overdueReviews) {
-    if (await expireAssignment(db, id, "accepted", now)) result.reviewsExpired++;
-  }
+  // 1. Pool tasks held past their due_at go back to the pool.
+  result.claimsExpired = await expireClaims(db, now, batchSize);
 
   // 2. Revisions past their deadline are withdrawn.
   const overdueRevisions = await db
@@ -48,63 +30,23 @@ export async function processDeadlines(db: Db, now: Date, batchSize = 100) {
     if (await expireRevision(db, id, now)) result.revisionsExpired++;
   }
 
-  // 3. Submissions still waiting for an editor.
-  const waiting = await db
+  // 3. Accepted submissions are normally published on acceptance; publish any left behind.
+  const accepted = await db
     .select({ id: submissions.id })
     .from(submissions)
-    .where(eq(submissions.status, "submitted"))
-    .orderBy(asc(submissions.createdAt))
+    .where(eq(submissions.status, "accepted"))
+    .orderBy(asc(submissions.updatedAt))
     .limit(batchSize);
-  for (const { id } of waiting) {
+  for (const { id } of accepted) {
     try {
-      if (await assignEditor(db, SYSTEM, id, now)) result.editorsAssigned++;
+      await publishArticle(db, SYSTEM, id, now);
+      result.published++;
     } catch {
-      // Raced with another tick or an admin; the next tick will look again.
+      // Raced with an admin; the next tick will look again.
     }
   }
 
   return result;
-}
-
-async function expireAssignment(db: Db, assignmentId: string, expected: "invited" | "accepted", now: Date) {
-  return db.transaction(async (tx) => {
-    const [a] = await tx
-      .select()
-      .from(reviewAssignments)
-      .where(eq(reviewAssignments.id, assignmentId))
-      .for("update");
-    const deadline = expected === "invited" ? a?.respondBy : a?.dueAt;
-    if (!a || a.status !== expected || !deadline || deadline >= now) return false;
-
-    await tx
-      .update(reviewAssignments)
-      .set({ status: "expired", updatedAt: now })
-      .where(eq(reviewAssignments.id, a.id));
-    await closeTasks(tx, { refId: a.id }, { status: "expired", now });
-
-    const [sub] = await tx.select().from(submissions).where(eq(submissions.id, a.submissionId));
-    await recordEvent(tx, SYSTEM, expected === "invited" ? "review.invitation_expired" : "review.expired", {
-      journalId: sub?.journalId,
-      submissionId: a.submissionId,
-      payload: { assignment_id: a.id, reviewer_agent_id: a.reviewerAgentId },
-      now,
-    });
-    if (sub?.handlingEditorId && sub.status === "under_review") {
-      await openTask(tx, {
-        agentId: sub.handlingEditorId,
-        journalId: sub.journalId,
-        submissionId: sub.id,
-        kind: "invite_replacement_reviewer",
-        refId: sub.id,
-        now,
-      });
-      await enqueueNotifications(tx, [sub.handlingEditorId], "review.expired", {
-        submission_id: sub.id,
-        assignment_id: a.id,
-      }, now);
-    }
-    return true;
-  });
 }
 
 async function expireRevision(db: Db, submissionId: string, now: Date) {
@@ -127,10 +69,7 @@ async function expireRevision(db: Db, submissionId: string, now: Date) {
       payload: { from: sub.status, to },
       now,
     });
-    await closeTasks(tx, { submissionId: sub.id }, { status: "expired", now });
-    await enqueueNotifications(tx, [sub.submittingAgentId, sub.handlingEditorId], "submission.withdrawn", {
-      submission_id: sub.id,
-    }, now);
+    await enqueueNotifications(tx, [sub.submittingAgentId], "submission.withdrawn", { submission_id: sub.id }, now);
     return true;
   });
 }

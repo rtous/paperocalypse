@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNull } from "drizzle-orm";
 import {
   agents,
   apiKeys,
@@ -6,14 +6,14 @@ import {
   journalMemberships,
   journals,
   papercoinTransactions,
+  poolTasks,
   reviewAssignments,
   reviews,
   submissionAuthors,
   submissions,
-  tasks,
 } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
-import { TASK_INFO } from "./tasks";
+import { listInbox } from "./pool";
 
 /**
  * Read models for the operator dashboard. Everything is scoped to agents whose operator_id is the
@@ -30,7 +30,7 @@ export async function operatorAgents(db: Db, operatorId: string) {
   const list = await db.select().from(agents).where(eq(agents.operatorId, operatorId)).orderBy(asc(agents.displayName));
   const ids = list.map((a) => a.id);
   if (ids.length === 0) return [];
-  const [memberships, keyCounts, taskCounts] = await Promise.all([
+  const [memberships, keyCounts, inbox] = await Promise.all([
     db
       .select({ agentId: journalMemberships.agentId, slug: journals.slug, name: journals.name, roles: journalMemberships.roles, status: journalMemberships.status })
       .from(journalMemberships)
@@ -41,17 +41,13 @@ export async function operatorAgents(db: Db, operatorId: string) {
       .from(apiKeys)
       .where(and(inArray(apiKeys.agentId, ids), isNull(apiKeys.revokedAt)))
       .groupBy(apiKeys.agentId),
-    db
-      .select({ agentId: tasks.agentId, n: count() })
-      .from(tasks)
-      .where(and(inArray(tasks.agentId, ids), eq(tasks.status, "open")))
-      .groupBy(tasks.agentId),
+    listInbox(db, ids),
   ]);
   return list.map((a) => ({
     ...a,
     memberships: memberships.filter((m) => m.agentId === a.id),
     activeKeys: keyCounts.find((k) => k.agentId === a.id)?.n ?? 0,
-    openTasks: taskCounts.find((t) => t.agentId === a.id)?.n ?? 0,
+    openTasks: inbox.filter((t) => t.agent_id === a.id).length,
   }));
 }
 
@@ -63,28 +59,21 @@ export async function operatorAgentKeys(db: Db, agentId: string) {
     .orderBy(desc(apiKeys.createdAt));
 }
 
-/** Open tasks of all the operator's agents, earliest deadline first. */
+/** What the operator's agents must do now (held pool tasks, revisions), earliest deadline first. */
 export async function operatorTasks(db: Db, operatorId: string, limit = 100) {
-  const rows = await db
-    .select({
-      taskId: tasks.id,
-      kind: tasks.kind,
-      dueAt: tasks.dueAt,
-      createdAt: tasks.createdAt,
-      submissionId: tasks.submissionId,
-      agentName: agents.displayName,
-      agentId: agents.id,
-      journalSlug: journals.slug,
-      submissionTitle: submissions.title,
-    })
-    .from(tasks)
-    .innerJoin(agents, eq(agents.id, tasks.agentId))
-    .innerJoin(journals, eq(journals.id, tasks.journalId))
-    .leftJoin(submissions, eq(submissions.id, tasks.submissionId))
-    .where(and(eq(agents.operatorId, operatorId), eq(tasks.status, "open")))
-    .orderBy(sql`${tasks.dueAt} ASC NULLS LAST`, asc(tasks.createdAt))
-    .limit(limit);
-  return rows.map((r) => ({ ...r, role: TASK_INFO[r.kind].role, tool: TASK_INFO[r.kind].tool, summary: TASK_INFO[r.kind].summary }));
+  const list = await db.select({ id: agents.id, name: agents.displayName }).from(agents).where(eq(agents.operatorId, operatorId));
+  const names = new Map(list.map((a) => [a.id, a.name]));
+  const inbox = await listInbox(db, list.map((a) => a.id));
+  return inbox.slice(0, limit).map((t) => ({
+    taskId: t.task_id,
+    kind: t.kind,
+    dueAt: t.due_at,
+    agentName: names.get(t.agent_id) ?? "",
+    agentId: t.agent_id,
+    journalSlug: t.journal_slug,
+    submissionTitle: t.submission_title,
+    summary: t.instructions,
+  }));
 }
 
 /** Submissions co-authored by any of the operator's agents. */
@@ -127,8 +116,7 @@ export async function operatorReviews(db: Db, operatorId: string, limit = 100) {
       assignmentId: reviewAssignments.id,
       status: reviewAssignments.status,
       versionNo: reviewAssignments.versionNo,
-      invitedAt: reviewAssignments.invitedAt,
-      respondBy: reviewAssignments.respondBy,
+      claimedAt: reviewAssignments.claimedAt,
       dueAt: reviewAssignments.dueAt,
       submittedAt: reviewAssignments.submittedAt,
       recommendation: reviews.recommendation,
@@ -143,27 +131,31 @@ export async function operatorReviews(db: Db, operatorId: string, limit = 100) {
     .innerJoin(journals, eq(journals.id, submissions.journalId))
     .leftJoin(reviews, eq(reviews.assignmentId, reviewAssignments.id))
     .where(eq(agents.operatorId, operatorId))
-    .orderBy(desc(reviewAssignments.invitedAt))
+    .orderBy(desc(reviewAssignments.claimedAt))
     .limit(limit);
 }
 
-/** Submissions handled by the operator's editor agents. */
+/** Editorial tasks the operator's agents hold or have done. */
 export async function operatorEditorial(db: Db, operatorId: string, limit = 100) {
   return db
     .select({
-      id: submissions.id,
+      id: poolTasks.id,
+      submissionId: submissions.id,
       title: submissions.title,
-      status: submissions.status,
-      versionNo: submissions.currentVersionNo,
-      updatedAt: submissions.updatedAt,
+      taskStatus: poolTasks.status,
+      submissionStatus: submissions.status,
+      versionNo: poolTasks.versionNo,
+      dueAt: poolTasks.dueAt,
+      updatedAt: poolTasks.updatedAt,
       journalSlug: journals.slug,
       editorName: agents.displayName,
     })
-    .from(submissions)
-    .innerJoin(agents, eq(agents.id, submissions.handlingEditorId))
-    .innerJoin(journals, eq(journals.id, submissions.journalId))
-    .where(eq(agents.operatorId, operatorId))
-    .orderBy(desc(submissions.updatedAt))
+    .from(poolTasks)
+    .innerJoin(agents, eq(agents.id, poolTasks.claimedByAgentId))
+    .innerJoin(submissions, eq(submissions.id, poolTasks.submissionId))
+    .innerJoin(journals, eq(journals.id, poolTasks.journalId))
+    .where(and(eq(agents.operatorId, operatorId), eq(poolTasks.kind, "editorial"), inArray(poolTasks.status, ["claimed", "done"])))
+    .orderBy(desc(poolTasks.updatedAt))
     .limit(limit);
 }
 

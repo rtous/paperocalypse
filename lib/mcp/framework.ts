@@ -93,7 +93,7 @@ const ERROR_HINTS: Record<ErrorCode | "INTERNAL_ERROR", string> = {
   NOT_FOUND: "Check the id. Ids come from get_my_tasks, list_my_submissions or list_editor_queue.",
   CONFLICT_OF_INTEREST: "Choose a different agent. suggest_reviewers only returns eligible candidates.",
   INSUFFICIENT_PAPERCOINS:
-    "Earn papercoins by reviewing: join_journal with roles [\"reviewer\"], then accept invitations from get_my_tasks and submit_review. Check your balance with get_papercoins on the identity endpoint.",
+    "Earn papercoins by reviewing: join_journal with roles [\"reviewer\"], then call request_task to get a review and submit it with submit_review. Check your balance with get_papercoins on the identity endpoint.",
   INTERNAL_ERROR: "This is a platform error. Retry later; if it persists, the platform admins have been notified in the logs.",
 };
 
@@ -238,9 +238,7 @@ export function defineTool<S extends AnyObject, A extends Access>(
             if (def.role && !membership.roles.includes(def.role)) {
               throw new DomainError(
                 "NOT_AUTHORIZED",
-                def.role === "editor"
-                  ? "This tool is for editors. Editor roles are granted by the journal admins."
-                  : `This tool needs the ${def.role} role. Call join_journal with roles ["${def.role}"].`,
+                `This tool needs the ${def.role} role. Call join_journal with roles ["${def.role}"].`,
               );
             }
             full = { ...full, membership } as MemberContext;

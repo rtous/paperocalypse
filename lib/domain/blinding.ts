@@ -57,11 +57,10 @@ export type SubmissionBundle = {
     version_no: number;
     reviewer: AgentRef;
     status: string;
-    invited_at: Date;
-    respond_by: Date;
+    claimed_at: Date;
     due_at: Date | null;
     submitted_at: Date | null;
-    decline_reason: string | null;
+    release_reason: string | null;
   }[];
   reviews: {
     assignment_id: string;
@@ -73,6 +72,7 @@ export type SubmissionBundle = {
     confidential_to_editor_md: string;
     confidence: number;
     scores: { novelty: number; soundness: number; clarity: number; significance: number };
+    overall_score: number;
     integrity_flags: IntegrityFlag[];
     updated_at: Date;
   }[];
@@ -92,7 +92,7 @@ export type SubmissionBundle = {
 export function reviewerLabels(bundle: SubmissionBundle): Map<string, string> {
   const labels = new Map<string, string>();
   const ordered = [...bundle.assignments].sort(
-    (a, b) => a.invited_at.getTime() - b.invited_at.getTime() || a.id.localeCompare(b.id),
+    (a, b) => a.claimed_at.getTime() - b.claimed_at.getTime() || a.id.localeCompare(b.id),
   );
   for (const a of ordered) {
     if (!labels.has(a.reviewer.id)) labels.set(a.reviewer.id, `Reviewer ${labels.size + 1}`);
@@ -199,6 +199,7 @@ export function serializeForAuthor(bundle: SubmissionBundle, blinding: Blinding)
         ...(blinding === "none" ? { reviewer_display_name: assignment.reviewer.display_name } : {}),
         ...publicReviewBody(review),
         scores: review.scores,
+        overall_score: review.overall_score,
       }))
       .sort((a, b) => a.version_no - b.version_no || a.reviewer_label.localeCompare(b.reviewer_label)),
     created_at: s.created_at.toISOString(),
@@ -217,7 +218,7 @@ export function serializeForReviewer(
 ) {
   const mine = bundle.assignments
     .filter((a) => a.reviewer.id === reviewerAgentId)
-    .sort((a, b) => b.invited_at.getTime() - a.invited_at.getTime());
+    .sort((a, b) => b.claimed_at.getTime() - a.claimed_at.getTime());
   const assignment = mine[0];
   if (!assignment) throw new Error("Reviewer has no assignment on this submission");
 
@@ -233,7 +234,7 @@ export function serializeForReviewer(
       assignment_id: assignment.id,
       version_no: assignment.version_no,
       status: assignment.status,
-      respond_by: iso(assignment.respond_by),
+      claimed_at: iso(assignment.claimed_at),
       due_at: iso(assignment.due_at),
       submitted_at: iso(assignment.submitted_at),
     },
@@ -245,6 +246,7 @@ export function serializeForReviewer(
           confidential_to_editor_md: myReview.confidential_to_editor_md,
           confidence: myReview.confidence,
           scores: myReview.scores,
+          overall_score: myReview.overall_score,
           updated_at: myReview.updated_at.toISOString(),
         }
       : null,
@@ -281,11 +283,10 @@ export function serializeForEditor(bundle: SubmissionBundle) {
       reviewer_label: labels.get(a.reviewer.id)!,
       reviewer: a.reviewer,
       status: a.status,
-      invited_at: iso(a.invited_at),
-      respond_by: iso(a.respond_by),
+      claimed_at: iso(a.claimed_at),
       due_at: iso(a.due_at),
       submitted_at: iso(a.submitted_at),
-      decline_reason: a.decline_reason,
+      release_reason: a.release_reason,
     })),
     reviews: submittedReviews(bundle).map(({ review, assignment }) => ({
       assignment_id: assignment.id,
@@ -296,6 +297,7 @@ export function serializeForEditor(bundle: SubmissionBundle) {
       confidential_to_editor_md: review.confidential_to_editor_md,
       confidence: review.confidence,
       scores: review.scores,
+      overall_score: review.overall_score,
       integrity_flags: review.integrity_flags,
     })),
     decisions: bundle.decisions.map((d) => ({

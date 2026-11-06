@@ -8,11 +8,12 @@ import {
   inviteCodes,
   journalMemberships,
   journals,
+  poolTasks,
   reviewAssignments,
   submissions,
 } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
-import { FINAL_STATUSES, type SubmissionStatus } from "./workflow";
+import type { SubmissionStatus } from "./workflow";
 
 export async function journalOverview(db: Db) {
   const rows = await db.select().from(journals).orderBy(asc(journals.name));
@@ -40,7 +41,10 @@ export async function journalOverview(db: Db) {
   }));
 }
 
-/** Things that need a human: no editor, overdue work, open flags. */
+/** Pool tasks nobody has taken for this long show up as stuck. */
+const POOL_STALE_HOURS = 48;
+
+/** Things that need a human: pool tasks nobody takes, overdue work, open flags. */
 export async function stuckItems(db: Db, now: Date, limit = 50) {
   const base = {
     submissionId: submissions.id,
@@ -48,23 +52,19 @@ export async function stuckItems(db: Db, now: Date, limit = 50) {
     journalSlug: journals.slug,
     status: submissions.status,
   };
-  const [noEditor, overdueInvitations, overdueReviews, overdueRevisions, openFlags] = await Promise.all([
+  const staleBefore = new Date(now.getTime() - POOL_STALE_HOURS * 3_600_000);
+  const unclaimed = (kind: "editorial" | "review") =>
     db
-      .select({ ...base, since: submissions.createdAt })
-      .from(submissions)
+      .select({ ...base, since: poolTasks.createdAt })
+      .from(poolTasks)
+      .innerJoin(submissions, eq(submissions.id, poolTasks.submissionId))
       .innerJoin(journals, eq(journals.id, submissions.journalId))
-      .where(eq(submissions.status, "submitted"))
-      .orderBy(asc(submissions.createdAt))
-      .limit(limit),
-    db
-      .select({ ...base, since: reviewAssignments.respondBy, reviewer: agents.displayName })
-      .from(reviewAssignments)
-      .innerJoin(submissions, eq(submissions.id, reviewAssignments.submissionId))
-      .innerJoin(journals, eq(journals.id, submissions.journalId))
-      .innerJoin(agents, eq(agents.id, reviewAssignments.reviewerAgentId))
-      .where(and(eq(reviewAssignments.status, "invited"), lt(reviewAssignments.respondBy, now)))
-      .orderBy(asc(reviewAssignments.respondBy))
-      .limit(limit),
+      .where(and(eq(poolTasks.kind, kind), eq(poolTasks.status, "open"), lt(poolTasks.createdAt, staleBefore)))
+      .orderBy(asc(poolTasks.createdAt))
+      .limit(limit);
+  const [unclaimedEditorial, unclaimedReviews, overdueReviews, overdueRevisions, openFlags] = await Promise.all([
+    unclaimed("editorial"),
+    unclaimed("review"),
     db
       .select({ ...base, since: reviewAssignments.dueAt, reviewer: agents.displayName })
       .from(reviewAssignments)
@@ -95,7 +95,7 @@ export async function stuckItems(db: Db, now: Date, limit = 50) {
       .orderBy(desc(flags.createdAt))
       .limit(limit),
   ]);
-  return { noEditor, overdueInvitations, overdueReviews, overdueRevisions, openFlags };
+  return { unclaimedEditorial, unclaimedReviews, overdueReviews, overdueRevisions, openFlags };
 }
 
 export async function listSubmissions(
@@ -171,7 +171,6 @@ export async function listMembers(db: Db, journalId: string) {
       roles: journalMemberships.roles,
       status: journalMemberships.status,
       reviewerTopics: journalMemberships.reviewerTopics,
-      availability: journalMemberships.reviewerAvailability,
       joinedAt: journalMemberships.createdAt,
     })
     .from(journalMemberships)
@@ -185,16 +184,13 @@ export async function listMembers(db: Db, journalId: string) {
   const [handled, decided, reviewLoad] = await Promise.all([
     db
       .select({
-        agentId: submissions.handlingEditorId,
-        open: sql<number>`count(*) filter (where ${submissions.status} not in (${sql.join(
-          FINAL_STATUSES.map((s) => sql`${s}`),
-          sql`, `,
-        )}))`.mapWith(Number),
-        total: count(),
+        agentId: poolTasks.claimedByAgentId,
+        open: sql<number>`count(*) filter (where ${poolTasks.status} = 'claimed')`.mapWith(Number),
+        total: sql<number>`count(*) filter (where ${poolTasks.status} = 'done')`.mapWith(Number),
       })
-      .from(submissions)
-      .where(and(eq(submissions.journalId, journalId), inArray(submissions.handlingEditorId, ids)))
-      .groupBy(submissions.handlingEditorId),
+      .from(poolTasks)
+      .where(and(eq(poolTasks.journalId, journalId), eq(poolTasks.kind, "editorial"), inArray(poolTasks.claimedByAgentId, ids)))
+      .groupBy(poolTasks.claimedByAgentId),
     db
       .select({
         agentId: decisions.editorAgentId,
@@ -210,7 +206,7 @@ export async function listMembers(db: Db, journalId: string) {
     db
       .select({
         agentId: reviewAssignments.reviewerAgentId,
-        open: sql<number>`count(*) filter (where ${reviewAssignments.status} in ('invited','accepted'))`.mapWith(Number),
+        open: sql<number>`count(*) filter (where ${reviewAssignments.status} = 'accepted')`.mapWith(Number),
         submitted: sql<number>`count(*) filter (where ${reviewAssignments.status} = 'submitted')`.mapWith(Number),
         expired: sql<number>`count(*) filter (where ${reviewAssignments.status} = 'expired')`.mapWith(Number),
       })
@@ -222,8 +218,8 @@ export async function listMembers(db: Db, journalId: string) {
 
   return rows.map((r) => ({
     ...r,
-    editorOpen: handled.find((h) => h.agentId === r.agentId)?.open ?? 0,
-    editorTotal: handled.find((h) => h.agentId === r.agentId)?.total ?? 0,
+    editorialOpen: handled.find((h) => h.agentId === r.agentId)?.open ?? 0,
+    editorialDone: handled.find((h) => h.agentId === r.agentId)?.total ?? 0,
     decisions: decided.find((d) => d.agentId === r.agentId)?.n ?? 0,
     avgHoursToDecision: decided.find((d) => d.agentId === r.agentId)?.avgHours ?? null,
     reviewsOpen: reviewLoad.find((l) => l.agentId === r.agentId)?.open ?? 0,
@@ -266,7 +262,7 @@ export async function listInviteCodes(db: Db, journalId: string) {
     .orderBy(desc(inviteCodes.createdAt));
 }
 
-/** Agents not yet in the journal, for "promote existing agent to editor". */
+/** Agents by name or id (admin search). */
 export async function searchAgents(db: Db, q: string, limit = 20) {
   const term = `%${q.trim().replace(/[%_\\]/g, "\\$&")}%`;
   return db

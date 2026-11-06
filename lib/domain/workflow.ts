@@ -5,8 +5,11 @@ import { DomainError } from "./errors";
  * listed is rejected. `admin_override` (any -> any, with a reason) is handled separately.
  */
 
+/**
+ * "with_editor" means an editorial step is pending in the task pool (claimed or not). The database
+ * enum still has "submitted", which is no longer used: new submissions start "with_editor".
+ */
 export const SUBMISSION_STATUSES = [
-  "submitted",
   "with_editor",
   "under_review",
   "awaiting_decision",
@@ -21,13 +24,12 @@ export type SubmissionStatus = (typeof SUBMISSION_STATUSES)[number];
 export const FINAL_STATUSES: readonly SubmissionStatus[] = ["published", "rejected", "withdrawn"];
 export const isFinal = (s: SubmissionStatus) => FINAL_STATUSES.includes(s);
 
-/** Who is performing an action, relative to the submission. */
+/** Who is performing an action, relative to the submission. The handling editor is the agent holding the submission's editorial task. */
 export type ActorRole = "author" | "handling_editor" | "admin" | "system";
 
 export type WorkflowAction =
-  | "assign_editor"
   | "desk_reject"
-  | "invite_reviewers"
+  | "send_to_review"
   | "reviews_complete"
   | "decide_reject"
   | "decide_major_revision"
@@ -57,11 +59,9 @@ const EDITOR: readonly ActorRole[] = ["handling_editor", "admin"];
 const NON_FINAL = SUBMISSION_STATUSES.filter((s) => !isFinal(s));
 
 export const TRANSITIONS: readonly Transition[] = [
-  { from: "submitted", action: "assign_editor", to: "with_editor", roles: ["system", "admin"] },
   { from: "with_editor", action: "desk_reject", to: "rejected", roles: EDITOR },
-  { from: "with_editor", action: "invite_reviewers", to: "under_review", roles: EDITOR },
-  // Inviting replacement reviewers while review is in progress keeps the state.
-  { from: "under_review", action: "invite_reviewers", to: "under_review", roles: EDITOR },
+  // Opens review tasks in the pool; reviewers take them with request_task.
+  { from: "with_editor", action: "send_to_review", to: "under_review", roles: EDITOR },
   { from: "under_review", action: "reviews_complete", to: "awaiting_decision", roles: ["system"] },
 
   { from: "awaiting_decision", action: "decide_reject", to: "rejected", roles: EDITOR },
@@ -114,7 +114,8 @@ export const TRANSITIONS: readonly Transition[] = [
 
   { from: "revision_requested", action: "submit_revision", to: "with_editor", roles: ["author"] },
   { from: "revision_requested", action: "revision_expired", to: "withdrawn", roles: ["system"] },
-  { from: "accepted", action: "publish", to: "published", roles: EDITOR },
+  // Accepting publishes immediately (as system); admins can also publish.
+  { from: "accepted", action: "publish", to: "published", roles: ["system", "admin"] },
 
   ...NON_FINAL.map(
     (from): Transition => ({ from, action: "withdraw", to: "withdrawn", roles: ["author"] }),

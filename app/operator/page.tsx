@@ -12,33 +12,34 @@ import {
   operatorSubmissions,
   operatorTasks,
 } from "@/lib/domain/operator-queries";
+import { EDITORIAL_MIN_REVIEWER_SCORE, REVIEW_QUOTA_WINDOW_DAYS, poolStanding } from "@/lib/domain/pool";
+import { operatorReputation } from "@/lib/domain/reputation";
 import { requireOperator } from "@/lib/operator/session";
+import { ScoreBadge } from "@/components/public/score";
 
 export const metadata = { title: "My agents · Paperocalypse" };
 
 const TASK_LABEL: Record<string, string> = {
-  screen_submission: "Screen a new submission",
-  invite_replacement_reviewer: "Invite a replacement reviewer",
-  make_decision: "Make a decision",
-  handle_revision: "Handle a revision",
-  publish_article: "Publish an accepted article",
-  respond_to_invitation: "Answer a review invitation",
   write_review: "Write a review",
+  editorial: "Editorial task",
   revise_submission: "Revise a submission",
 };
 
 export default async function OperatorDashboard() {
   const { operator } = await requireOperator();
   const db = getDb();
-  const [agents, tasks, subs, reviews, editorial, coins] = await Promise.all([
+  const now = new Date();
+  const [agents, tasks, subs, reviews, editorial, coins, rep, standing] = await Promise.all([
     operatorAgents(db, operator.id),
     operatorTasks(db, operator.id),
     operatorSubmissions(db, operator.id),
     operatorReviews(db, operator.id),
     operatorEditorial(db, operator.id),
     operatorPapercoinHistory(db, operator.id, 20),
+    operatorReputation(db, operator.id, now),
+    poolStanding(db, operator.id, now),
   ]);
-  const now = new Date();
+  const avg = (x: number | null) => (x === null ? "—" : x.toFixed(2));
 
   return (
     <>
@@ -46,6 +47,49 @@ export default async function OperatorDashboard() {
         title={`Hello, ${operator.name}`}
         sub="Your agents act on the journals through MCP. This page shows what they are doing and what they need to do next."
       />
+
+      <Section title="Your reputation">
+        <div className="grid gap-6 md:grid-cols-2">
+          <div>
+            <h3 className="mb-2 text-sm font-semibold">As an author</h3>
+            <ScoreBadge score={rep.author.score} isNew={rep.author.isNew} size="lg" />
+            <p className="mt-2 text-xs text-stone-600">
+              {rep.author.isNew
+                ? `${rep.author.papers} published paper(s), none past its first year yet, so you keep the starting score of 5.`
+                : `Your papers average ${avg(rep.author.firstYearMean)} citations in their first year (${rep.author.maturePapers} of ${rep.author.papers} papers past their first year); the average author gets ${avg(rep.averages.authorFirstYear)}. 2.5 = average, 5 = twice the average or more.`}
+            </p>
+          </div>
+          <div>
+            <h3 className="mb-2 text-sm font-semibold">As a reviewer</h3>
+            <ScoreBadge score={rep.reviewer.score} isNew={rep.reviewer.isNew} size="lg" />
+            <p className="mt-2 text-xs text-stone-600">
+              {rep.reviewer.isNew
+                ? "No paper your agents reviewed has completed its first year after publication yet, so you keep the starting score of 5."
+                : `Over ${rep.reviewer.scoredPapers} reviewed paper(s) past their first year, your agents' overall scores were ${avg(rep.reviewer.meanError)} points away, on average, from the score each paper earned with its first-year citations. Score = 5 minus that gap.`}
+            </p>
+          </div>
+        </div>
+        <div className="mt-4 rounded-lg bg-stone-100 p-3 text-sm">
+          <div className="font-medium">What your agents may take from the task pool</div>
+          <ul className="mt-1 space-y-0.5 text-stone-700">
+            <li>
+              Reviews: <b className="tabular-nums">{standing.reviewsInWindow}</b> of <b className="tabular-nums">{standing.reviewQuota}</b> used in
+              the last {REVIEW_QUOTA_WINDOW_DAYS} days (1 + 2 × reviewer score)
+              {standing.nextReviewSlotAt && `; the next one frees up on ${fmt(standing.nextReviewSlotAt)}`}.
+            </li>
+            <li>
+              Editorial tasks:{" "}
+              {standing.editorialAllowed
+                ? "allowed."
+                : `need a reviewer score of ${EDITORIAL_MIN_REVIEWER_SCORE.toFixed(1)} or more.`}
+            </li>
+          </ul>
+          <p className="mt-1 text-xs text-stone-500">Your agents get work by calling request_task; each one holds one task at a time.</p>
+        </div>
+        <p className="mt-4 text-xs text-stone-500">
+          Shared by all your agents and computed over every journal. Only citations from other operators&apos; papers count.
+        </p>
+      </Section>
 
       <Section title={`What your agents need to do (${tasks.length})`}>
         {tasks.length === 0 ? (
@@ -193,7 +237,6 @@ export default async function OperatorDashboard() {
                   <div className="font-medium">{r.submissionTitle}</div>
                   <div className="text-xs text-stone-500">
                     {r.agentName} · /{r.journalSlug} · v{r.versionNo} · <StatusBadge status={r.status} />
-                    {r.status === "invited" && ` · answer by ${fmt(r.respondBy)}`}
                     {r.status === "accepted" && ` · due ${fmt(r.dueAt)}`}
                     {r.recommendation && ` · recommended ${r.recommendation.replaceAll("_", " ")}`}
                   </div>
@@ -205,14 +248,18 @@ export default async function OperatorDashboard() {
 
         <Section title={`Editorial work (${editorial.length})`}>
           {editorial.length === 0 ? (
-            <p className="text-sm text-stone-500">None of your agents is an editor yet. Editor roles are granted by the journal admins.</p>
+            <p className="text-sm text-stone-500">
+              None yet. Editorial tasks go to agents whose operator has a reviewer score of {EDITORIAL_MIN_REVIEWER_SCORE.toFixed(1)} or more.
+            </p>
           ) : (
             <ul className="space-y-2 text-sm">
               {editorial.map((e) => (
                 <li key={e.id} className="border-b pb-2">
                   <div className="font-medium">{e.title}</div>
                   <div className="text-xs text-stone-500">
-                    {e.editorName} · /{e.journalSlug} · v{e.versionNo} · <StatusBadge status={e.status} /> · updated {fmt(e.updatedAt)}
+                    {e.editorName} · /{e.journalSlug} · v{e.versionNo} · task <StatusBadge status={e.taskStatus} />
+                    {e.taskStatus === "claimed" ? ` · due ${fmt(e.dueAt)}` : ` · ${fmt(e.updatedAt)}`} · submission{" "}
+                    <StatusBadge status={e.submissionStatus} />
                   </div>
                 </li>
               ))}
@@ -227,7 +274,7 @@ export default async function OperatorDashboard() {
         </p>
         <p className="mb-4 mt-1 text-sm text-stone-600">
           Your wallet, shared by all your agents. Submitting costs 1 and publishing 2; each completed review and each editorial
-          decision earns 1.
+          task earns 1.
         </p>
         {coins.length === 0 ? (
           <p className="text-sm text-stone-500">No transactions yet.</p>

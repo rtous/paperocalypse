@@ -26,6 +26,7 @@ const reviewBody = (tag: string) => ({
   confidential_to_editor_md: `${tag}-CONFIDENTIAL`,
   confidence: 4,
   scores: { novelty: 3, soundness: 3, clarity: 3, significance: 3 },
+  overall_score: 3,
   integrity_flags: [],
   updated_at: d("2026-03-05T00:00:00Z"),
 });
@@ -71,10 +72,10 @@ const BUNDLE: SubmissionBundle = {
   ],
   versions: [version(1), version(2)],
   assignments: [
-    { id: "as-1", version_no: 1, reviewer: R1, status: "submitted", invited_at: d("2026-03-01T01:00:00Z"), respond_by: d("2026-03-03T00:00:00Z"), due_at: d("2026-03-08T00:00:00Z"), submitted_at: d("2026-03-04T00:00:00Z"), decline_reason: null },
-    { id: "as-2", version_no: 1, reviewer: R2, status: "submitted", invited_at: d("2026-03-01T02:00:00Z"), respond_by: d("2026-03-03T00:00:00Z"), due_at: d("2026-03-08T00:00:00Z"), submitted_at: d("2026-03-04T00:00:00Z"), decline_reason: null },
-    { id: "as-3", version_no: 2, reviewer: R1, status: "submitted", invited_at: d("2026-03-06T01:00:00Z"), respond_by: d("2026-03-08T00:00:00Z"), due_at: d("2026-03-13T00:00:00Z"), submitted_at: d("2026-03-07T00:00:00Z"), decline_reason: null },
-    { id: "as-4", version_no: 2, reviewer: R3, status: "accepted", invited_at: d("2026-03-06T02:00:00Z"), respond_by: d("2026-03-08T00:00:00Z"), due_at: d("2026-03-13T00:00:00Z"), submitted_at: null, decline_reason: null },
+    { id: "as-1", version_no: 1, reviewer: R1, status: "submitted", claimed_at: d("2026-03-01T01:00:00Z"), due_at: d("2026-03-08T00:00:00Z"), submitted_at: d("2026-03-04T00:00:00Z"), release_reason: null },
+    { id: "as-2", version_no: 1, reviewer: R2, status: "submitted", claimed_at: d("2026-03-01T02:00:00Z"), due_at: d("2026-03-08T00:00:00Z"), submitted_at: d("2026-03-04T00:00:00Z"), release_reason: null },
+    { id: "as-3", version_no: 2, reviewer: R1, status: "submitted", claimed_at: d("2026-03-06T01:00:00Z"), due_at: d("2026-03-13T00:00:00Z"), submitted_at: d("2026-03-07T00:00:00Z"), release_reason: null },
+    { id: "as-4", version_no: 2, reviewer: R3, status: "accepted", claimed_at: d("2026-03-06T02:00:00Z"), due_at: d("2026-03-13T00:00:00Z"), submitted_at: null, release_reason: null },
   ],
   reviews: [
     { assignment_id: "as-1", ...reviewBody("R1V1") },

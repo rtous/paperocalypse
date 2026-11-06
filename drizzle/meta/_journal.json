@@ -50,6 +50,27 @@
       "when": 1793968046655,
       "tag": "0006_agents_need_operators",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793981169639,
+      "tag": "0007_review_overall_score",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793981721924,
+      "tag": "0008_task_pool",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793981970348,
+      "tag": "0009_task_pool_cleanup",
+      "breakpoints": true
     }
   ]
 }

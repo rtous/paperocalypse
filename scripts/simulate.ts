@@ -1,10 +1,12 @@
 /**
- * End-to-end simulation: scripted agents (1 editor, 3 authors, 5 reviewers, no LLM) drive every
- * workflow path through the real MCP endpoints.
+ * End-to-end simulation: scripted agents (1 editorial agent, 3 authors, 5 reviewers, no LLM) drive
+ * every workflow path through the real MCP endpoints. All work comes from the task pool
+ * (request_task); nobody is assigned anything.
  *
- * Paths: desk reject · reject after review · two revision rounds → accept → publish ·
- * expired review → replacement → accept · decline → replacement · withdrawal ·
- * conflict of interest · blinding · idempotent retries · public read-back.
+ * Paths: desk reject · reject after review · two revision rounds → accept (auto-publish) ·
+ * released review → someone else takes it · expired review → back to the pool · withdrawal ·
+ * conflict of interest and one-role-per-submission exclusions · blinding · idempotent retries ·
+ * public read-back.
  *
  *   npm run sim                              # in-process: real MCP handlers on a fresh PGlite DB
  *   npm run sim -- --base https://x.vercel.app   # over HTTP against a deployment (uses DATABASE_URL
@@ -16,8 +18,8 @@
  * The simulation journal is archived at the end unless --keep is passed.
  */
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
-import { admins, reviewAssignments } from "@/lib/db/schema";
+import { eq, sql } from "drizzle-orm";
+import { admins, poolTasks, reviewAssignments } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import { createAgent, grantRoles, issueApiKey } from "@/lib/domain/agents";
 import { processDeadlines } from "@/lib/domain/deadlines";
@@ -100,6 +102,7 @@ const review = (assignment_id: string, recommendation: string, tag: string) => (
   confidential_to_editor_md: `CONFIDENTIAL-${tag}`,
   confidence: 4,
   scores: { novelty: 3, soundness: 4, clarity: 4, significance: 3 },
+  overall_score: 3,
   idempotency_key: `review-${assignment_id}-${tag}`,
 });
 
@@ -162,13 +165,15 @@ async function main() {
   await setJournalStatus(db, admin, journal.id, "open", now());
   const editor = newAgent("Editor");
   const edOp = (await upsertOperatorFromLogin(db, { email: `editor-${slug}@sim.test`, name: "Operator of Editor" }, now()))!;
-  const ed = await createAgent(db, admin, { displayName: "Sim Editor", description: "scripted editor", operatorId: edOp.id }, now());
-  await grantRoles(db, admin, journal.id, ed.id, ["editor"], now());
+  // Editorial work needs no special role: any reviewer whose operator has a good reviewer score
+  // gets editorial tasks (new operators start at 5).
+  const ed = await createAgent(db, admin, { displayName: "Sim Editor", description: "scripted editorial agent", operatorId: edOp.id }, now());
+  await grantRoles(db, admin, journal.id, ed.id, ["reviewer"], now());
   editor.agentId = ed.id;
   await editor.useKey((await db.transaction((tx) => issueApiKey(tx, admin, ed.id, "simulation", now()))).apiKey);
   const J = `/api/j/${slug}/mcp`;
   const ID = "/api/mcp";
-  log(`journal /${slug} (${journal.id}), editor ${ed.id}`);
+  log(`journal /${slug} (${journal.id}), editorial agent ${ed.id}`);
 
   // ---------------------------------------------------------------- registration
   section("Operators create agents (dashboard), agents join over MCP");
@@ -195,33 +200,29 @@ async function main() {
   const info = await authors[0]!.must(J, "get_journal_info");
   check(info.your_membership?.roles.includes("author"), "get_journal_info shows the caller's membership");
 
-  /** Editor screens via its inbox: the task names the tool and the submission. */
-  async function editorTask(kind: string, submissionId: string) {
-    const tasks = (await editor.must(J, "get_my_tasks", { limit: 100 })).tasks as any[];
-    const t = tasks.find((x) => x.kind === kind && x.arguments.submission_id === submissionId);
-    check(t, `editor has a ${kind} task (tool: ${t?.tool})`);
-    return t;
+  /** The agent asks the pool for work and must get a task of the given kind on the submission. */
+  async function take(a: Agent, kind: "review" | "editorial", submissionId: string) {
+    const r = await a.must(J, "request_task");
+    check(r.task?.kind === kind && r.task.submission_id === submissionId, `${a.name} gets ${kind === "editorial" ? "an" : "a"} ${kind} task from the pool`);
+    const inbox = (await a.must(J, "get_my_tasks")).tasks as any[];
+    check(inbox.some((t) => t.task_id === r.task.task_id), `the ${kind} task is in ${a.name}'s inbox`);
+    return r.task;
   }
-  /** A reviewer finds its invitation, accepts, reads (blinded) and reviews. */
-  async function reviewerAccepts(r: Agent, submissionId: string) {
-    const tasks = (await r.must(J, "get_my_tasks")).tasks as any[];
-    const t = tasks.find((x) => x.kind === "respond_to_invitation");
-    check(t?.tool === "respond_to_review_invitation", `${r.name} sees its invitation`);
-    const preview = await r.must(J, "get_manuscript_for_review", t.arguments);
-    check(preview.untrusted_content.body_md === undefined, `${r.name} sees only a preview before accepting`);
-    await r.must(J, "respond_to_review_invitation", { ...t.arguments, accept: true, idempotency_key: `accept-${t.arguments.assignment_id}` });
+  /** The agent asks for work and gets nothing. */
+  async function nothingFor(a: Agent, why: string) {
+    const r = await a.must(J, "request_task");
+    check(r.task === null && r.reasons.length > 0, `${a.name} gets no task: ${why}`);
+  }
+  /** A reviewer takes a review task, reads the (blinded) manuscript and reviews it. */
+  async function reviewOnce(r: Agent, submissionId: string, rec: string) {
+    const t = await take(r, "review", submissionId);
     const full = await r.must(J, "get_manuscript_for_review", t.arguments);
     check(full.untrusted_content.body_md && full.notice, `${r.name} gets the full manuscript in an untrusted envelope`);
     check(full.untrusted_content.authors === undefined, `${r.name} does not see the authors (double blind)`);
-    void submissionId;
-    return t.arguments.assignment_id as string;
-  }
-  async function submitReview(r: Agent, assignmentId: string, rec: string) {
-    const tasks = (await r.must(J, "get_my_tasks")).tasks as any[];
-    check(tasks.some((x) => x.kind === "write_review" && x.arguments.assignment_id === assignmentId), `${r.name} has a write_review task`);
-    await r.must(J, "submit_review", review(assignmentId, rec, r.name));
-    const replay = await r.must(J, "submit_review", review(assignmentId, rec, r.name));
+    await r.must(J, "submit_review", review(t.arguments.assignment_id, rec, r.name));
+    const replay = await r.must(J, "submit_review", review(t.arguments.assignment_id, rec, r.name));
     check(replay.idempotent_replay === true, `${r.name}'s retried submit_review is an idempotent replay`);
+    return t.arguments.assignment_id as string;
   }
   async function status(a: Agent, submissionId: string) {
     return (await a.must(J, "get_submission", { submission_id: submissionId })).status as string;
@@ -232,18 +233,24 @@ async function main() {
   const a = await authors[0]!.must(J, "submit_manuscript", { ...paper("Perpetual Motion"), idempotency_key: `a-${run}` });
   const aRetry = await authors[0]!.must(J, "submit_manuscript", { ...paper("Perpetual Motion"), idempotency_key: `a-${run}` });
   check(aRetry.submission_id === a.submission_id && aRetry.idempotent_replay, "a retried submit_manuscript returns the same submission");
-  check(a.status === "with_editor", "an editor was assigned automatically");
-  await editorTask("screen_submission", a.submission_id);
+  check(a.status === "with_editor", "the screening is published as an editorial task");
+  const notHolder = await reviewers[0]!.call(J, "desk_reject", { submission_id: a.submission_id, letter_md: "I am not the editor of this one at all." });
+  check(notHolder.code === "NOT_FOUND", "only the agent holding the editorial task can act on it");
+  await take(editor, "editorial", a.submission_id);
+  const again = await editor.must(J, "request_task");
+  check(again.already_held === true, "asking again returns the task the editor already holds");
   await editor.must(J, "desk_reject", { submission_id: a.submission_id, letter_md: "Out of scope: perpetual motion contradicts thermodynamics." });
   check((await status(authors[0]!, a.submission_id)) === "rejected", "author sees the desk rejection");
 
   // ---------------------------------------------------------------- B. reject after review
   section("B. Reject after review");
   const b = await authors[1]!.must(J, "submit_manuscript", paper("Unfalsifiable Claims"));
-  await editorTask("screen_submission", b.submission_id);
-  await editor.must(J, "invite_reviewers", { submission_id: b.submission_id, reviewer_agent_ids: [reviewers[0]!.agentId, reviewers[1]!.agentId] });
-  for (const r of [reviewers[0]!, reviewers[1]!]) await submitReview(r, await reviewerAccepts(r, b.submission_id), "reject");
-  await editorTask("make_decision", b.submission_id);
+  await take(editor, "editorial", b.submission_id);
+  const sent = await editor.must(J, "send_to_review", { submission_id: b.submission_id });
+  check(sent.review_tasks_published === 2, "send_to_review publishes 2 review tasks");
+  await nothingFor(editor, "its operator screened this submission, so it may not review it");
+  for (const r of [reviewers[0]!, reviewers[1]!]) await reviewOnce(r, b.submission_id, "reject");
+  await take(editor, "editorial", b.submission_id);
   const edView = await editor.must(J, "get_submission_for_editor", { submission_id: b.submission_id });
   check(JSON.stringify(edView).includes("CONFIDENTIAL-Reviewer1"), "the editor sees confidential comments");
   await editor.must(J, "make_decision", { submission_id: b.submission_id, decision: "reject", letter_md: "Both reviewers found the central claim unfalsifiable." });
@@ -252,18 +259,18 @@ async function main() {
   check(bView.status === "rejected" && bView.untrusted_content.reviews.length === 2, "author sees the rejection and two reviews");
   check(!bText.includes("CONFIDENTIAL") && !bText.includes(reviewers[0]!.agentId) && !bText.includes("Sim Reviewer"), "author never sees confidential comments or reviewer identities");
 
-  // ---------------------------------------------------------------- C. two revision rounds → accept → publish
-  section("C. Two revision rounds, decline + replacement, accept, publish");
+  // ---------------------------------------------------------------- C. two revision rounds → accept
+  section("C. Two revision rounds, a released review, accept and automatic publication");
   const c = await authors[2]!.must(J, "submit_manuscript", paper("Convergence of Simulated Reviews"));
-  const sugg = (await editor.must(J, "suggest_reviewers", { submission_id: c.submission_id, limit: 10 })).candidates as any[];
-  check(sugg.length >= 4, `suggest_reviewers ranks ${sugg.length} eligible reviewers`);
-  await editor.must(J, "invite_reviewers", { submission_id: c.submission_id, reviewer_agent_ids: [reviewers[2]!.agentId, reviewers[3]!.agentId] });
-  // Reviewer4 declines; the editor gets a replacement task and invites Reviewer5.
-  const r4Task = ((await reviewers[3]!.must(J, "get_my_tasks")).tasks as any[]).find((t) => t.kind === "respond_to_invitation");
-  await reviewers[3]!.must(J, "respond_to_review_invitation", { ...r4Task.arguments, accept: false, reason: "No time this week." });
-  await editorTask("invite_replacement_reviewer", c.submission_id);
-  await editor.must(J, "invite_reviewers", { submission_id: c.submission_id, reviewer_agent_ids: [reviewers[4]!.agentId] });
-  for (const r of [reviewers[2]!, reviewers[4]!]) await submitReview(r, await reviewerAccepts(r, c.submission_id), "major_revision");
+  await take(editor, "editorial", c.submission_id);
+  await editor.must(J, "send_to_review", { submission_id: c.submission_id });
+  await reviewOnce(reviewers[2]!, c.submission_id, "major_revision");
+  // Reviewer4 takes the other slot, then gives it back; Reviewer5 gets it.
+  const r4 = await take(reviewers[3]!, "review", c.submission_id);
+  await reviewers[3]!.must(J, "release_task", { task_id: r4.task_id, reason: "No time this week." });
+  check(((await reviewers[3]!.must(J, "get_my_tasks")).tasks as any[]).length === 0, "the released task leaves Reviewer4's inbox");
+  await reviewOnce(reviewers[4]!, c.submission_id, "major_revision");
+  await take(editor, "editorial", c.submission_id);
   await editor.must(J, "make_decision", { submission_id: c.submission_id, decision: "major_revision", letter_md: "Please address both reviews, especially the assumptions." });
   const revTask = ((await authors[2]!.must(J, "get_my_tasks")).tasks as any[]).find((t) => t.kind === "revise_submission");
   check(revTask?.tool === "submit_revision" && revTask.due_at, "author has a revise_submission task with a deadline");
@@ -272,59 +279,57 @@ async function main() {
     ...paper("Convergence of Simulated Reviews", "\n\n## Assumptions\n\nWe now state them explicitly."),
     response_to_reviewers_md: "Round 1: we added an Assumptions section and clarified the model as both reviewers asked.",
   });
-  await editorTask("handle_revision", c.submission_id);
-  await editor.must(J, "invite_reviewers", { submission_id: c.submission_id, reviewer_agent_ids: [reviewers[2]!.agentId, reviewers[3]!.agentId] });
-  for (const r of [reviewers[2]!, reviewers[3]!]) await submitReview(r, await reviewerAccepts(r, c.submission_id), "minor_revision");
+  await take(editor, "editorial", c.submission_id);
+  await editor.must(J, "send_to_review", { submission_id: c.submission_id });
+  for (const r of [reviewers[2]!, reviewers[3]!]) await reviewOnce(r, c.submission_id, "minor_revision");
+  await take(editor, "editorial", c.submission_id);
   await editor.must(J, "make_decision", { submission_id: c.submission_id, decision: "minor_revision", letter_md: "Nearly there: please fix the remaining minor points." });
   await authors[2]!.must(J, "submit_revision", {
     submission_id: c.submission_id,
     ...paper("Convergence of Simulated Reviews", "\n\n## Assumptions\n\nStated explicitly.\n\n## Limitations\n\nSmall sample."),
     response_to_reviewers_md: "Round 2: we added a Limitations section and fixed every minor point raised.",
   });
+  await take(editor, "editorial", c.submission_id);
   const third = await editor.call(J, "make_decision", { submission_id: c.submission_id, decision: "minor_revision", letter_md: "Trying a third revision round." });
   check(third.code === "INVALID_STATE", "a third revision round is refused (max_revisions = 2)");
-  await editor.must(J, "make_decision", { submission_id: c.submission_id, decision: "accept", letter_md: "Accepted without a further review round." });
-  await editorTask("publish_article", c.submission_id);
-  const pub = await editor.must(J, "publish_article", { submission_id: c.submission_id, idempotency_key: `pub-${c.submission_id}` });
+  const pub = await editor.must(J, "make_decision", { submission_id: c.submission_id, decision: "accept", letter_md: "Accepted without a further review round." });
+  check(pub.status === "published", "acceptance publishes the article straight away");
   check(pub.public_id === `paperocalypse:${slug}.${new Date().getUTCFullYear()}.1`, `published as ${pub.public_id}`);
 
-  // ---------------------------------------------------------------- D. expired review → replacement → accept
-  section("D. Expired review, conflict of interest, replacement");
+  // ---------------------------------------------------------------- D. conflicts and an expired review
+  section("D. Conflict of interest, expired review back to the pool");
   const d = await authors[0]!.must(J, "submit_manuscript", paper("Deadlines in Agent Review"));
-  const coi = await editor.call(J, "invite_reviewers", { submission_id: d.submission_id, reviewer_agent_ids: [reviewers[4]!.agentId] });
-  check(coi.code === "CONFLICT_OF_INTEREST", "inviting a reviewer who shares the author's operator is refused");
-  const dSugg = ((await editor.must(J, "suggest_reviewers", { submission_id: d.submission_id })).candidates as any[]).map((x) => x.agent_id);
-  check(!dSugg.includes(reviewers[4]!.agentId), "suggest_reviewers excludes the conflicted reviewer");
-  await editor.must(J, "invite_reviewers", { submission_id: d.submission_id, reviewer_agent_ids: [reviewers[0]!.agentId, reviewers[1]!.agentId] });
-  await submitReview(reviewers[0]!, await reviewerAccepts(reviewers[0]!, d.submission_id), "accept");
-  const lateId = await reviewerAccepts(reviewers[1]!, d.submission_id);
+  await take(editor, "editorial", d.submission_id);
+  await editor.must(J, "send_to_review", { submission_id: d.submission_id });
+  await nothingFor(reviewers[4]!, "it shares an operator with the author (conflict of interest)");
+  await reviewOnce(reviewers[0]!, d.submission_id, "accept");
+  const late = await take(reviewers[1]!, "review", d.submission_id);
   // Time travel: Reviewer2's deadline passes.
-  await db
-    .update(reviewAssignments)
-    .set({ dueAt: sql`now() - interval '1 minute'` })
-    .where(and(eq(reviewAssignments.id, lateId), eq(reviewAssignments.submissionId, d.submission_id)));
-  const late = await reviewers[1]!.call(J, "submit_review", review(lateId, "accept", "late"));
-  check(late.code === "INVALID_STATE", "a review after the deadline is refused");
+  await db.update(reviewAssignments).set({ dueAt: sql`now() - interval '1 minute'` }).where(eq(reviewAssignments.id, late.arguments.assignment_id));
+  await db.update(poolTasks).set({ dueAt: sql`now() - interval '1 minute'` }).where(eq(poolTasks.id, late.task_id));
+  const lateReview = await reviewers[1]!.call(J, "submit_review", review(late.arguments.assignment_id, "accept", "late"));
+  check(lateReview.code === "INVALID_STATE", "a review after the deadline is refused");
   const tk = await tick(J);
-  check((tk.deadlines?.reviewsExpired ?? 0) >= 1, "the scheduler tick expires the overdue review");
-  check(!((await reviewers[1]!.must(J, "get_my_tasks")).tasks as any[]).some((t) => t.arguments.assignment_id === lateId), "the expired task leaves the reviewer's inbox");
-  await editorTask("invite_replacement_reviewer", d.submission_id);
-  await editor.must(J, "invite_reviewers", { submission_id: d.submission_id, reviewer_agent_ids: [reviewers[2]!.agentId] });
-  await submitReview(reviewers[2]!, await reviewerAccepts(reviewers[2]!, d.submission_id), "accept");
+  check((tk.deadlines?.claimsExpired ?? 0) >= 1, "the scheduler tick returns the overdue review to the pool");
+  check(((await reviewers[1]!.must(J, "get_my_tasks")).tasks as any[]).length === 0, "the expired task leaves the reviewer's inbox");
+  await nothingFor(reviewers[1]!, "it already had this version (and let it expire)");
+  await reviewOnce(reviewers[2]!, d.submission_id, "accept");
+  await take(editor, "editorial", d.submission_id);
   await editor.must(J, "make_decision", { submission_id: d.submission_id, decision: "accept", letter_md: "Two positive reviews; accepted." });
-  await editor.must(J, "publish_article", { submission_id: d.submission_id });
   check((await status(authors[0]!, d.submission_id)) === "published", "the second article is published");
 
   // ---------------------------------------------------------------- E. withdrawal
   section("E. Withdrawal");
   const e = await authors[1]!.must(J, "submit_manuscript", paper("Premature Results"));
-  await editor.must(J, "invite_reviewers", { submission_id: e.submission_id, reviewer_agent_ids: [reviewers[3]!.agentId] });
-  check(((await reviewers[3]!.must(J, "get_my_tasks")).tasks as any[]).some((t) => t.kind === "respond_to_invitation"), "Reviewer4 is invited");
+  await take(editor, "editorial", e.submission_id);
+  await editor.must(J, "send_to_review", { submission_id: e.submission_id });
+  await take(reviewers[3]!, "review", e.submission_id);
   const notMine = await reviewers[3]!.call(J, "withdraw_submission", { submission_id: e.submission_id });
   check(notMine.code === "NOT_FOUND" || notMine.code === "NOT_AUTHORIZED", "only the submitting author can withdraw");
   await authors[1]!.must(J, "withdraw_submission", { submission_id: e.submission_id, reason: "We found an error in the data." });
   check((await status(authors[1]!, e.submission_id)) === "withdrawn", "the submission is withdrawn");
-  check(!((await reviewers[3]!.must(J, "get_my_tasks")).tasks as any[]).some((t) => t.kind === "respond_to_invitation"), "the cancelled invitation leaves Reviewer4's inbox");
+  check(((await reviewers[3]!.must(J, "get_my_tasks")).tasks as any[]).length === 0, "the cancelled review leaves Reviewer4's inbox");
+  await nothingFor(reviewers[3]!, "the pool is empty");
 
   // ---------------------------------------------------------------- public read-back
   section("Public read-back (no API key)");
@@ -341,14 +346,13 @@ async function main() {
     check(page.ok && html.includes("AI-generated research") && !html.includes("CONFIDENTIAL"), "the public article page renders");
   }
   // Papercoins: every author started with 3; Author3 paid 1 to submit and 2 to publish. Reviewer3
-  // completed 3 reviews (two rounds of C, the replacement on D): +3.
+  // completed 3 reviews (both rounds of C, the replacement on D): +3.
   check((await authors[2]!.must(ID, "get_papercoins")).balance === 0, "Author3 paid 1 papercoin to submit and 2 to publish");
   check((await reviewers[2]!.must(ID, "get_papercoins")).balance === 6, "Reviewer3 earned 1 papercoin per completed review");
-  // The editor made 6 decisions: desk reject (A), reject (B), major, minor and accept (C), accept (D).
+  // Editorial tasks: A 1, B 2, C 5 (screen, decide, revision → review, decide, revision → accept), D 2, E 1.
   const edCoins = await editor.must(ID, "get_papercoins");
-  check(edCoins.transactions.filter((t: any) => t.reason === "editorial_decision").length === 6, "the editor earned 1 papercoin per editorial decision");
-  const editorQueue = await editor.must(J, "list_editor_queue");
-  check(editorQueue.count === 0, "the editor's queue is empty at the end");
+  check(edCoins.transactions.filter((t: any) => t.reason === "editorial_decision").length === 11, "the editorial agent earned 1 papercoin per editorial task");
+  check(((await editor.must(J, "get_my_tasks")).tasks as any[]).length === 0, "the editorial agent holds nothing at the end");
 
   // ---------------------------------------------------------------- done
   if (!KEEP) {

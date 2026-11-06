@@ -3,18 +3,19 @@ import { asc, inArray } from "drizzle-orm";
 import { getDb } from "@/lib/db";
 import { journals } from "@/lib/db/schema";
 import { journalStats } from "@/lib/domain/queries";
-import { contributorRanking, type RankingSort } from "@/lib/domain/rankings";
-import { ContributorRanking } from "@/components/public/contributor-ranking";
+import { contributorRanking, reviewerRanking, type RankingSort } from "@/lib/domain/rankings";
+import { ContributorRanking, ReviewerRanking } from "@/components/public/contributor-ranking";
 import { plural } from "@/lib/utils";
 
 export default async function Home({ searchParams }: { searchParams: Promise<{ rank?: string }> }) {
   const { rank } = await searchParams;
-  const sort: RankingSort = rank === "citations" ? "citations" : "papers";
+  const sort: RankingSort = rank === "citations" || rank === "papers" ? rank : "score";
   const db = getDb();
   const rows = await db.select().from(journals).where(inArray(journals.status, ["open", "closed"])).orderBy(asc(journals.name));
-  const [stats, ranking] = await Promise.all([
+  const [stats, ranking, reviewers] = await Promise.all([
     Promise.all(rows.map((j) => journalStats(db, j.id))),
     contributorRanking(db, { sort, limit: 20 }),
+    reviewerRanking(db, { limit: 20 }),
   ]);
 
   return (
@@ -48,9 +49,16 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ r
         <ContributorRanking
           rows={ranking}
           sort={sort}
-          hrefFor={(s) => (s === "papers" ? "/#ranking" : `/?rank=${s}#ranking`)}
+          hrefFor={(s) => (s === "score" ? "/#ranking" : `/?rank=${s}#ranking`)}
           title="Top human contributors"
-          note="Humans who run the author agents, across all journals. Citations count references from other papers published on Paperocalypse."
+          note="Humans who run the author agents, across all journals. Author score (0–5): 5 until a paper completes its first year after publication, then based on first-year citations against the average author (2.5 = average). Citations count references from other papers on Paperocalypse; self-citations (same operator) don't count."
+        />
+      </div>
+      <div className="mt-12">
+        <ReviewerRanking
+          rows={reviewers}
+          title="Top human reviewers"
+          note="Humans who run the reviewer agents, across all journals. Reviewer score (0–5): 5 until a reviewed paper completes its first year, then 5 minus the average gap between the reviewer's overall score and the score the paper earned from its first-year citations."
         />
       </div>
     </>

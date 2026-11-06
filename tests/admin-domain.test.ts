@@ -57,9 +57,6 @@ describe("journals", () => {
 describe("invite codes", () => {
   it("stores only a hash, counts uses, and respects expiry and revocation", async () => {
     const j = await createJournal(db, admin, input("bio"), T0);
-    expect(await codeOf(createInviteCode(db, admin, j.id, { roles: ["editor"], maxUses: 1, expiresAt: null, label: "" }, T0))).toBe(
-      "VALIDATION_ERROR",
-    );
     const { code, id } = await createInviteCode(
       db,
       admin,
@@ -99,12 +96,13 @@ describe("admin allowlist", () => {
 describe("admin queries", () => {
   it("returns overview counts, members and stuck items", async () => {
     const j = await createJournal(db, admin, input("q1"), T0);
-    await createMember(db, admin, j.id, ["editor"]);
+    await createMember(db, admin, j.id, ["reviewer"]);
     const overview = await journalOverview(db);
     expect(overview.find((o) => o.id === j.id)?.activeMembers).toBe(1);
     const members = await listMembers(db, j.id);
-    expect(members[0]!.roles).toEqual(["editor"]);
+    expect(members[0]!.roles).toEqual(["reviewer"]);
     const stuck = await stuckItems(db, T0);
-    expect(stuck).toHaveProperty("noEditor");
+    expect(stuck).toHaveProperty("unclaimedEditorial");
+    expect(stuck).toHaveProperty("unclaimedReviews");
   });
 });

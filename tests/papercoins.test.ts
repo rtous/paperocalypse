@@ -7,17 +7,23 @@ import type { Actor } from "@/lib/domain/actor";
 import { grantRoles } from "@/lib/domain/agents";
 import { DomainError } from "@/lib/domain/errors";
 import { adjustPapercoins, applyPapercoins, getPapercoinBalance, operatorOfAgent } from "@/lib/domain/papercoins";
-import {
-  inviteReviewers,
-  makeDecision,
-  publishArticle,
-  respondToInvitation,
-  submitManuscript,
-  submitReview,
-} from "@/lib/domain/submissions";
+import { submitManuscript, submitReview } from "@/lib/domain/submissions";
 import { clearSettingsCache } from "@/lib/mcp/framework";
 import { createTestDb } from "./helpers/db";
-import { LETTER, T0, agentFor, createAdmin, createDashboardAgent, createJournal, createMember, hours, manuscript, review } from "./helpers/fixtures";
+import {
+  T0,
+  agentFor,
+  createAdmin,
+  createDashboardAgent,
+  createJournal,
+  createMember,
+  decide,
+  hours,
+  manuscript,
+  review,
+  sendOut,
+  takeReview,
+} from "./helpers/fixtures";
 import { connect, fakeBlob, makeDeps, router } from "./helpers/mcp";
 
 let db: Db;
@@ -32,7 +38,7 @@ afterAll(async () => close());
 const code = (p: Promise<unknown>) => p.then(() => null, (e) => (e instanceof DomainError ? e.code : String(e)));
 
 /** A journal member created without the fixture's generous balance. */
-async function plainMember(journalId: string, roles: ("author" | "reviewer" | "editor")[], name: string) {
+async function plainMember(journalId: string, roles: ("author" | "reviewer")[], name: string) {
   const a = await agentFor(db, admin, name, { email: `${name}@coins.test` });
   await grantRoles(db, admin, journalId, a.id, roles, T0);
   return { type: "agent" as const, agentId: a.id };
@@ -65,7 +71,7 @@ describe("papercoins", () => {
 
   it("charges submissions and publications, rewards reviews, and blocks authors in debt", async () => {
     const j = await createJournal(db, { max_submissions_per_agent_per_day: 50, max_open_submissions_per_agent: 50 });
-    const editor = await createMember(db, admin, j.id, ["editor"]);
+    const editor = await createMember(db, admin, j.id, ["reviewer"]);
     const author = await plainMember(j.id, ["author", "reviewer"], "Author");
     const r1 = await plainMember(j.id, ["reviewer"], "R1");
     const r2 = await plainMember(j.id, ["reviewer"], "R2");
@@ -77,12 +83,13 @@ describe("papercoins", () => {
     expect(await getPapercoinBalance(db, author.agentId)).toBe(2);
 
     // Two reviews: each reviewer earns 1; editing doesn't pay twice.
-    const { assignments } = await inviteReviewers(db, editor, submissionId, [r1.agentId, r2.agentId], T0);
-    for (const [i, r] of [r1, r2].entries()) {
-      await respondToInvitation(db, r, assignments[i]!.assignmentId, true, null, T0);
-      await submitReview(db, r, assignments[i]!.assignmentId, review(), T0);
+    await sendOut(db, editor, j.id, submissionId, T0);
+    const assignments: string[] = [];
+    for (const r of [r1, r2]) {
+      assignments.push(await takeReview(db, r, j.id, submissionId, T0));
+      await submitReview(db, r, assignments.at(-1)!, review(), T0);
     }
-    await submitReview(db, r1, assignments[0]!.assignmentId, review({ summaryMd: "Edited summary." }), T0);
+    await submitReview(db, r1, assignments[0]!, review({ summaryMd: "Edited summary." }), T0);
     expect(await getPapercoinBalance(db, r1.agentId)).toBe(4);
     expect(await getPapercoinBalance(db, r2.agentId)).toBe(4);
 
@@ -99,17 +106,23 @@ describe("papercoins", () => {
     expect((await db.select().from(submissions).where(eq(submissions.submittingAgentId, author.agentId))).length).toBe(before);
 
     // Publication charges 2 even at 0 (the editor is never blocked): balance goes to -2.
-    await makeDecision(db, editor, submissionId, "accept", LETTER, hours(4));
-    await publishArticle(db, editor, submissionId, hours(5));
+    // Accepting publishes at once (the decision was the oldest open editorial task).
+    const editorBefore = await getPapercoinBalance(db, editor.agentId);
+    await decide(db, editor, j.id, submissionId, "accept", hours(4));
     expect(await getPapercoinBalance(db, author.agentId)).toBe(-2);
+    // Each editorial task (screening, decision) pays the editorial agent 1.
+    expect(await getPapercoinBalance(db, editor.agentId)).toBe(editorBefore + 1);
 
+    // The author's two pending submissions go to review (the author can't review them: conflict).
+    for (const s of await db.select({ id: submissions.id }).from(submissions).where(eq(submissions.status, "with_editor"))) {
+      await sendOut(db, editor, j.id, s.id, hours(5));
+    }
     // Earning back by reviewing: three reviews → 1, enough to submit again.
     const other = await createMember(db, admin, j.id, ["author"]);
     for (let i = 0; i < 3; i++) {
       const s = await submitManuscript(db, other, j.id, manuscript(), hours(6 + i));
-      const { assignments: as } = await inviteReviewers(db, editor, s.submissionId, [author.agentId], hours(6 + i));
-      await respondToInvitation(db, author, as[0]!.assignmentId, true, null, hours(6 + i));
-      await submitReview(db, author, as[0]!.assignmentId, review(), hours(6 + i));
+      await sendOut(db, editor, j.id, s.submissionId, hours(6 + i));
+      await submitReview(db, author, await takeReview(db, author, j.id, s.submissionId, hours(6 + i)), review(), hours(6 + i));
     }
     expect(await getPapercoinBalance(db, author.agentId)).toBe(1);
     await submitManuscript(db, author, j.id, manuscript(), hours(10));
@@ -149,7 +162,7 @@ describe("papercoins over MCP", () => {
     const clock = { now: T0 };
     const handle = router(makeDeps(db, fakeBlob().gateway, clock));
     const j = await createJournal(db);
-    await createMember(db, admin, j.id, ["editor"]);
+    await createMember(db, admin, j.id, ["reviewer"]);
 
     const reg = await createDashboardAgent(db, "coin@ops.test", "Coin Bot");
     const g = await connect(handle, "/api/mcp", reg.key);

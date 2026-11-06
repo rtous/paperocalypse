@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { signOut } from "@/auth";
 import { requireAdmin } from "@/lib/admin/session";
 import { getDb } from "@/lib/db";
-import { createAgent, grantRoles, issueApiKey, revokeApiKey, setAgentStatus, type Role } from "@/lib/domain/agents";
+import { grantRoles, issueApiKey, revokeApiKey, setAgentStatus, type Role } from "@/lib/domain/agents";
 import { DomainError } from "@/lib/domain/errors";
 import { eq } from "drizzle-orm";
 import { journals } from "@/lib/db/schema";
@@ -14,10 +14,9 @@ import { createJournal, setInstructionsTemplate, setJournalStatus, updateJournal
 import { getPlatformSettings, savePlatformSettings } from "@/lib/domain/settings";
 import { baseUrl } from "@/lib/mcp/deps";
 import { createInviteCode, removeRole, revokeInviteCode, setMembershipStatus } from "@/lib/domain/memberships";
-import { findOperatorByEmail } from "@/lib/domain/operators";
 import { adjustPapercoins, operatorOfAgent } from "@/lib/domain/papercoins";
 import { resolveFlag } from "@/lib/domain/queries";
-import { adminOverride, assignEditor } from "@/lib/domain/submissions";
+import { adminOverride } from "@/lib/domain/submissions";
 import { SUBMISSION_STATUSES, type SubmissionStatus } from "@/lib/domain/workflow";
 import { renderMarkdown } from "@/lib/markdown";
 
@@ -77,7 +76,7 @@ function journalFromForm(fd: FormData) {
       min_reviews_for_decision: num(fd, "min_reviews_for_decision"),
       blinding: str(fd, "blinding"),
       review_deadline_hours: num(fd, "review_deadline_hours"),
-      invitation_response_hours: num(fd, "invitation_response_hours"),
+      editorial_deadline_hours: num(fd, "editorial_deadline_hours"),
       revision_deadline_hours: num(fd, "revision_deadline_hours"),
       max_revisions: num(fd, "max_revisions"),
       max_manuscript_chars: num(fd, "max_manuscript_chars"),
@@ -88,7 +87,6 @@ function journalFromForm(fd: FormData) {
       max_attachment_mb: num(fd, "max_attachment_mb"),
       max_submissions_per_agent_per_day: num(fd, "max_submissions_per_agent_per_day"),
       max_open_submissions_per_agent: num(fd, "max_open_submissions_per_agent"),
-      reviewer_selection: str(fd, "reviewer_selection"),
       require_operator_contact: bool(fd, "require_operator_contact"),
       open_review: bool(fd, "open_review"),
       coi_coauthor_months: num(fd, "coi_coauthor_months"),
@@ -121,33 +119,13 @@ export async function changeJournalStatus(_: ActionState, fd: FormData): Promise
 }
 
 // ---------------------------------------------------------------------------
-// Editors, agents and keys
+// Agents and keys
 // ---------------------------------------------------------------------------
-
-export async function createEditorAgent(_: ActionState, fd: FormData): Promise<ActionState> {
-  const { actor } = await requireAdmin();
-  const journalId = str(fd, "journalId");
-  const displayName = str(fd, "displayName").trim();
-  if (displayName.length < 2) return { error: "Give the editor agent a display name." };
-  const res = await attempt(async () => {
-    const now = new Date();
-    const key = await getDb().transaction(async (tx) => {
-      // Every agent belongs to an operator; the editor appears on that operator's dashboard.
-      const op = await findOperatorByEmail(tx, str(fd, "operatorEmail"));
-      const agent = await createAgent(tx, actor, { displayName, description: str(fd, "description"), operatorId: op.id }, now);
-      await grantRoles(tx, actor, journalId, agent.id, ["editor"], now);
-      return issueApiKey(tx, actor, agent.id, str(fd, "keyLabel") || "initial", now);
-    });
-    return { ok: true, message: `Editor "${displayName}" created.`, secret: key.apiKey };
-  });
-  revalidatePath(`/admin/journals/${journalId}/members`);
-  return res;
-}
 
 export async function grantRolesAction(_: ActionState, fd: FormData): Promise<ActionState> {
   const { actor } = await requireAdmin();
   const journalId = str(fd, "journalId");
-  const roles = fd.getAll("roles").filter((r): r is Role => r === "author" || r === "reviewer" || r === "editor");
+  const roles = fd.getAll("roles").filter((r): r is Role => r === "author" || r === "reviewer");
   if (!roles.length) return { error: "Choose at least one role." };
   const res = await attempt(() => grantRoles(getDb(), actor, journalId, str(fd, "agentId").trim(), roles, new Date()));
   revalidatePath(`/admin/journals/${journalId}/members`);
@@ -246,20 +224,6 @@ export async function overrideAction(_: ActionState, fd: FormData): Promise<Acti
   const res = await attempt(() => adminOverride(getDb(), actor, id, to as SubmissionStatus, str(fd, "reason"), new Date()));
   revalidatePath(`/admin/submissions/${id}`);
   return res.error ? res : { ok: true, message: `Moved to ${to}.` };
-}
-
-export async function assignEditorAction(_: ActionState, fd: FormData): Promise<ActionState> {
-  const { actor } = await requireAdmin();
-  const id = str(fd, "submissionId");
-  const editorId = str(fd, "editorAgentId") || undefined;
-  const res = await attempt(async () => {
-    const assigned = await assignEditor(getDb(), actor, id, new Date(), editorId);
-    return assigned
-      ? { ok: true, message: "Editor assigned." }
-      : { error: "No eligible editor is available (all are conflicted or there are none)." };
-  });
-  revalidatePath(`/admin/submissions/${id}`);
-  return res;
 }
 
 // ---------------------------------------------------------------------------

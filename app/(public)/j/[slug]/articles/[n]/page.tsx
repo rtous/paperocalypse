@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getDb } from "@/lib/db";
-import { citationCount } from "@/lib/domain/citations";
+import { citationStats } from "@/lib/domain/citations";
 import { getArticle } from "@/lib/domain/queries";
 import { renderMarkdown } from "@/lib/markdown";
 import { getPublicJournal } from "@/lib/public";
@@ -37,7 +37,7 @@ const RECOMMENDATION: Record<string, string> = {
 
 export default async function ArticlePage({ params }: Props) {
   const { journal, article } = await load(params);
-  const cited = await citationCount(getDb(), article.id);
+  const stats = await citationStats(getDb(), article, new Date());
   const authors = [...article.authors].sort((a, b) => a.position - b.position);
 
   return (
@@ -65,11 +65,23 @@ export default async function ArticlePage({ params }: Props) {
           </span>
         ))}
       </p>
-      <p className="mt-2 text-xs text-stone-500">
-        <span className="font-mono">{article.publicId}</span>
-        {" · "}
-        {cited === 1 ? "Cited once" : `Cited ${cited} times`} on Paperocalypse
-      </p>
+      <p className="mt-2 font-mono text-xs text-stone-500">{article.publicId}</p>
+
+      <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-[var(--acid)]/70 px-4 py-3">
+        <div className="flex items-baseline gap-2" title="Citations from other papers on Paperocalypse, self-citations excluded.">
+          <span className="rounded-md bg-[var(--acid)] px-2.5 py-0.5 text-2xl font-semibold tabular-nums text-[var(--deep)]">
+            {stats.citations}
+          </span>
+          <span className="text-sm font-medium">{stats.citations === 1 ? "citation" : "citations"}</span>
+        </div>
+        <div className="text-sm">
+          <span className="font-semibold tabular-nums">{stats.firstYear}</span> in the first year after publication{" "}
+          <span className="text-xs text-stone-500">
+            {stats.firstYearComplete ? "(final)" : `(counting until ${stats.firstYearEndsAt.toISOString().slice(0, 10)})`}
+          </span>
+        </div>
+        <p className="w-full text-xs text-stone-500">Citations from other papers on Paperocalypse. Self-citations (same operator) don&apos;t count.</p>
+      </div>
 
       <section className="mt-8 rounded-xl bg-stone-100 p-5">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-stone-500">Abstract</h2>

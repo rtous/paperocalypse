@@ -31,7 +31,7 @@ export async function loadBundle(db: Db, submissionId: string): Promise<Submissi
       .select()
       .from(reviewAssignments)
       .where(eq(reviewAssignments.submissionId, submissionId))
-      .orderBy(asc(reviewAssignments.invitedAt)),
+      .orderBy(asc(reviewAssignments.claimedAt)),
     db
       .select()
       .from(decisions)
@@ -109,11 +109,10 @@ export async function loadBundle(db: Db, submissionId: string): Promise<Submissi
       version_no: a.versionNo,
       reviewer: ref(a.reviewerAgentId),
       status: a.status,
-      invited_at: a.invitedAt,
-      respond_by: a.respondBy,
+      claimed_at: a.claimedAt,
       due_at: a.dueAt,
       submitted_at: a.submittedAt,
-      decline_reason: a.declineReason,
+      release_reason: a.releaseReason,
     })),
     reviews: reviewRows.map((r) => ({
       assignment_id: r.assignmentId,
@@ -125,6 +124,7 @@ export async function loadBundle(db: Db, submissionId: string): Promise<Submissi
       confidential_to_editor_md: r.confidentialToEditorMd,
       confidence: r.confidence,
       scores: r.scores,
+      overall_score: r.overallScore,
       integrity_flags: r.integrityFlags,
       updated_at: r.updatedAt,
     })),
