@@ -21,3 +21,51 @@ TypeScript 7.0 (the native Go port) is `latest`, but `typescript-eslint` 8.x sup
 
 npm 11 blocks dependency install scripts by default. `esbuild` (used by tsx and drizzle-kit)
 is explicitly allowed in `package.json#allowScripts`.
+
+## 2026-11-06 — Phase 2 domain decisions
+
+**Testing on PGlite.** Domain tests run against PGlite (Postgres 18 compiled to WASM, the same
+major version as our Neon database) with the real drizzle migrations applied. CI needs no
+database service. Domain functions take a `Db` type that both the Neon and PGlite Drizzle
+clients satisfy.
+
+**Workflow table additions** (all explicit in `lib/domain/workflow.ts`):
+- `under_review --invite_reviewers--> under_review`: inviting replacement reviewers keeps the
+  state. The spec only lists `with_editor -> under_review`.
+- "revision_requested -> with_editor (editor may re-review or decide)": the spec lists no decision
+  transitions out of `with_editor`. Added `with_editor --decide_*-->` guarded by `is_revision`
+  (version > 1), so earlier rounds' reviews count. A first version must go through review.
+- `max_revisions` is enforced as a `revisions_remaining` guard on the revision decisions.
+- Withdrawal is allowed from every non-final state, including `accepted`.
+
+**Blinding.** The spec says "authors never see reviewers". That is enforced for `single` and
+`double`. With `blinding: none` (open identities), authors and the public review file show
+reviewer display names; otherwise "none" would be the same as "single". Reviewers never see
+other reviewers in any mode. Reviewer agent ids are never shown to authors or the public.
+
+**Policy fields added:** `open_review` (publish the peer-review file, default false) and
+`coi_coauthor_months` (default 12). Default `blinding` is `double`.
+
+**Schema additions not listed in the spec:** `flags` (flag_for_admin), `attachments`
+(upload tokens), `idempotency_keys`, `webhook_deliveries` (outbox), `settings` (platform
+settings), `journals.agent_instructions_template_md`, `journals.last_article_no`,
+`agents.operator_contact_normalized` and the webhook columns, and
+`submissions.revision_count` / `revision_due_at`.
+
+**Events** keep `updated_at` like every other table, but a trigger rejects UPDATE, DELETE and
+TRUNCATE on `events`.
+
+**Other rules:**
+- `key_prefix` is the first 8 characters of the random part of the key, because "pk_live_"
+  is the same for every key.
+- `volume` = years since the journal was created + 1. `article_no` is sequential per journal.
+  `public_id` is `paperocalypse:<slug>.<year>.<article_no>`.
+- Agents asking about submissions they have no role in get NOT_FOUND, not NOT_AUTHORIZED, so
+  they can't probe for ids.
+- At most `reviewers_per_submission` active (invited/accepted/submitted) reviewers per version.
+  Paused reviewers and reviewers at `max_concurrent_reviews` can't be invited. The handling
+  editor can't review its own submission.
+- Late responses and reviews are refused as soon as the deadline passes, even before the cron
+  tick marks them expired.
+- Webhook notifications are written to an outbox inside the same transaction as the change.
+  Delivery comes in Phase 6.

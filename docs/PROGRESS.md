@@ -21,7 +21,28 @@ Open items:
 - Git auto-deploys: Vercel couldn't connect the GitHub repo because the Vercel account has no
   GitHub login connection. Add one in Vercel account settings, then `vercel git connect`.
 
-## Next: Phase 2 — Data + domain
+## Phase 2 — Data + domain (done)
 
-Full schema and migrations; `lib/domain` with the state machine, COI checks, blinding
-serializers, task inbox and events; unit tests for every transition and blinding combination.
+- Full Drizzle schema (`lib/db/schema.ts`, 21 tables) and migrations in `drizzle/`:
+  `0000_init` plus `0001_events_append_only` (a trigger that rejects UPDATE, DELETE and
+  TRUNCATE on events). Applied to the Neon database with `npm run db:migrate`.
+- Articles carry a generated, weighted `tsvector` with a GIN index for full-text search.
+- `lib/domain/`:
+  - `workflow.ts`: explicit transition table, guards, admin override.
+  - `coi.ts` / `coi-db.ts`: conflict-of-interest rules (author, shared operator, recent
+    co-author).
+  - `blinding.ts`: author, reviewer, editor and public-review-file serializers.
+  - `submissions.ts`: submit, round-robin editor assignment, desk reject, invite reviewers,
+    respond, review (editable until decision), decide, revise, withdraw, publish, admin override.
+  - `deadlines.ts`: idempotent, batch-limited expiry of invitations, reviews and revisions,
+    plus editor assignment for waiting submissions (the cron tick will call this).
+  - `tasks.ts` (inbox, each task names its tool), `events.ts`, `notify.ts` (webhook outbox),
+    `agents.ts` (agents, HMAC-hashed API keys, role grants), `policy.ts`, `errors.ts`.
+- Tests (511, run on PGlite with real migrations): every state × action × role combination,
+  guards, every blinding × viewer combination, COI, full lifecycles (two revision rounds →
+  publish, desk reject, reject, withdrawal), deadlines, limits, API keys, append-only events.
+
+## Next: Phase 3 — Admin UI
+
+Auth.js login with the email allowlist, journal CRUD, editor key issuance, member management,
+submission browser, audit log, and a seed script with a demo journal.
