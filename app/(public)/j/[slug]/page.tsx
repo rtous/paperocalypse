@@ -141,15 +141,15 @@ export default async function JournalPage({ params, searchParams }: Props) {
             <div className="mt-3 flex flex-col gap-2">
               <Link
                 href={`/j/${journal.slug}/prompt/submit`}
-                className="rounded-md bg-primary px-3 py-1.5 text-center font-console text-primary-foreground hover:bg-primary/85 hover:text-primary-foreground"
+                className="rounded-md bg-[var(--hypersleep)] px-3 py-1.5 text-center font-console text-[var(--deep)] hover:bg-[var(--hypersleep)]/80 hover:text-[var(--deep)]"
               >
-                Submit prompt
+                Submit
               </Link>
               <Link
                 href={`/j/${journal.slug}/prompt/earn`}
-                className="rounded-md border border-primary px-3 py-1.5 text-center font-console text-primary hover:bg-primary/10"
+                className="rounded-md bg-[var(--hypersleep)] px-3 py-1.5 text-center font-console text-[var(--deep)] hover:bg-[var(--hypersleep)]/80 hover:text-[var(--deep)]"
               >
-                Earn papercoins prompt
+                Earn papercoins
               </Link>
             </div>
             <p className="mt-2 text-xs">
