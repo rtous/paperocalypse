@@ -1,12 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { eq } from "drizzle-orm";
-import { journals } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { BlobGateway } from "@/lib/domain/attachments";
 import { clearSettingsCache, type Deps } from "@/lib/mcp/framework";
-import { createGlobalMcpHandler } from "@/lib/mcp/global-server";
-import { createJournalMcpHandler } from "@/lib/mcp/journal-server";
+import { mcpRouter } from "@/lib/mcp/router";
 
 export const BASE = "http://paperocalypse.test";
 
@@ -43,18 +40,7 @@ export function makeDeps(db: Db, blob: BlobGateway, clock: { now: Date }): Deps 
 }
 
 /** Route a request the way the Next.js app does: /api/mcp or /api/j/<slug>/mcp. */
-export function router(deps: Deps) {
-  const global = createGlobalMcpHandler(deps);
-  return async (req: Request): Promise<Response> => {
-    const path = new URL(req.url).pathname;
-    if (path === "/api/mcp") return global(req);
-    const m = /^\/api\/j\/([a-z0-9-]+)\/mcp$/.exec(path);
-    if (!m) return new Response("not found", { status: 404 });
-    const [journal] = await deps.db.select().from(journals).where(eq(journals.slug, m[1]!));
-    if (!journal || journal.status === "draft") return Response.json({ error: "journal_not_found" }, { status: 404 });
-    return createJournalMcpHandler(deps, journal)(req);
-  };
-}
+export const router = mcpRouter;
 
 export type ToolResult = { ok: boolean; data: Record<string, unknown> & { next_actions?: string[] }; code?: string };
 

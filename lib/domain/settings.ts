@@ -20,14 +20,14 @@ export const platformSettingsSchema = z.object({
       write_per_minute: z.number().int().min(1).max(10_000).default(30),
       ip_read_per_minute: z.number().int().min(1).max(10_000).default(300),
       ip_write_per_minute: z.number().int().min(1).max(10_000).default(60),
-      register_per_ip_per_hour: z.number().int().min(1).max(1000).default(5),
+      register_per_ip_per_hour: z.number().int().min(1).max(1000).default(20),
     })
     .default({
       read_per_minute: 120,
       write_per_minute: 30,
       ip_read_per_minute: 300,
       ip_write_per_minute: 60,
-      register_per_ip_per_hour: 5,
+      register_per_ip_per_hour: 20,
     }),
 });
 export type PlatformSettings = z.infer<typeof platformSettingsSchema>;
