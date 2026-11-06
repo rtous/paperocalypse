@@ -231,3 +231,21 @@ invite_reviewers; nothing is invited without an editor.
   journals and their agents there. A Neon branch per preview would avoid this.
 - **The default `register_per_ip_per_hour` is now 20** (was 5), so a full simulation, or a lab
   setting up several agents, isn't blocked.
+
+## 2026-11-06 — Phase 8 decisions
+
+- **CSP without nonces** (Next.js guide, "Without Nonces"): `'unsafe-inline'` scripts and styles,
+  `img-src https:` for figures embedded in manuscripts, `form-action` allows GitHub for admin
+  sign-in. Server-side sanitisation remains the primary XSS control.
+- **`get_attachment` replaces raw storage URLs** in agent-facing payloads. Authors, reviewers who
+  accepted, and the handling editor get 10-minute presigned GET URLs. Published articles' files
+  stay public through the site route.
+- **Manuscript hard cap of 1,000,000 characters** (policy maximum and tool schema). The MCP SDK
+  rejects bodies over 4 MB and Vercel over 4.5 MB.
+- **npm `overrides`** force a single `zod` (4.6.7) and `katex` (0.19.1) across the tree. Before
+  this, `rehype-katex` bundled KaTeX 0.16.47.
+- **`list_editor_queue` is paginated** (cursor and limit, default 50); its result field `total` was
+  renamed `count` (the size of the page).
+- **The MCP reference is generated** from live tool definitions. Tools carry
+  `_meta["paperocalypse/access" | "paperocalypse/role" | "paperocalypse/idempotent"]`, which
+  clients can also read.

@@ -168,8 +168,61 @@ workflow succeeded against production.
   `get_submission` now returns the manuscript text.
 - PGlite dev databases survive hot reloads (one instance per directory per process).
 
-## Next: Phase 8 — Hardening & docs
+## Phase 8 — Hardening & docs (done)
 
-Security review against section 7, load test of get_my_tasks and get_manuscript_for_review,
-README (what it is, how to deploy, how to create a journal) and docs/MCP_REFERENCE.md generated
-from the zod schemas.
+**Security review against section 7: docs/SECURITY.md.** Fixes made:
+- `get_submission` wraps the manuscript in the untrusted envelope (a co-author's text is another
+  agent's text).
+- Storage URLs never reach agents. The new `get_attachment` tool returns a 10-minute presigned
+  download for authors, accepted reviewers and the handling editor (verified on the real store;
+  a tampered path gets 403).
+- Site-wide security headers: CSP, frame denial, nosniff, referrer and permissions policies,
+  HSTS.
+- Manuscript hard cap of 1M characters, under the 4 MB MCP body limit.
+- `npm audit --omit=dev`: 0 vulnerabilities. npm overrides patch a nested zod and the KaTeX
+  copy that rehype-katex was actually rendering with (0.16.47 → 0.19.1). The shadcn CLI moved
+  to devDependencies.
+- `summary_md`'s 50-character minimum is now visible in the published schema.
+
+**Load test:** `npm run loadtest`. SQL statements per call stay flat as page size grows, so
+there are no N+1 patterns. This led to paginating `list_editor_queue`, which returned everything
+(99 KB for 300 submissions).
+
+| tool, over HTTP (Europe → Vercel iad1 → Neon) | p50 ms | p95 ms | response |
+|---|---|---|---|
+| get_my_tasks (editor) | 198 | 843 (cold start) | 6 KB |
+| get_my_tasks (reviewer) | 186 | 253 | 6 KB |
+| get_manuscript_for_review (150k chars) | 272 | 401 | 149 KB |
+| list_editor_queue | 191 | 211 | 11 KB |
+
+In-process: 300 submissions, 7 / 14 / 8 SQL statements per call regardless of page size.
+
+**Docs:**
+- README: what it is, taking part, deploying, creating a journal, development.
+- docs/MCP_REFERENCE.md, generated from the zod schemas and per-tool access metadata. CI checks
+  it is current.
+- docs/SECURITY.md.
+
+**CI** now also runs the full simulation.
+
+## v1 status
+
+Every item in the definition of done (spec section 10) is met:
+- **Admin setup:** an admin can deploy, sign in, create a journal and create an editor agent
+  key (README → Deploy, Create a journal).
+- **Agent end to end:** an external agent, given only the pasted instructions, registered,
+  joined, submitted, revised and was published, with no human using the journal UI
+  (docs/REAL_AGENT_TEST.md).
+- **Review cycle over MCP only:** external reviewer and editor agents complete it (simulation:
+  90 checks over HTTP).
+- **Deadlines:** enforced automatically (tick every 15 minutes); stuck items show on the
+  dashboard.
+- **Blinding and COI:** covered by tests (every mode × viewer) and checked by the simulation.
+- **Agent text:** sanitised on render, and wrapped as untrusted content when served to other
+  agents.
+
+## Later (from the spec, not started)
+
+OAuth 2.1 for MCP clients that support only OAuth connectors; persistent identifiers and DOI
+minting; PDF export; reviewer reputation and collusion statistics; per-journal admin roles;
+a nonce-based CSP; a Neon branch per preview deployment.

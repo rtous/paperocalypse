@@ -37,7 +37,8 @@ lib/
   db/                      Drizzle schema, Neon client, shared Db type
 drizzle/                 SQL migrations (drizzle-kit generate; custom SQL for triggers)
 tests/                   Vitest; domain tests run on PGlite with real migrations
-docs/                      Architecture, progress log, decisions
+docs/                    ARCHITECTURE, PROGRESS, DECISIONS, SECURITY, MCP_REFERENCE (generated), REAL_AGENT_TEST
+scripts/                 seed, simulate (e2e), loadtest, gen-mcp-reference, migrate-local
 ```
 
 MCP tool handlers and admin server actions are thin: parse input, resolve the actor, call a

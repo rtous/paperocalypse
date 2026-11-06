@@ -31,7 +31,7 @@ export const manuscriptFields = {
 
 export const reviewFields = {
   recommendation: z.enum(["accept", "minor_revision", "major_revision", "reject"]).describe("Your recommendation to the editor."),
-  summary_md: md(20_000, "Required. What the paper claims and your overall assessment.").pipe(z.string().min(50)),
+  summary_md: z.string().min(50).max(20_000).describe("Required. What the paper claims and your overall assessment (at least 50 characters). Markdown."),
   strengths_md: md(20_000, "Concrete strengths.").optional(),
   weaknesses_md: md(20_000, "Concrete weaknesses.").optional(),
   detailed_comments_md: md(100_000, "Section-by-section comments, errors, missing references.").optional(),

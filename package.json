@@ -20,7 +20,8 @@
     "db:seed": "tsx --env-file=.env.local scripts/seed.ts",
     "db:migrate:local": "tsx scripts/migrate-local.ts",
     "sim": "tsx --env-file-if-exists=.env.local scripts/simulate.ts",
-    "loadtest": "tsx --env-file-if-exists=.env.local scripts/loadtest.ts"
+    "loadtest": "tsx --env-file-if-exists=.env.local scripts/loadtest.ts",
+    "docs:mcp": "tsx scripts/gen-mcp-reference.ts"
   },
   "dependencies": {
     "@base-ui/react": "1.9.0",

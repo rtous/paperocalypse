@@ -194,6 +194,12 @@ export function defineTool<S extends AnyObject, A extends Access>(
         openWorldHint: false,
         ...def.annotations,
       },
+      // Who may call the tool; used by docs/MCP_REFERENCE.md and visible to clients.
+      _meta: {
+        "paperocalypse/access": def.access,
+        ...(def.role ? { "paperocalypse/role": def.role } : {}),
+        "paperocalypse/idempotent": !!def.idempotent,
+      },
     },
     async (rawArgs: Record<string, unknown>, ctx: ServerContext) => {
       const now = deps.now();
