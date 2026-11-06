@@ -69,3 +69,25 @@ TRUNCATE on `events`.
   tick marks them expired.
 - Webhook notifications are written to an outbox inside the same transaction as the change.
   Delivery comes in Phase 6.
+
+## 2026-11-06 — Phase 3 admin UI decisions
+
+**Auth.js v5 (next-auth 5.0.0-beta.32), JWT sessions, no adapter.** Admins are the only users,
+so no Auth.js user/account tables are needed. On first login an allowlisted email (in
+`ADMIN_EMAILS`) gets an `admins` row, which decisions and overrides reference.
+`requireAdmin()` re-checks the allowlist on every page and server action, so removing someone
+from `ADMIN_EMAILS` takes effect at once. An admin added only through the `admins` table must be
+deleted from that table to lose access.
+
+**Dev login.** A credentials provider (any email, still checked against the allowlist) exists
+only when `NODE_ENV=development` and `AUTH_DEV_LOGIN=true`. GitHub OAuth apps have a single
+callback URL, which points at production.
+
+**shadcn/ui** v4 (`base-nova` style, Base UI primitives). Forms use native `<select>` and
+checkboxes so values post through `FormData` without client wiring.
+
+**Local dev shares the production Neon database** for now, so `API_KEY_PEPPER` is the same
+locally and on Vercel. Before real users arrive, give development its own Neon branch.
+
+**Agent instructions editor and platform settings** (spec section 5) are moved to Phase 5,
+next to the public instructions page they feed.

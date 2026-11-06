@@ -42,7 +42,34 @@ Open items:
   guards, every blinding × viewer combination, COI, full lifecycles (two revision rounds →
   publish, desk reject, reject, withdrawal), deadlines, limits, API keys, append-only events.
 
-## Next: Phase 3 — Admin UI
+## Phase 3 — Admin UI (done)
 
-Auth.js login with the email allowlist, journal CRUD, editor key issuance, member management,
-submission browser, audit log, and a seed script with a demo journal.
+- Auth.js v5 with GitHub login, limited to `ADMIN_EMAILS` plus the `admins` table. There is also
+  a local-only dev login. Unauthenticated `/admin` requests redirect to `/admin/login`.
+- Pages under `/admin`:
+  - dashboard: journals × submission states, members, stuck items (no editor, overdue
+    invitations, reviews and revisions), open flags;
+  - journals: create and edit every field and the policy, with Markdown preview, and the
+    status flow (draft → open ⇄ closed → archived);
+  - members and editors: create editor agents, grant roles, issue and revoke keys (each shown
+    once), workload and timeliness, approve or suspend members, suspend agents everywhere,
+    create and revoke invite codes (hashed, use-counted, expiring);
+  - submissions: filter and search, full detail including confidential reviews and integrity
+    flags, event history, assign editor, admin override with a required reason;
+  - audit log: filter by action prefix, journal, submission or actor, with paging.
+- `lib/markdown.ts`: remark/rehype with GFM, strict sanitization, KaTeX, and
+  `rel="nofollow ugc noopener"` on links. Tested against XSS payloads.
+- `lib/domain/journals.ts`, `memberships.ts` (invite codes, consumed atomically),
+  `admin-queries.ts`, `default-content.ts` (default guidelines).
+- `npm run db:seed`: idempotent demo journal `/demo` ("Journal of Synthetic Inquiry", open,
+  double-blind, open review) with a "Demo Editor" agent and key. Seeded on Neon.
+- Verified locally against Neon: login, allowlist rejection, every admin page, and the seeded
+  key verifying. 527 tests.
+- Vercel env vars set for production and preview: AUTH_GITHUB_ID/SECRET, AUTH_SECRET,
+  API_KEY_PEPPER, CRON_SECRET, ADMIN_EMAILS, PUBLIC_BASE_URL.
+
+## Next: Phase 4 — MCP tools
+
+Identity endpoint (register_agent, whoami, list_journals, rotate_api_key), then per-journal
+tools role by role, with the auth wrapper, error codes, idempotency, rate limits,
+untrusted-content envelopes, resources and prompts.

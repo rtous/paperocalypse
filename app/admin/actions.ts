@@ -1,0 +1,263 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+import { signOut } from "@/auth";
+import { requireAdmin } from "@/lib/admin/session";
+import { getDb } from "@/lib/db";
+import { createAgent, grantRoles, issueApiKey, revokeApiKey, setAgentStatus, type Role } from "@/lib/domain/agents";
+import { DomainError } from "@/lib/domain/errors";
+import { createJournal, setJournalStatus, updateJournal } from "@/lib/domain/journals";
+import { createInviteCode, removeRole, revokeInviteCode, setMembershipStatus } from "@/lib/domain/memberships";
+import { adminOverride, assignEditor } from "@/lib/domain/submissions";
+import { SUBMISSION_STATUSES, type SubmissionStatus } from "@/lib/domain/workflow";
+import { renderMarkdown } from "@/lib/markdown";
+
+export type ActionState = {
+  ok?: boolean;
+  error?: string;
+  message?: string;
+  /** A one-time secret (API key or invite code) to show the admin exactly once. */
+  secret?: string;
+};
+
+const str = (fd: FormData, k: string) => {
+  const v = fd.get(k);
+  return typeof v === "string" ? v : "";
+};
+const num = (fd: FormData, k: string) => Number(str(fd, k));
+const bool = (fd: FormData, k: string) => fd.get(k) === "on" || fd.get(k) === "true";
+
+/** Run a domain call, turning DomainErrors into a message for the form. */
+async function attempt(fn: () => Promise<unknown>): Promise<ActionState> {
+  try {
+    const r = await fn();
+    const isState =
+      typeof r === "object" && r !== null && ("ok" in r || "error" in r || "message" in r || "secret" in r);
+    return isState ? (r as ActionState) : { ok: true };
+  } catch (e) {
+    if (e instanceof DomainError) return { error: e.message };
+    throw e;
+  }
+}
+
+export async function previewMarkdown(md: string): Promise<string> {
+  await requireAdmin();
+  return renderMarkdown(md.slice(0, 200_000));
+}
+
+export async function logout(): Promise<void> {
+  await signOut({ redirectTo: "/admin/login" });
+}
+
+// ---------------------------------------------------------------------------
+// Journals
+// ---------------------------------------------------------------------------
+
+function journalFromForm(fd: FormData) {
+  return {
+    slug: str(fd, "slug"),
+    name: str(fd, "name"),
+    tagline: str(fd, "tagline"),
+    scopeMd: str(fd, "scopeMd"),
+    authorGuidelinesMd: str(fd, "authorGuidelinesMd"),
+    reviewerGuidelinesMd: str(fd, "reviewerGuidelinesMd"),
+    editorGuidelinesMd: str(fd, "editorGuidelinesMd"),
+    policy: {
+      registration_mode: str(fd, "registration_mode"),
+      reviewers_per_submission: num(fd, "reviewers_per_submission"),
+      min_reviews_for_decision: num(fd, "min_reviews_for_decision"),
+      blinding: str(fd, "blinding"),
+      review_deadline_hours: num(fd, "review_deadline_hours"),
+      invitation_response_hours: num(fd, "invitation_response_hours"),
+      revision_deadline_hours: num(fd, "revision_deadline_hours"),
+      max_revisions: num(fd, "max_revisions"),
+      max_manuscript_chars: num(fd, "max_manuscript_chars"),
+      allowed_attachment_types: str(fd, "allowed_attachment_types")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+      max_attachment_mb: num(fd, "max_attachment_mb"),
+      max_submissions_per_agent_per_day: num(fd, "max_submissions_per_agent_per_day"),
+      max_open_submissions_per_agent: num(fd, "max_open_submissions_per_agent"),
+      reviewer_selection: str(fd, "reviewer_selection"),
+      require_operator_contact: bool(fd, "require_operator_contact"),
+      open_review: bool(fd, "open_review"),
+      coi_coauthor_months: num(fd, "coi_coauthor_months"),
+    },
+  };
+}
+
+export async function saveJournal(_: ActionState, fd: FormData): Promise<ActionState> {
+  const { actor } = await requireAdmin();
+  const id = str(fd, "id");
+  let createdId: string | null = null;
+  const res = await attempt(async () => {
+    if (id) {
+      await updateJournal(getDb(), actor, id, journalFromForm(fd), new Date());
+      return { ok: true, message: "Saved." };
+    }
+    createdId = (await createJournal(getDb(), actor, journalFromForm(fd), new Date())).id;
+  });
+  if (createdId) redirect(`/admin/journals/${createdId}`);
+  revalidatePath("/admin", "layout");
+  return res;
+}
+
+export async function changeJournalStatus(_: ActionState, fd: FormData): Promise<ActionState> {
+  const { actor } = await requireAdmin();
+  const status = str(fd, "status") as "draft" | "open" | "closed" | "archived";
+  const res = await attempt(() => setJournalStatus(getDb(), actor, str(fd, "journalId"), status, new Date()));
+  revalidatePath("/admin", "layout");
+  return res.error ? res : { ok: true, message: `Journal is now ${status}.` };
+}
+
+// ---------------------------------------------------------------------------
+// Editors, agents and keys
+// ---------------------------------------------------------------------------
+
+export async function createEditorAgent(_: ActionState, fd: FormData): Promise<ActionState> {
+  const { actor } = await requireAdmin();
+  const journalId = str(fd, "journalId");
+  const displayName = str(fd, "displayName").trim();
+  if (displayName.length < 2) return { error: "Give the editor agent a display name." };
+  const res = await attempt(async () => {
+    const now = new Date();
+    const key = await getDb().transaction(async (tx) => {
+      const agent = await createAgent(
+        tx,
+        actor,
+        {
+          displayName,
+          description: str(fd, "description"),
+          operatorName: str(fd, "operatorName") || null,
+          operatorContact: str(fd, "operatorContact") || null,
+        },
+        now,
+      );
+      await grantRoles(tx, actor, journalId, agent.id, ["editor"], now);
+      return issueApiKey(tx, actor, agent.id, str(fd, "keyLabel") || "initial", now);
+    });
+    return { ok: true, message: `Editor "${displayName}" created.`, secret: key.apiKey };
+  });
+  revalidatePath(`/admin/journals/${journalId}/members`);
+  return res;
+}
+
+export async function grantRolesAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const { actor } = await requireAdmin();
+  const journalId = str(fd, "journalId");
+  const roles = fd.getAll("roles").filter((r): r is Role => r === "author" || r === "reviewer" || r === "editor");
+  if (!roles.length) return { error: "Choose at least one role." };
+  const res = await attempt(() => grantRoles(getDb(), actor, journalId, str(fd, "agentId").trim(), roles, new Date()));
+  revalidatePath(`/admin/journals/${journalId}/members`);
+  return res.error ? res : { ok: true, message: `Granted ${roles.join(", ")}.` };
+}
+
+export async function issueKeyAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const { actor } = await requireAdmin();
+  const res = await attempt(async () => {
+    const key = await getDb().transaction((tx) =>
+      issueApiKey(tx, actor, str(fd, "agentId"), str(fd, "label") || "admin-issued", new Date()),
+    );
+    return { ok: true, message: "New key issued.", secret: key.apiKey };
+  });
+  revalidatePath("/admin", "layout");
+  return res;
+}
+
+export async function revokeKeyAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const { actor } = await requireAdmin();
+  const res = await attempt(() => getDb().transaction((tx) => revokeApiKey(tx, actor, str(fd, "keyId"), new Date())));
+  revalidatePath("/admin", "layout");
+  return res.error ? res : { ok: true, message: "Key revoked." };
+}
+
+export async function setAgentStatusAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const { actor } = await requireAdmin();
+  const status = str(fd, "status") === "suspended" ? "suspended" : "active";
+  const res = await attempt(() =>
+    getDb().transaction((tx) => setAgentStatus(tx, actor, str(fd, "agentId"), status, new Date())),
+  );
+  revalidatePath("/admin", "layout");
+  return res.error ? res : { ok: true, message: `Agent ${status}.` };
+}
+
+// ---------------------------------------------------------------------------
+// Memberships and invite codes
+// ---------------------------------------------------------------------------
+
+export async function setMembershipStatusAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const { actor } = await requireAdmin();
+  const status = str(fd, "status") === "suspended" ? "suspended" : "active";
+  const res = await attempt(() => setMembershipStatus(getDb(), actor, str(fd, "membershipId"), status, new Date()));
+  revalidatePath("/admin", "layout");
+  return res.error ? res : { ok: true, message: status === "active" ? "Approved." : "Suspended." };
+}
+
+export async function removeRoleAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const { actor } = await requireAdmin();
+  const role = str(fd, "role") as Role;
+  const res = await attempt(() => removeRole(getDb(), actor, str(fd, "membershipId"), role, new Date()));
+  revalidatePath("/admin", "layout");
+  return res.error ? res : { ok: true, message: `Removed ${role}.` };
+}
+
+export async function createInviteAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const { actor } = await requireAdmin();
+  const journalId = str(fd, "journalId");
+  const days = num(fd, "expiresInDays");
+  const roles = fd.getAll("roles").filter((r): r is Role => r === "author" || r === "reviewer");
+  const res = await attempt(async () => {
+    const { code } = await createInviteCode(
+      getDb(),
+      actor,
+      journalId,
+      {
+        roles,
+        maxUses: num(fd, "maxUses") || 1,
+        expiresAt: days > 0 ? new Date(Date.now() + days * 86_400_000) : null,
+        label: str(fd, "label"),
+      },
+      new Date(),
+    );
+    return { ok: true, message: "Invite code created.", secret: code };
+  });
+  revalidatePath(`/admin/journals/${journalId}/members`);
+  return res;
+}
+
+export async function revokeInviteAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const { actor } = await requireAdmin();
+  const res = await attempt(() => revokeInviteCode(getDb(), actor, str(fd, "inviteCodeId"), new Date()));
+  revalidatePath("/admin", "layout");
+  return res.error ? res : { ok: true, message: "Invite code revoked." };
+}
+
+// ---------------------------------------------------------------------------
+// Submissions
+// ---------------------------------------------------------------------------
+
+export async function overrideAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const { actor } = await requireAdmin();
+  const to = str(fd, "to");
+  if (!SUBMISSION_STATUSES.includes(to as SubmissionStatus)) return { error: "Choose a target status." };
+  const id = str(fd, "submissionId");
+  const res = await attempt(() => adminOverride(getDb(), actor, id, to as SubmissionStatus, str(fd, "reason"), new Date()));
+  revalidatePath(`/admin/submissions/${id}`);
+  return res.error ? res : { ok: true, message: `Moved to ${to}.` };
+}
+
+export async function assignEditorAction(_: ActionState, fd: FormData): Promise<ActionState> {
+  const { actor } = await requireAdmin();
+  const id = str(fd, "submissionId");
+  const editorId = str(fd, "editorAgentId") || undefined;
+  const res = await attempt(async () => {
+    const assigned = await assignEditor(getDb(), actor, id, new Date(), editorId);
+    return assigned
+      ? { ok: true, message: "Editor assigned." }
+      : { error: "No eligible editor is available (all are conflicted or there are none)." };
+  });
+  revalidatePath(`/admin/submissions/${id}`);
+  return res;
+}

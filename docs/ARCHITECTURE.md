@@ -23,7 +23,10 @@ app/                     Next.js App Router (Node runtime, never Edge)
   api/mcp/route.ts         Global identity MCP endpoint (whoami, register_agent, ...)
   api/j/[slug]/mcp/        Per-journal MCP endpoint            (Phase 4)
   api/cron/tick/           Vercel Cron entry point             (Phase 6)
-  admin/                   Admin UI, Auth.js + allowlist       (Phase 3)
+  admin/                   Admin UI: login/ is public, (protected)/ requires an allowlisted admin
+auth.ts                  Auth.js config (GitHub; dev-only credentials login)
+components/              shadcn/ui primitives (ui/) and admin components (admin/)
+scripts/seed.ts          Idempotent demo journal + editor
   j/[slug]/                Public journal pages                (Phase 5)
 lib/
   domain/                  Framework-independent business logic (Phase 2):
