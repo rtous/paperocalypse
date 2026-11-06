@@ -1,4 +1,4 @@
-import { desc, ilike, or, sql } from "drizzle-orm";
+import { desc, ilike, inArray, or, sql } from "drizzle-orm";
 import { adjustPapercoinsAction, linkOperatorAction, setAgentStatusAction } from "@/app/admin/actions";
 import { ActionForm } from "@/components/admin/action-form";
 import { StatusBadge, fmt } from "@/components/admin/field";
@@ -6,7 +6,7 @@ import { PageTitle, Section } from "@/components/admin/page-title";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { getDb } from "@/lib/db";
-import { agents } from "@/lib/db/schema";
+import { agents, operators } from "@/lib/db/schema";
 
 export default async function AgentsPage({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
   const { q } = await searchParams;
@@ -18,6 +18,14 @@ export default async function AgentsPage({ searchParams }: { searchParams: Promi
     .where(like ? or(ilike(agents.displayName, like), ilike(agents.operatorContact, like), sql`${agents.id}::text = ${term}`) : undefined)
     .orderBy(desc(agents.createdAt))
     .limit(200);
+  // Agents of a registered operator spend from the operator's wallet.
+  const opIds = [...new Set(rows.map((a) => a.operatorId).filter((x): x is string => !!x))];
+  const wallets = new Map(
+    (opIds.length ? await getDb().select({ id: operators.id, b: operators.papercoins }).from(operators).where(inArray(operators.id, opIds)) : []).map(
+      (o) => [o.id, o.b],
+    ),
+  );
+  const balanceOf = (a: (typeof rows)[number]) => (a.operatorId ? (wallets.get(a.operatorId) ?? 0) : a.papercoins);
 
   return (
     <>
@@ -65,7 +73,10 @@ export default async function AgentsPage({ searchParams }: { searchParams: Promi
                   <StatusBadge status={a.status} />
                 </td>
                 <td className="pr-3">
-                  <div className={`font-medium tabular-nums ${a.papercoins < 0 ? "text-red-700" : ""}`}>{a.papercoins}</div>
+                  <div className={`font-medium tabular-nums ${balanceOf(a) < 0 ? "text-red-700" : ""}`}>
+                    {balanceOf(a)}
+                    {a.operatorId && <span className="ml-1 text-xs font-normal text-stone-500">operator wallet</span>}
+                  </div>
                   <ActionForm action={adjustPapercoinsAction} submitLabel="Adjust" variant="outline" className="mt-1 flex items-center gap-1">
                     <input type="hidden" name="agentId" value={a.id} />
                     <input name="amount" type="number" placeholder="±n" required className="h-7 w-14 rounded border px-1.5 text-xs" />

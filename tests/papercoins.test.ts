@@ -170,7 +170,8 @@ describe("papercoins over MCP", () => {
     expect(coins.balance).toBe(0);
     expect(coins.rules).toMatchObject({ submission_cost: 1, publication_cost: 2, review_reward: 1, signup_grant: 3 });
     expect(coins.transactions.map((t: any) => t.reason)).toEqual(["submission", "submission", "submission", "signup_grant"]);
-    expect((await g.must("whoami")).papercoins).toBe(0);
+    expect((await g.must("whoami")).papercoins).toMatchObject({ owner: "operator", balance: 0 });
+    expect(coins.wallet).toMatch(/shared with all agents of your operator/);
     await g.close();
     await c.close();
   });

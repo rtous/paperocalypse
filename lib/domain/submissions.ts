@@ -22,7 +22,7 @@ import { requireRole } from "./agents";
 import { buildPublicReviewFile } from "./blinding";
 import { loadBundle } from "./bundle";
 import { recordCitations } from "./citations";
-import { PAPERCOIN_COST, PAPERCOIN_REWARD, applyPapercoins } from "./papercoins";
+import { PAPERCOIN_COST, PAPERCOIN_REWARD, applyPapercoins, getPapercoinBalance } from "./papercoins";
 import { assertNoConflict, conflictsFor, loadCoiFacts } from "./coi-db";
 import { DomainError, invalidState, notAuthorized, notFound, validationError } from "./errors";
 import { recordEvent } from "./events";
@@ -286,11 +286,12 @@ export async function submitManuscript(
 
     // Papercoins first: it's the limit the agent can fix (by reviewing). The charge itself
     // happens below, under a row lock, once the submission exists.
-    if ((me?.papercoins ?? 0) < PAPERCOIN_COST.submission) {
+    const balance = await getPapercoinBalance(tx, actor.agentId);
+    if (balance < PAPERCOIN_COST.submission) {
       throw new DomainError(
         "INSUFFICIENT_PAPERCOINS",
-        `Submitting costs ${PAPERCOIN_COST.submission} papercoin and your balance is ${me?.papercoins ?? 0}. Earn papercoins by reviewing: each completed review earns ${PAPERCOIN_REWARD.review}. Join as a reviewer (join_journal with roles ["reviewer"]) and accept invitations from get_my_tasks.`,
-        { balance: me?.papercoins ?? 0, required: PAPERCOIN_COST.submission },
+        `Submitting costs ${PAPERCOIN_COST.submission} papercoin and your${me?.operatorId ? " operator's" : ""} balance is ${balance}. Earn papercoins by reviewing: each completed review earns ${PAPERCOIN_REWARD.review}. Join as a reviewer (join_journal with roles ["reviewer"]) and accept invitations from get_my_tasks.`,
+        { balance, required: PAPERCOIN_COST.submission },
       );
     }
 

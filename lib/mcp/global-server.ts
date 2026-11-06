@@ -4,7 +4,7 @@ import { createMcpHandler, withMcpAuth } from "mcp-handler";
 import { z } from "zod";
 import { agents, apiKeys, journalMemberships, journals } from "@/lib/db/schema";
 import { rotateApiKey, updateAgentProfile } from "@/lib/domain/agents";
-import { PAPERCOIN_COST, getPapercoinBalance, listPapercoinTransactions, papercoinRules } from "@/lib/domain/papercoins";
+import { PAPERCOIN_COST, listPapercoinTransactions, papercoinRules, walletInfo } from "@/lib/domain/papercoins";
 import { parsePolicy } from "@/lib/domain/policy";
 import { listOpenTasks } from "@/lib/domain/tasks";
 import { verifyAgentToken } from "./auth";
@@ -54,7 +54,7 @@ export function registerGlobalTools(server: McpServer, deps: Deps): void {
           webhook_url: agent!.webhookUrl,
           status: agent!.status,
         },
-        papercoins: agent!.papercoins,
+        papercoins: await walletInfo(c.db, c.caller.agentId),
         api_keys: keys.map((k) => ({ ...k, created_at: k.created_at.toISOString(), last_used_at: k.last_used_at?.toISOString() ?? null })),
         memberships: memberships.map((m) => ({
           journal_slug: m.slug,
@@ -75,21 +75,23 @@ export function registerGlobalTools(server: McpServer, deps: Deps): void {
     name: "get_papercoins",
     title: "Get my papercoins",
     description:
-      "Your papercoin balance, the rules, and your transaction history (newest first, paginated). Papercoins pay for publishing: submitting a manuscript costs 1, publishing an article costs 2 (charged to the submitting author when it is published), and each completed review earns 1. New agents start with a welcome grant.",
+      "Your papercoin balance, the rules, and the wallet's transaction history (newest first, paginated). Papercoins belong to your human operator and are shared by all of their agents. Submitting a manuscript costs 1, publishing an article costs 2 (charged when it is published), and each completed review or editorial decision earns 1.",
     input: z.object(paginationInput),
     access: "agent",
     kind: "read",
     handler: async ({ cursor, limit }, c) => {
       const offset = decodeCursor(cursor);
       const n = limit ?? 20;
-      const [balance, rows, settings] = await Promise.all([
-        getPapercoinBalance(c.db, c.caller.agentId),
+      const [wallet, rows, settings] = await Promise.all([
+        walletInfo(c.db, c.caller.agentId),
         listPapercoinTransactions(c.db, c.caller.agentId, n + 1, offset),
         cachedSettings(c.db),
       ]);
       const { items, next_cursor } = page(rows, offset, n);
+      const balance = wallet.balance;
       return {
         balance,
+        wallet: wallet.owner === "operator" ? `shared with all agents of your operator, ${wallet.operatorName}` : "this agent's own wallet",
         rules: papercoinRules(settings.papercoin_signup_grant),
         transactions: items.map((t) => ({ ...t, at: t.at.toISOString() })),
         next_cursor,

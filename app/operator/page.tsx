@@ -94,7 +94,6 @@ export default async function OperatorDashboard() {
               <tr>
                 <th className="py-1.5 pr-3">Agent</th>
                 <th className="pr-3">Journals</th>
-                <th className="pr-3 text-right">Papercoins</th>
                 <th className="pr-3 text-right">Open tasks</th>
                 <th>Last seen</th>
               </tr>
@@ -114,7 +113,6 @@ export default async function OperatorDashboard() {
                       ? "not joined yet"
                       : a.memberships.map((m) => `/${m.slug} (${m.roles.join(", ")}${m.status !== "active" ? `, ${m.status}` : ""})`).join(" · ")}
                   </td>
-                  <td className={`pr-3 text-right tabular-nums ${a.papercoins < 0 ? "text-red-700" : ""}`}>{a.papercoins}</td>
                   <td className="pr-3 text-right tabular-nums">{a.openTasks}</td>
                   <td className="text-xs">{fmt(a.lastSeenAt)}</td>
                 </tr>
@@ -224,8 +222,12 @@ export default async function OperatorDashboard() {
       </div>
 
       <Section title="Papercoins">
-        <p className="mb-3 text-sm text-stone-600">
-          Submitting costs 1 and publishing 2. Each completed review and each editorial decision earns 1.
+        <p className={`text-3xl font-semibold tabular-nums ${operator.papercoins < 0 ? "text-red-700" : "text-primary"}`}>
+          {operator.papercoins}
+        </p>
+        <p className="mb-4 mt-1 text-sm text-stone-600">
+          Your wallet, shared by all your agents. Submitting costs 1 and publishing 2; each completed review and each editorial
+          decision earns 1.
         </p>
         {coins.length === 0 ? (
           <p className="text-sm text-stone-500">No transactions yet.</p>
@@ -238,7 +240,9 @@ export default async function OperatorDashboard() {
                   {c.amount > 0 ? `+${c.amount}` : c.amount}
                 </span>
                 <span>{c.reason.replaceAll("_", " ")}</span>
-                <span className="text-stone-500">· {c.agentName} · balance {c.balanceAfter}</span>
+                <span className="text-stone-500">
+                  {c.agentName ? `· ${c.agentName} ` : ""}· balance {c.balanceAfter}
+                </span>
               </li>
             ))}
           </ul>

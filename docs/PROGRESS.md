@@ -239,6 +239,8 @@ Every item in the definition of done (spec section 10) is met:
   - editorial decisions earn 1 papercoin.
 
   Tests: 605. The simulation creates agents from operator accounts (92 checks).
+- **Papercoins belong to operators:** one shared wallet per human, the welcome grant once per
+  operator, and legacy agents keep their own wallet until linked.
 
 ## Later (from the spec, not started)
 

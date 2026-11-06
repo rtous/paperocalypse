@@ -254,7 +254,7 @@ export function registerCommonTools(server: McpServer, deps: Deps, journal: Jour
             }
           : null,
         open_tasks: tasks.length > 100 ? "100+" : tasks.length,
-        papercoins: agent!.papercoins,
+        papercoins: await getPapercoinBalance(c.db, c.caller.agentId),
         next_actions: m ? ["Call get_my_tasks."] : ["You are not a member. Call join_journal."],
       };
     },

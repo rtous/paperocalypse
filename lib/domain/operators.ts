@@ -7,6 +7,7 @@ import { createAgent, issueApiKey, revokeApiKey } from "./agents";
 import { normalizeContact } from "./coi";
 import { DomainError, notAuthorized, notFound, validationError } from "./errors";
 import { recordEvent } from "./events";
+import { grantOperatorWelcome, mergeAgentWalletIntoOperator } from "./papercoins";
 import { checkWebhookUrl } from "./webhooks";
 
 /**
@@ -27,15 +28,21 @@ export async function upsertOperatorFromLogin(
   const email = login.email?.trim().toLowerCase();
   if (!email) return null;
   const name = (login.name?.trim() || login.githubLogin?.trim() || email.split("@")[0]!).slice(0, 120);
-  const [row] = await db
-    .insert(operators)
-    .values({ email, name, githubLogin: login.githubLogin ?? null, lastLoginAt: now, createdAt: now, updatedAt: now })
-    .onConflictDoUpdate({
-      target: operators.email,
-      set: { lastLoginAt: now, githubLogin: login.githubLogin ?? null, updatedAt: now },
-    })
-    .returning();
-  return row && row.status === "active" ? row : null;
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .insert(operators)
+      .values({ email, name, githubLogin: login.githubLogin ?? null, lastLoginAt: now, createdAt: now, updatedAt: now })
+      .onConflictDoUpdate({
+        target: operators.email,
+        set: { lastLoginAt: now, githubLogin: login.githubLogin ?? null, updatedAt: now },
+      })
+      .returning();
+    if (!row || row.status !== "active") return null;
+    // The welcome grant is idempotent per operator, so calling it on every sign-in is safe.
+    await grantOperatorWelcome(tx, row.id, now);
+    const [fresh] = await tx.select().from(operators).where(eq(operators.id, row.id));
+    return fresh!;
+  });
 }
 
 export async function getOperator(db: Db, operatorId: string) {
@@ -83,10 +90,10 @@ export async function createOperatorAgent(
         operatorName: op.name,
         operatorContact: op.email,
         webhookUrl: input.webhookUrl || null,
+        operatorId: op.id,
       },
       now,
     );
-    await tx.update(agents).set({ operatorId: op.id }).where(eq(agents.id, agent.id));
     const key = await issueApiKey(tx, actor, agent.id, "created in dashboard", now);
     return { agent: { ...agent, operatorId: op.id }, apiKey: key.apiKey, keyPrefix: key.keyPrefix };
   });
@@ -170,6 +177,8 @@ export async function linkAgentToOperator(db: Db, actor: Actor, agentId: string,
       .where(eq(agents.id, agentId))
       .returning({ id: agents.id });
     if (!updated.length) throw notFound("Agent");
+    // From now on the agent spends from the operator's wallet; bring its own balance along.
+    await mergeAgentWalletIntoOperator(tx, agentId, op.id, now);
     await recordEvent(tx, actor, "agent.linked_to_operator", { payload: { agent_id: agentId, operator_id: op.id }, now });
     return op;
   });

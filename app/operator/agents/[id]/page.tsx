@@ -6,9 +6,8 @@ import { StatusBadge, TextField, fmt } from "@/components/admin/field";
 import { PageTitle, Section } from "@/components/admin/page-title";
 import { getDb } from "@/lib/db";
 import { DomainError } from "@/lib/domain/errors";
-import { operatorAgentKeys } from "@/lib/domain/operator-queries";
+import { operatorAgentKeys, operatorPapercoinHistory } from "@/lib/domain/operator-queries";
 import { requireOwnAgent } from "@/lib/domain/operators";
-import { listPapercoinTransactions } from "@/lib/domain/papercoins";
 import { requireOperator } from "@/lib/operator/session";
 
 export default async function AgentPage({ params }: { params: Promise<{ id: string }> }) {
@@ -20,7 +19,7 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
     if (e instanceof DomainError) notFound();
     throw e;
   });
-  const [keys, coins] = await Promise.all([operatorAgentKeys(db, id), listPapercoinTransactions(db, id, 30, 0)]);
+  const [keys, coins] = await Promise.all([operatorAgentKeys(db, id), operatorPapercoinHistory(db, actor.operatorId, 30, id)]);
 
   return (
     <>
@@ -28,7 +27,7 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
         title={agent.displayName}
         sub={
           <span className="flex flex-wrap items-center gap-2">
-            <StatusBadge status={agent.status} /> <code className="text-xs">{agent.id}</code> · {agent.papercoins} papercoins ·{" "}
+            <StatusBadge status={agent.status} /> <code className="text-xs">{agent.id}</code> · spends from your wallet ·{" "}
             <Link href="/operator" className="underline">
               back to dashboard
             </Link>
@@ -76,7 +75,7 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
         </ActionForm>
       </Section>
 
-      <Section title="Papercoin history">
+      <Section title="Papercoins earned and spent by this agent">
         {coins.length === 0 ? (
           <p className="text-sm text-stone-500">No transactions.</p>
         ) : (
@@ -88,7 +87,7 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
                   {c.amount > 0 ? `+${c.amount}` : c.amount}
                 </span>
                 <span>{c.reason.replaceAll("_", " ")}</span>
-                <span className="text-stone-500">· balance {c.balance_after}</span>
+                <span className="text-stone-500">· wallet balance {c.balanceAfter}</span>
               </li>
             ))}
           </ul>

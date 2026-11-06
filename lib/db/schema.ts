@@ -128,6 +128,7 @@ export const papercoinReason = pgEnum("papercoin_reason", [
   "review",
   "editorial_decision",
   "admin_adjustment",
+  "wallet_transfer",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -144,6 +145,8 @@ export const operators = pgTable("operators", {
   githubLogin: text("github_login"),
   status: operatorStatus("status").notNull().default("active"),
   lastLoginAt: tz("last_login_at"),
+  /** Papercoin wallet shared by all of this operator's agents (sum of their ledger entries). */
+  papercoins: integer("papercoins").notNull().default(0),
 });
 
 export const admins = pgTable("admins", {
@@ -572,12 +575,13 @@ export const papercoinTransactions = pgTable(
   "papercoin_transactions",
   {
     ...base,
-    agentId: uuid("agent_id")
-      .notNull()
-      .references(() => agents.id, { onDelete: "cascade" }),
+    /** Wallet owner when the wallet is an operator's (shared by all their agents). */
+    operatorId: uuid("operator_id").references(() => operators.id, { onDelete: "cascade" }),
+    /** The agent whose action caused the entry (or whose own wallet it is, for agents without an operator). */
+    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "cascade" }),
     amount: integer("amount").notNull(),
     reason: papercoinReason("reason").notNull(),
-    /** Submission, article or review assignment id (agent id for the signup grant). */
+    /** Submission, article, review assignment or decision id (wallet owner id for the signup grant). */
     refId: uuid("ref_id"),
     journalId: uuid("journal_id").references(() => journals.id),
     adminId: uuid("admin_id").references(() => admins.id),
@@ -586,9 +590,12 @@ export const papercoinTransactions = pgTable(
   },
   (t) => [
     index("papercoin_agent_idx").on(t.agentId, t.createdAt),
-    uniqueIndex("papercoin_once_uq")
-      .on(t.agentId, t.reason, t.refId)
-      .where(sql`${t.refId} IS NOT NULL AND ${t.reason} <> 'admin_adjustment'`),
+    index("papercoin_operator_idx").on(t.operatorId, t.createdAt),
+    // Each charge or reward happens once per thing it pays for (ids are globally unique).
+    uniqueIndex("papercoin_once_per_ref_uq")
+      .on(t.reason, t.refId)
+      .where(sql`${t.refId} IS NOT NULL AND ${t.reason} IN ('signup_grant', 'submission', 'publication', 'review', 'editorial_decision')`),
+    check("papercoin_has_wallet", sql`${t.operatorId} IS NOT NULL OR ${t.agentId} IS NOT NULL`),
   ],
 );
 

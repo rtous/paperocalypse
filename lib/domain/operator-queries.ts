@@ -167,7 +167,8 @@ export async function operatorEditorial(db: Db, operatorId: string, limit = 100)
     .limit(limit);
 }
 
-export async function operatorPapercoinHistory(db: Db, operatorId: string, limit = 50) {
+/** The operator's wallet history (all agents), or one agent's entries in it. */
+export async function operatorPapercoinHistory(db: Db, operatorId: string, limit = 50, agentId?: string) {
   return db
     .select({
       amount: papercoinTransactions.amount,
@@ -178,9 +179,13 @@ export async function operatorPapercoinHistory(db: Db, operatorId: string, limit
       agentName: agents.displayName,
     })
     .from(papercoinTransactions)
-    .innerJoin(agents, eq(agents.id, papercoinTransactions.agentId))
-    .where(eq(agents.operatorId, operatorId))
-    .orderBy(desc(papercoinTransactions.createdAt))
+    .leftJoin(agents, eq(agents.id, papercoinTransactions.agentId))
+    .where(
+      agentId
+        ? and(eq(papercoinTransactions.operatorId, operatorId), eq(papercoinTransactions.agentId, agentId))
+        : eq(papercoinTransactions.operatorId, operatorId),
+    )
+    .orderBy(desc(papercoinTransactions.createdAt), desc(papercoinTransactions.id))
     .limit(limit);
 }
 

@@ -23,7 +23,7 @@ import {
   updateOperatorName,
   upsertOperatorFromLogin,
 } from "@/lib/domain/operators";
-import { adjustPapercoins, getPapercoinBalance } from "@/lib/domain/papercoins";
+import { adjustPapercoins, getPapercoinBalance, walletInfo } from "@/lib/domain/papercoins";
 import {
   deskReject,
   inviteReviewers,
@@ -61,12 +61,18 @@ describe("operator accounts", () => {
     expect(await upsertOperatorFromLogin(db, { email: "ada@lab.org", name: "x" }, T0)).toBeNull();
   });
 
-  it("create agents linked to themselves, with a working key and the welcome grant", async () => {
+  it("create agents linked to themselves, with a working key, sharing one wallet granted once", async () => {
     const { operator, actor } = await createOperator(db, "grace@lab.org", "Grace");
+    expect(operator.papercoins).toBe(3);
     const r = await createOperatorAgent(db, actor, { displayName: "Grace-Bot", description: "Claude via Claude Code" }, T0);
-    expect(r.agent).toMatchObject({ operatorId: operator.id, operatorName: "Grace", operatorContact: "grace@lab.org" });
+    expect(r.agent).toMatchObject({ operatorId: operator.id, operatorName: "Grace", operatorContact: "grace@lab.org", papercoins: 0 });
     expect((await verifyApiKey(db, r.apiKey, T0))?.agentId).toBe(r.agent.id);
     expect(await getPapercoinBalance(db, r.agent.id)).toBe(3);
+    // More agents (and more sign-ins) don't bring more welcome grants.
+    const r2 = await createOperatorAgent(db, actor, { displayName: "Grace-Bot-2", description: "" }, T0);
+    await upsertOperatorFromLogin(db, { email: "grace@lab.org", name: "Grace" }, hours(1));
+    expect(await getPapercoinBalance(db, r2.agent.id)).toBe(3);
+    expect((await walletInfo(db, r2.agent.id)).owner).toBe("operator");
     expect(await code(createOperatorAgent(db, actor, { displayName: "x", description: "" }, T0))).toBe("VALIDATION_ERROR");
   });
 
@@ -105,7 +111,10 @@ describe("operator accounts", () => {
     const j = await createJournal(db);
     const legacy = await createMember(db, admin, j.id, ["author"]);
     await createOperator(db, "heir@lab.org", "Heir");
+    // The legacy agent had its own wallet (fixture: 3 + 500); linking moves it to the operator's (3).
+    expect(await walletInfo(db, legacy.agentId)).toMatchObject({ owner: "agent", balance: 503 });
     await linkAgentToOperator(db, admin, legacy.agentId, "HEIR@lab.org", T0);
+    expect(await walletInfo(db, legacy.agentId)).toMatchObject({ owner: "operator", balance: 506 });
     const [a] = await db.select().from(agents).where(eq(agents.id, legacy.agentId));
     expect(a).toMatchObject({ operatorName: "Heir", operatorContact: "heir@lab.org", operatorContactNormalized: "heir@lab.org" });
     expect(await code(linkAgentToOperator(db, admin, legacy.agentId, "nobody@lab.org", T0))).toBe("VALIDATION_ERROR");
@@ -167,11 +176,13 @@ describe("operator dashboard data", () => {
     await respondToInvitation(db, neutralReviewer, assignments[1]!.assignmentId, true, null, hours(4));
     await submitReview(db, neutralReviewer, assignments[1]!.assignmentId, review(), hours(4));
     await makeDecision(db, myEditor, theirSub.submissionId, "major_revision", LETTER, hours(5));
-    expect(await getPapercoinBalance(db, myEditor.agentId)).toBe(before + 2);
+    // My reviewer's review and my editor's two decisions all land in my (shared) wallet.
+    expect(await getPapercoinBalance(db, myEditor.agentId)).toBe(before + 3);
+    expect(await getPapercoinBalance(db, myReviewer.agentId)).toBe(before + 3);
     // Admin decisions pay nobody.
     const theirSub3 = await submitManuscript(db, theirAuthor, j.id, manuscript({ title: "Third" }), hours(6));
     await deskReject(db, admin, theirSub3.submissionId, LETTER, hours(6));
-    expect(await getPapercoinBalance(db, myEditor.agentId)).toBe(before + 2);
+    expect(await getPapercoinBalance(db, myEditor.agentId)).toBe(before + 3);
 
     const history = await operatorPapercoinHistory(db, mine.operator.id);
     expect(history.filter((h) => h.reason === "editorial_decision")).toHaveLength(2);

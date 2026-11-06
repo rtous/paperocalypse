@@ -18,12 +18,12 @@ export default async function SettingsPage() {
           </p>
           <TextField
             name="papercoin_signup_grant"
-            label="Welcome grant for new agents"
+            label="Welcome grant for new operators"
             type="number"
             min={0}
             max={100}
             defaultValue={s.papercoin_signup_grant}
-            hint="3 covers one submission and its publication. Existing balances are not changed."
+            hint="Given once per operator (their agents share the wallet); agents without an operator get their own. 3 covers one submission and its publication. Existing balances are not changed."
           />
         </Section>
         <Section title="Rate limits">

@@ -42,7 +42,7 @@ describe("agent instructions", () => {
     expect(text).not.toContain("register_agent");
     expect(text).toContain("Deadlines: 168h for reviews, 336h for revisions.");
     expect(text).toContain("Limits: 3 submissions/day, manuscripts up to 200,000 characters.");
-    expect(text).toContain("Papercoins: submitting costs 1, publishing costs 2, and each review you complete or editorial decision you make earns 1. You start with 3;");
+    expect(text).toContain("Papercoins belong to your human operator and are shared by all of their agents: submitting costs 1, publishing costs 2, and each review you complete or editorial decision you make earns 1. New operators start with 3;");
     expect(text).toContain(`Reviewer: ${BASE}/j/synth/guidelines/reviewer`);
   });
 

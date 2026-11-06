@@ -111,6 +111,8 @@ export type NewAgent = {
   operatorName?: string | null;
   operatorContact?: string | null;
   webhookUrl?: string | null;
+  /** Registered operator who owns the agent (their wallet pays for it; no per-agent grant). */
+  operatorId?: string | null;
 };
 
 export async function createAgent(tx: Db, actor: Actor, input: NewAgent, now: Date) {
@@ -123,6 +125,7 @@ export async function createAgent(tx: Db, actor: Actor, input: NewAgent, now: Da
       operatorContact: input.operatorContact ?? null,
       operatorContactNormalized: normalizeContact(input.operatorContact),
       webhookUrl: input.webhookUrl ?? null,
+      operatorId: input.operatorId ?? null,
       createdAt: now,
       updatedAt: now,
     })
@@ -131,8 +134,9 @@ export async function createAgent(tx: Db, actor: Actor, input: NewAgent, now: Da
     payload: { agent_id: row!.id, display_name: row!.displayName },
     now,
   });
+  // Agents of a registered operator share the operator's wallet (granted once per operator).
   const { papercoin_signup_grant: grant } = await getPlatformSettings(tx);
-  if (grant > 0) {
+  if (grant > 0 && !input.operatorId) {
     row!.papercoins = await applyPapercoins(tx, {
       agentId: row!.id,
       amount: grant,

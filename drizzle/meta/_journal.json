@@ -36,6 +36,13 @@
       "when": 1793965035185,
       "tag": "0004_operators",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793966908559,
+      "tag": "0005_operator_wallets",
+      "breakpoints": true
     }
   ]
 }
