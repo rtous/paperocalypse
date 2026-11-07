@@ -8,11 +8,16 @@ export default async function PublicLayout({ children }: { children: React.React
   return (
     <div className="flex min-h-screen flex-col">
       <header className="border-b bg-white">
-        <div className="mx-auto flex max-w-4xl items-center justify-between px-6 py-3">
+        <div className="mx-auto flex max-w-4xl flex-wrap items-center gap-x-6 gap-y-2 px-6 py-3">
           <Link href="/" className="brand font-semibold">
             Paperocalypse
           </Link>
-          <div className="flex items-center gap-4">
+          <nav className="flex gap-4 text-sm text-stone-600">
+            <Link href="/about" className="hover:text-stone-950">
+              About
+            </Link>
+          </nav>
+          <div className="ml-auto flex items-center gap-4">
             <Link href={session?.operatorId ? "/operator" : "/login"} className="rounded-lg border px-2.5 py-1 text-sm hover:bg-stone-100">
               {session?.operatorId ? "My dashboard" : "Sign in"}
             </Link>

@@ -3,7 +3,6 @@ import Link from "next/link";
 import { getDb } from "@/lib/db";
 import { platformStats, searchArticles } from "@/lib/domain/queries";
 import { contributorRanking, reviewerRanking, type RankingSort } from "@/lib/domain/rankings";
-import { getPolicy } from "@/lib/domain/settings";
 import { ContributorRanking, ReviewerRanking } from "@/components/public/contributor-ranking";
 import { plural } from "@/lib/utils";
 
@@ -14,20 +13,13 @@ export const metadata: Metadata = {
   alternates: { types: { "application/atom+xml": "/feed.xml" } },
 };
 
-const BLINDING: Record<string, string> = {
-  none: "open identities",
-  single: "single-blind (reviewers are anonymous)",
-  double: "double-blind (authors and reviewers are anonymous to each other)",
-};
-
 export default async function Home({ searchParams }: Props) {
   const { q, page: pageParam, rank } = await searchParams;
   const sort: RankingSort = rank === "citations" || rank === "papers" ? rank : "score";
   const db = getDb();
   const page = Math.max(0, Number(pageParam ?? 0) || 0);
   const query = q?.trim().slice(0, 300) || undefined;
-  const [policy, stats, rows, ranking, reviewers] = await Promise.all([
-    getPolicy(db),
+  const [stats, rows, ranking, reviewers] = await Promise.all([
     platformStats(db),
     searchArticles(db, query, PAGE + 1, page * PAGE),
     contributorRanking(db, { sort, limit: 10 }),
@@ -57,7 +49,7 @@ export default async function Home({ searchParams }: Props) {
         </p>
       </header>
 
-      <div className="grid gap-10 md:grid-cols-[1fr_16rem]">
+      <div>
         <div>
 
           <section>
@@ -115,50 +107,6 @@ export default async function Home({ searchParams }: Props) {
           </div>
         </div>
 
-        <aside className="space-y-6 text-sm">
-          <section>
-            <h2 className="font-semibold">Policy</h2>
-            <dl className="mt-2 space-y-1.5 text-stone-600">
-              <div>
-                <dt className="inline text-stone-500">Review: </dt>
-                <dd className="inline">{BLINDING[policy.blinding]}</dd>
-              </div>
-              <div>
-                <dt className="inline text-stone-500">Reviewers: </dt>
-                <dd className="inline">
-                  {policy.reviewers_per_submission} per submission, decision after {policy.min_reviews_for_decision}
-                </dd>
-              </div>
-              <div>
-                <dt className="inline text-stone-500">Deadlines: </dt>
-                <dd className="inline">
-                  {policy.review_deadline_hours}h reviews, {policy.revision_deadline_hours}h revisions
-                </dd>
-              </div>
-              <div>
-                <dt className="inline text-stone-500">Revisions: </dt>
-                <dd className="inline">up to {policy.max_revisions} rounds</dd>
-              </div>
-              <div>
-                <dt className="inline text-stone-500">Peer-review file: </dt>
-                <dd className="inline">{policy.open_review ? "published with each paper" : "not published"}</dd>
-              </div>
-            </dl>
-          </section>
-
-          <section>
-            <h2 className="font-semibold">Guidelines</h2>
-            <ul className="mt-2 space-y-1">
-              {(["author", "reviewer", "editor"] as const).map((r) => (
-                <li key={r}>
-                  <Link href={`/guidelines/${r}`} className="underline">
-                    For {r}s
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </section>
-        </aside>
       </div>
     </>
   );

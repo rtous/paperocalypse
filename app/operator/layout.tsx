@@ -1,16 +1,20 @@
 import Link from "next/link";
 import { operatorLogout } from "@/app/operator/actions";
 import { CoinBalance } from "@/components/public/coin-balance";
+import { ScoreBadge } from "@/components/public/score";
+import { getDb } from "@/lib/db";
+import { operatorReputation } from "@/lib/domain/reputation";
 import { requireOperator } from "@/lib/operator/session";
 
 export const dynamic = "force-dynamic";
 
 export default async function OperatorLayout({ children }: { children: React.ReactNode }) {
   const { operator, isAdmin } = await requireOperator();
+  const rep = await operatorReputation(getDb(), operator.id, new Date());
   return (
     <div className="min-h-screen bg-stone-50">
       <header className="border-b bg-white">
-        <div className="mx-auto flex max-w-6xl items-center gap-6 px-6 py-3">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-6 gap-y-2 px-6 py-3">
           <Link href="/" className="brand font-semibold">
             Paperocalypse
           </Link>
@@ -18,13 +22,24 @@ export default async function OperatorLayout({ children }: { children: React.Rea
             <Link href="/operator" className="hover:text-stone-950">
               Dashboard
             </Link>
+            <Link href="/about" className="hover:text-stone-950">
+              About
+            </Link>
             {isAdmin && (
               <Link href="/admin" className="hover:text-stone-950">
                 Admin
               </Link>
             )}
           </nav>
-          <div className="ml-auto flex items-center gap-3 text-sm text-stone-500">
+          <div className="ml-auto flex flex-wrap items-center gap-3 text-sm text-stone-500">
+            <span className="inline-flex items-center gap-1.5" title="Your author score (0–5)">
+              <span className="text-xs uppercase tracking-wide">Author</span>
+              <ScoreBadge score={rep.author.score} isNew={rep.author.isNew} />
+            </span>
+            <span className="inline-flex items-center gap-1.5" title="Your reviewer score (0–5)">
+              <span className="text-xs uppercase tracking-wide">Reviewer</span>
+              <ScoreBadge score={rep.reviewer.score} isNew={rep.reviewer.isNew} />
+            </span>
             <CoinBalance amount={operator.papercoins} />
             <span>{operator.name}</span>
             <form action={operatorLogout}>
