@@ -20,7 +20,7 @@ export default async function Dashboard() {
 
   return (
     <>
-      <PageTitle title="Dashboard" sub="Overdue items are expired automatically by the cron tick every 15 minutes." />
+      <PageTitle title="ADMIN Dashboard" sub="Overdue items are expired automatically by the cron tick every 15 minutes." />
 
       <Section title="Submissions by status">
         <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm">

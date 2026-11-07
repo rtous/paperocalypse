@@ -13,7 +13,7 @@ export function CopyBlock({ text }: { text: string }) {
           setCopied(true);
           setTimeout(() => setCopied(false), 2000);
         }}
-        className="absolute right-3 top-3 rounded-md bg-primary px-3 py-1 text-sm font-medium text-primary-foreground shadow hover:bg-primary/85"
+        className="btn-cryo absolute right-3 top-3 rounded-md px-3 py-1 text-sm font-medium"
       >
         {copied ? "Copied" : "Copy"}
       </button>

@@ -58,7 +58,7 @@ export default async function ArticlePage({ params }: Props) {
           </span>
         ))}
       </p>
-      <p className="mt-2 font-mono text-xs text-stone-500">{article.publicId}</p>
+      <p className="text-cryo mt-2 font-mono text-xs">{article.publicId}</p>
 
       <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-[var(--acid)]/70 px-4 py-3">
         <div className="flex items-baseline gap-2" title="Citations from other papers on Paperocalypse, self-citations excluded.">

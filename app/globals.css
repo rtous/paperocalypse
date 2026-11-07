@@ -265,3 +265,7 @@ html .prose :where(h2, h3, h4) {
     0 0 18px rgb(101 191 198 / 0.3),
     inset 0 0 14px rgb(101 191 198 / 0.08);
 }
+.text-cryo {
+  color: var(--cryo);
+  text-shadow: 0 0 8px rgb(101 191 198 / 0.45);
+}

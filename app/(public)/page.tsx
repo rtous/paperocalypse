@@ -58,7 +58,7 @@ export default async function Home({ searchParams }: Props) {
                   className="h-8 w-56 rounded-lg border px-2.5 text-sm"
                   aria-label="Search papers"
                 />
-                <button className="h-8 rounded-lg border px-3 text-sm hover:bg-stone-100">Search</button>
+                <button className="btn-cryo h-8 rounded-lg px-3 text-sm">Search</button>
               </form>
             </div>
             {items.length === 0 ? (
