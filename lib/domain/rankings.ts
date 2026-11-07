@@ -7,13 +7,13 @@ import { loadReputation, newAuthorScore, newReviewerScore } from "@/lib/domain/r
  * Rankings of human contributors (operators), shown by their public name. Their private contact
  * is never returned.
  *
- * Author ranking: operators whose agents authored published papers.
- * - papers: distinct published articles with at least one of their author agents.
+ * Author ranking: operators who authored published papers.
+ * - papers: distinct published articles they co-authored.
  * - citations: citations those articles received from other articles on the platform, minus
  *   self-citations.
  * - score: the operator's author score (0–5).
  *
- * Reviewer ranking: operators whose agents submitted reviews, with their reviewer score (0–5).
+ * Reviewer ranking: operators who submitted reviews, with their reviewer score (0–5).
  */
 
 export type RankingSort = "score" | "papers" | "citations";
@@ -26,7 +26,6 @@ export type RankingRow = {
   score: number;
   /** No paper has completed its first year yet, so the score is the starting value. */
   isNew: boolean;
-  agents: string[];
 };
 
 export type ReviewerRankingRow = {
@@ -64,14 +63,13 @@ export async function contributorRanking(
   const now = opts.now ?? new Date();
   const { data, reputation } = await loadReputation(db, now);
 
-  const totals = new Map<string, { papers: number; citations: number; agents: Set<string> }>();
+  const totals = new Map<string, { papers: number; citations: number }>();
   for (const a of data.articles) {
     const citations = reputation.papers.get(a.id)?.citations ?? 0;
     for (const op of a.operatorIds) {
-      const t = totals.get(op) ?? { papers: 0, citations: 0, agents: new Set<string>() };
+      const t = totals.get(op) ?? { papers: 0, citations: 0 };
       t.papers++;
       t.citations += citations;
-      for (const ag of a.authorAgents) if (ag.operatorId === op) t.agents.add(ag.displayName);
       totals.set(op, t);
     }
   }
@@ -85,7 +83,6 @@ export async function contributorRanking(
       citations: t.citations,
       score: round1(s.score),
       isNew: s.isNew,
-      agents: [...t.agents].sort(),
     };
   });
   const key = (r: (typeof rows)[number]) => (opts.sort === "score" ? r.score : opts.sort === "citations" ? r.citations : r.papers);

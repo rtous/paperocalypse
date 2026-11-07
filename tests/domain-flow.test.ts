@@ -3,7 +3,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { articles, events, poolTasks, reviewAssignments, submissions } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "@/lib/domain/actor";
-import { issueApiKey, revokeApiKey, setAgentStatus, verifyApiKey } from "@/lib/domain/agents";
+import { issueApiKey, revokeApiKey, setOperatorStatus, verifyApiKey } from "@/lib/domain/operators";
 import { loadBundle } from "@/lib/domain/bundle";
 import { serializeForAuthor } from "@/lib/domain/blinding";
 import { DomainError } from "@/lib/domain/errors";
@@ -22,7 +22,7 @@ import { createTestDb, resetDb } from "./helpers/db";
 import {
   LETTER,
   T0,
-  agentFor,
+  operatorFor,
   createAdmin,
   setPolicy,
   createMember,
@@ -54,8 +54,8 @@ async function status(id: string) {
   return s!.status;
 }
 
-async function inboxKinds(agentId: string) {
-  return (await listInbox(db, [agentId])).map((t) => t.kind);
+async function inboxKinds(operatorId: string) {
+  return (await listInbox(db, operatorId)).map((t) => t.kind);
 }
 
 /** Open (unclaimed) pool tasks of a submission, by kind. */
@@ -103,25 +103,25 @@ describe("submission → publication happy path with two revision rounds", () =>
     const { submissionId, status: s0 } = await submitManuscript(db, author, manuscript(), T0);
     expect(s0).toBe("with_editor");
     expect(await openPool(submissionId)).toEqual(["editorial"]);
-    expect(await inboxKinds(editor.agentId)).toEqual([]);
+    expect(await inboxKinds(editor.operatorId)).toEqual([]);
 
     // The editorial agent takes the screening task and sends the paper to review.
     await takeTask(db, editor, "editorial", submissionId, T0);
-    expect(await inboxKinds(editor.agentId)).toEqual(["editorial"]);
-    expect((await loadBundle(db, submissionId))!.submission.handling_editor!.id).toBe(editor.agentId);
+    expect(await inboxKinds(editor.operatorId)).toEqual(["editorial"]);
+    expect((await loadBundle(db, submissionId))!.submission.handling_editor!.id).toBe(editor.operatorId);
     const sent = await sendToReview(db, editor, submissionId, T0);
     expect(sent.reviewTasks).toBe(2);
     expect(await status(submissionId)).toBe("under_review");
-    expect(await inboxKinds(editor.agentId)).toEqual([]);
+    expect(await inboxKinds(editor.operatorId)).toEqual([]);
     expect((await loadBundle(db, submissionId))!.submission.handling_editor).toBeNull();
     expect(await openPool(submissionId)).toEqual(["review", "review"]);
 
     // Two reviewers take the review tasks and submit.
     for (const r of reviewers.slice(0, 2)) {
       const id = await takeReview(db, r, submissionId, hours(1));
-      expect(await inboxKinds(r.agentId)).toEqual(["write_review"]);
+      expect(await inboxKinds(r.operatorId)).toEqual(["write_review"]);
       await submitReview(db, r, id, review(), hours(2));
-      expect(await inboxKinds(r.agentId)).toEqual([]);
+      expect(await inboxKinds(r.operatorId)).toEqual([]);
     }
     expect(await status(submissionId)).toBe("awaiting_decision");
     expect(await openPool(submissionId)).toEqual(["editorial"]);
@@ -129,7 +129,7 @@ describe("submission → publication happy path with two revision rounds", () =>
     // Round 1: major revision. The decision goes to an editorial agent through the pool.
     await decide(db, editor, submissionId, "major_revision", hours(3));
     expect(await status(submissionId)).toBe("revision_requested");
-    const [authorTask] = await listInbox(db, [author.agentId]);
+    const [authorTask] = await listInbox(db, author.operatorId);
     expect(authorTask!.kind).toBe("revise_submission");
     expect(authorTask!.due_at?.toISOString()).toBe(hours(3 + 24 * 14).toISOString());
     expect(authorTask!.tool).toBe("submit_revision");
@@ -143,7 +143,7 @@ describe("submission → publication happy path with two revision rounds", () =>
     // Revision 1 → handling the revision is an editorial task → another review round → minor revision.
     await submitRevision(db, author, submissionId, { ...manuscript({ title: "v2" }), responseToReviewersMd: "Fixed." }, hours(4));
     expect(await status(submissionId)).toBe("with_editor");
-    expect(await inboxKinds(author.agentId)).toEqual([]);
+    expect(await inboxKinds(author.operatorId)).toEqual([]);
     await sendOut(db, editor, submissionId, hours(5));
     // Reviewers may review a new version again.
     for (const r of [reviewers[0]!, reviewers[2]!]) {
@@ -162,7 +162,7 @@ describe("submission → publication happy path with two revision rounds", () =>
     expect(accepted.article!.articleNo).toBe(1);
     expect(accepted.article!.publicId).toBe("paperocalypse:2026.1");
     expect(await status(submissionId)).toBe("published");
-    expect(await inboxKinds(editor.agentId)).toEqual([]);
+    expect(await inboxKinds(editor.operatorId)).toEqual([]);
     expect(await openPool(submissionId)).toEqual([]);
 
     const [article] = await db.select().from(articles).where(eq(articles.id, accepted.article!.articleId));
@@ -217,7 +217,7 @@ describe("authorization", () => {
     await deskReject(db, admin, submissionId, LETTER, T0);
     expect(await status(submissionId)).toBe("rejected");
     // The admin acted, so the agent's task was cancelled (unpaid) and left its inbox.
-    expect(await inboxKinds(ctx.editor.agentId)).toEqual([]);
+    expect(await inboxKinds(ctx.editor.operatorId)).toEqual([]);
   });
 
   it("reviewers cannot touch assignments that are not theirs", async () => {
@@ -247,9 +247,9 @@ describe("desk reject, rejection and withdrawal", () => {
     await takeTask(db, ctx.editor, "editorial", submissionId, T0);
     await deskReject(db, ctx.editor, submissionId, LETTER, T0);
     expect(await status(submissionId)).toBe("rejected");
-    expect(await inboxKinds(ctx.editor.agentId)).toEqual([]);
+    expect(await inboxKinds(ctx.editor.operatorId)).toEqual([]);
     const [task] = await db.select().from(poolTasks).where(eq(poolTasks.submissionId, submissionId));
-    expect(task).toMatchObject({ status: "done", claimedByAgentId: ctx.editor.agentId });
+    expect(task).toMatchObject({ status: "done", claimedByOperatorId: ctx.editor.operatorId });
     const b = (await loadBundle(db, submissionId))!;
     expect(b.decisions.map((d) => d.decision)).toEqual(["desk_reject"]);
     // Final: nothing else is possible.
@@ -280,7 +280,7 @@ describe("desk reject, rejection and withdrawal", () => {
       .from(poolTasks)
       .where(and(eq(poolTasks.submissionId, submissionId), inArray(poolTasks.status, ["open", "claimed"])));
     expect(pending).toEqual([]);
-    expect(await inboxKinds(ctx.reviewers[0]!.agentId)).toEqual([]);
+    expect(await inboxKinds(ctx.reviewers[0]!.operatorId)).toEqual([]);
   });
 });
 
@@ -318,7 +318,7 @@ describe("reviews", () => {
 
 describe("submission limits", () => {
   it("enforces max_manuscript_chars, open submissions and the daily limit", async () => {
-    const ctx = await setup({ max_manuscript_chars: 1000, max_open_submissions_per_agent: 2, max_submissions_per_agent_per_day: 3 });
+    const ctx = await setup({ max_manuscript_chars: 1000, max_open_submissions_per_operator: 2, max_submissions_per_operator_per_day: 3 });
     await expectCode(
       submitManuscript(db, ctx.author, manuscript({ bodyMd: "x".repeat(1001) }), T0),
       "VALIDATION_ERROR",
@@ -338,24 +338,24 @@ describe("submission limits", () => {
   it("requires active co-authors and an AI disclosure", async () => {
     const ctx = await setup();
     const suspended = await createMember(db, admin);
-    await setAgentStatus(db, admin, suspended.agentId, "suspended", T0);
+    await setOperatorStatus(db, admin, suspended.operatorId, "suspended", T0);
     await expectCode(
-      submitManuscript(db, ctx.author, manuscript({ coAuthorAgentIds: [suspended.agentId] }), T0),
+      submitManuscript(db, ctx.author, manuscript({ coAuthorOperatorIds: [suspended.operatorId] }), T0),
       "VALIDATION_ERROR",
     );
     await expectCode(
-      submitManuscript(db, ctx.author, manuscript({ coAuthorAgentIds: ["00000000-0000-0000-0000-000000000000"] }), T0),
+      submitManuscript(db, ctx.author, manuscript({ coAuthorOperatorIds: ["00000000-0000-0000-0000-000000000000"] }), T0),
       "VALIDATION_ERROR",
     );
     await expectCode(submitManuscript(db, ctx.author, manuscript({ aiDisclosure: " " }), T0), "VALIDATION_ERROR");
-    await submitManuscript(db, ctx.author, manuscript({ coAuthorAgentIds: [ctx.coauthor.agentId] }), T0);
+    await submitManuscript(db, ctx.author, manuscript({ coAuthorOperatorIds: [ctx.coauthor.operatorId] }), T0);
   });
 
   async function submitManuscriptIds(ctx: Awaited<ReturnType<typeof setup>>) {
     const rows = await db
       .select({ id: submissions.id })
       .from(submissions)
-      .where(and(eq(submissions.submittingAgentId, ctx.author.agentId), eq(submissions.status, "with_editor")));
+      .where(and(eq(submissions.submittingOperatorId, ctx.author.operatorId), eq(submissions.status, "with_editor")));
     return rows.map((r) => r.id);
   }
 });
@@ -368,7 +368,7 @@ describe("admin override", () => {
     await expectCode(adminOverride(db, ctx.editor, submissionId, "rejected", "because", T0), "NOT_AUTHORIZED");
     // Back under review: the editorial task is cancelled and review tasks are published.
     await adminOverride(db, admin, submissionId, "under_review", "Skip screening", T0);
-    expect(await inboxKinds(ctx.editor.agentId)).toEqual([]);
+    expect(await inboxKinds(ctx.editor.operatorId)).toEqual([]);
     expect(await openPool(submissionId)).toEqual(["review", "review"]);
     await adminOverride(db, admin, submissionId, "rejected", "Spam submission", T0);
     expect(await status(submissionId)).toBe("rejected");
@@ -392,25 +392,31 @@ describe("events are append-only", () => {
 });
 
 describe("API keys", () => {
-  it("issues, verifies and revokes keys; suspended agents are rejected", async () => {
-    const agent = await agentFor(db, admin, "Keyed");
-    const { apiKey, keyId, keyPrefix } = await issueApiKey(db, admin, agent.id, "main", T0);
+  it("gives each operator one key: a new key replaces the old one; suspended operators are rejected", async () => {
+    const op = await operatorFor(db, "Keyed");
+    const { apiKey, keyPrefix } = await issueApiKey(db, admin, op.id, T0);
     expect(apiKey.startsWith("pk_live_")).toBe(true);
     expect(apiKey.slice(8, 16)).toBe(keyPrefix);
 
-    expect(await verifyApiKey(db, apiKey, T0)).toEqual({ agentId: agent.id, keyId });
+    expect(await verifyApiKey(db, apiKey, T0)).toEqual({ operatorId: op.id });
     expect(await verifyApiKey(db, apiKey + "x", T0)).toBeNull();
     expect(await verifyApiKey(db, "nope", T0)).toBeNull();
 
     // The plain key is never stored.
-    const stored = await db.execute(sql`select key_hash from api_keys where id = ${keyId}`);
+    const stored = await db.execute(sql`select api_key_hash from operators where id = ${op.id}`);
     expect(JSON.stringify(stored)).not.toContain(apiKey);
 
-    await setAgentStatus(db, admin, agent.id, "suspended", T0);
+    await setOperatorStatus(db, admin, op.id, "suspended", T0);
     expect(await verifyApiKey(db, apiKey, T0)).toBeNull();
-    await setAgentStatus(db, admin, agent.id, "active", T0);
-    await revokeApiKey(db, admin, keyId, T0);
+    await setOperatorStatus(db, admin, op.id, "active", T0);
+    expect(await verifyApiKey(db, apiKey, T0)).toEqual({ operatorId: op.id });
+
+    // One key per operator: a new one replaces it.
+    const second = await issueApiKey(db, admin, op.id, T0);
     expect(await verifyApiKey(db, apiKey, T0)).toBeNull();
+    expect(await verifyApiKey(db, second.apiKey, T0)).toEqual({ operatorId: op.id });
+    await revokeApiKey(db, admin, op.id, T0);
+    expect(await verifyApiKey(db, second.apiKey, T0)).toBeNull();
   });
 
 });

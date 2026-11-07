@@ -5,15 +5,8 @@ import { signOut } from "@/auth";
 import type { ActionState } from "@/app/admin/actions";
 import { getDb } from "@/lib/db";
 import { DomainError } from "@/lib/domain/errors";
-import {
-  createOperatorAgent,
-  operatorIssueKey,
-  operatorRevokeKey,
-  operatorUpdateAgent,
-  requireOwnAgent,
-  updateOperatorName,
-} from "@/lib/domain/operators";
-import { PROMPT_TITLES, agentPrompt } from "@/lib/domain/prompts";
+import { operatorIssueKey, operatorRevokeKey, updateOperatorName, updateOperatorProfile } from "@/lib/domain/operators";
+import { agentPrompt } from "@/lib/domain/prompts";
 import { baseUrl } from "@/lib/mcp/deps";
 import { getPolicy } from "@/lib/domain/settings";
 import { requireOperator } from "@/lib/operator/session";
@@ -36,56 +29,44 @@ export async function operatorLogout(): Promise<void> {
   await signOut({ redirectTo: "/" });
 }
 
-export async function createAgentAction(_: ActionState, fd: FormData): Promise<ActionState> {
+/** Issue a new API key. The previous one stops working at once. */
+export async function issueKeyAction(): Promise<ActionState> {
   const { actor } = await requireOperator();
   const res = await attempt(async () => {
-    const r = await createOperatorAgent(
-      getDb(),
-      actor,
-      { displayName: str(fd, "displayName"), description: str(fd, "description"), webhookUrl: str(fd, "webhookUrl") || null },
-      new Date(),
-    );
-    return {
-      ok: true,
-      message: `Agent "${r.agent.displayName}" created. Give it this API key together with the agent instructions.`,
-      secret: r.apiKey,
-    };
+    const k = await operatorIssueKey(getDb(), actor, new Date());
+    return { ok: true, message: "New API key issued. Your previous key no longer works.", secret: k.apiKey };
   });
   revalidatePath("/operator");
   return res;
 }
 
-export async function issueKeyAction(_: ActionState, fd: FormData): Promise<ActionState> {
+export async function revokeKeyAction(): Promise<ActionState> {
   const { actor } = await requireOperator();
-  const agentId = str(fd, "agentId");
   const res = await attempt(async () => {
-    const k = await operatorIssueKey(getDb(), actor, agentId, str(fd, "label"), new Date());
-    return { ok: true, message: "New key issued.", secret: k.apiKey };
+    await operatorRevokeKey(getDb(), actor, new Date());
+    return { ok: true, message: "API key revoked. No agent can act for you until you issue a new one." };
   });
-  revalidatePath(`/operator/agents/${agentId}`);
+  revalidatePath("/operator");
   return res;
 }
 
-export async function revokeKeyAction(_: ActionState, fd: FormData): Promise<ActionState> {
+export async function updateProfileAction(_: ActionState, fd: FormData): Promise<ActionState> {
   const { actor } = await requireOperator();
   const res = await attempt(async () => {
-    await operatorRevokeKey(getDb(), actor, str(fd, "keyId"), new Date());
-    return { ok: true, message: "Key revoked." };
-  });
-  revalidatePath("/operator", "layout");
-  return res;
-}
-
-export async function updateAgentAction(_: ActionState, fd: FormData): Promise<ActionState> {
-  const { actor } = await requireOperator();
-  const agentId = str(fd, "agentId");
-  const res = await attempt(async () => {
-    const r = await operatorUpdateAgent(getDb(), actor, agentId, { description: str(fd, "description"), webhookUrl: str(fd, "webhookUrl") || null }, new Date());
+    const r = await updateOperatorProfile(
+      getDb(),
+      actor,
+      {
+        reviewerTopics: str(fd, "reviewerTopics").split(","),
+        webhookUrl: str(fd, "webhookUrl").trim() || null,
+      },
+      new Date(),
+    );
     return r.webhookSecret
       ? { ok: true, message: "Saved. Use this secret to verify webhook signatures.", secret: r.webhookSecret }
       : { ok: true, message: "Saved." };
   });
-  revalidatePath(`/operator/agents/${agentId}`);
+  revalidatePath("/operator");
   return res;
 }
 
@@ -100,24 +81,21 @@ export async function renameOperatorAction(_: ActionState, fd: FormData): Promis
 }
 
 /**
- * Generate a ready-to-paste prompt for one of the operator's agents. Keys are stored
- * hashed, so the prompt gets a new key for that agent (shown once; revocable on the agent page).
+ * Put a new API key into a ready-to-paste prompt. Keys are stored hashed, so the only way to show
+ * one is to issue a new one: this replaces the operator's current key.
  */
 export async function generatePromptAction(_: ActionState, fd: FormData): Promise<ActionState> {
-  const { actor } = await requireOperator();
+  const { actor, operator } = await requireOperator();
   const kind = str(fd, "kind") === "earn" ? "earn" : "submit";
-  const agentId = str(fd, "agentId");
-  if (!agentId) return { error: "Choose an agent." };
   const res = await attempt(async () => {
     const db = getDb();
-    const agent = await requireOwnAgent(db, actor, agentId);
-    const key = await operatorIssueKey(db, actor, agentId, PROMPT_TITLES[kind], new Date());
+    const key = await operatorIssueKey(db, actor, new Date());
     return {
       ok: true,
-      message: `New API key issued for ${agent.displayName}.`,
-      secret: agentPrompt({ kind, policy: await getPolicy(db), baseUrl: baseUrl(), agentName: agent.displayName, apiKey: key.apiKey }),
+      message: "New API key issued; your previous key no longer works.",
+      secret: agentPrompt({ kind, policy: await getPolicy(db), baseUrl: baseUrl(), operatorName: operator.name, apiKey: key.apiKey }),
     };
   });
-  revalidatePath(`/operator/agents/${agentId}`);
+  revalidatePath("/operator");
   return res;
 }

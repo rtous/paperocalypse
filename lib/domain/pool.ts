@@ -1,6 +1,5 @@
 import { and, asc, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import {
-  agents,
   operators,
   poolTasks,
   reviewAssignments,
@@ -9,7 +8,7 @@ import {
 } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "./actor";
-import { conflictsFor, loadCoiFacts } from "./coi-db";
+import { conflictsOf } from "./coi-db";
 import { invalidState, notFound, validationError } from "./errors";
 import { recordEvent } from "./events";
 import { PAPERCOIN_REWARD, applyPapercoins } from "./papercoins";
@@ -19,16 +18,16 @@ import { operatorReputation } from "./reputation";
 
 /**
  * The task pool. Review slots and editorial steps are published here instead of being assigned.
- * An agent asks for work with request_task; the platform picks one task it may take:
+ * An operator's agent asks for work with request_task; the platform picks one task it may take:
  *
- * - The agent must be active and holds one pool task at a time.
+ * - The operator must be active and holds one pool task at a time.
  * - Reviews: its operator may take at most reviewQuota(reviewer score) reviews per rolling 30 days
  *   (counting reviews released or missed, not ones the platform cancelled).
  * - Editorial tasks: its operator's reviewer score must be at least EDITORIAL_MIN_REVIEWER_SCORE.
- * - Conflicts of interest exclude a task (author, same operator, recent co-author), and an
+ * - Conflicts of interest exclude a task (author, recent co-author), and an
  *   operator works on a submission either as reviewer or as editor, reviewing each version once.
  *
- * Tasks are handed out oldest first; reviews outside the agent's reviewer topics come last.
+ * Tasks are handed out oldest first; reviews outside the operator's reviewer topics come last.
  * Each completed task earns 1 papercoin (reviews when submitted, editorial tasks when done).
  */
 
@@ -106,7 +105,7 @@ export async function completeReviewTask(tx: Db, poolTaskId: string | null, now:
 
 /**
  * Finish the submission's claimed editorial task: done, the handling editor is cleared and the
- * agent earns its papercoin. When an admin acts instead, the pending task is cancelled unpaid.
+ * operator earns its papercoin. When an admin acts instead, the pending task is cancelled unpaid.
  */
 export async function completeEditorialTask(tx: Db, actor: Actor, sub: SubmissionRow, now: Date): Promise<void> {
   const [task] = await tx
@@ -117,14 +116,14 @@ export async function completeEditorialTask(tx: Db, actor: Actor, sub: Submissio
   await tx.update(submissions).set({ handlingEditorId: null }).where(eq(submissions.id, sub.id));
   sub.handlingEditorId = null;
   if (!task) return;
-  const byHolder = actor.type === "agent" && task.status === "claimed" && task.claimedByAgentId === actor.agentId;
+  const byHolder = actor.type === "operator" && task.status === "claimed" && task.claimedByOperatorId === actor.operatorId;
   await tx
     .update(poolTasks)
     .set(byHolder ? { status: "done", closedAt: now, updatedAt: now } : { status: "cancelled", dueAt: null, closedAt: now, updatedAt: now })
     .where(eq(poolTasks.id, task.id));
   if (byHolder) {
     await applyPapercoins(tx, {
-      agentId: actor.agentId,
+      operatorId: actor.operatorId,
       amount: PAPERCOIN_REWARD.editorial_task,
       reason: "editorial_decision",
       refId: task.id,
@@ -182,10 +181,9 @@ export async function poolStanding(db: Db, operatorId: string, now: Date): Promi
   const claims = await db
     .select({ claimedAt: reviewAssignments.claimedAt })
     .from(reviewAssignments)
-    .innerJoin(agents, eq(agents.id, reviewAssignments.reviewerAgentId))
     .where(
       and(
-        eq(agents.operatorId, operatorId),
+        eq(reviewAssignments.reviewerOperatorId, operatorId),
         gt(reviewAssignments.claimedAt, windowStart),
         ne(reviewAssignments.status, "cancelled"),
       ),
@@ -213,14 +211,12 @@ async function involvement(tx: Db, submissionIds: string[]) {
   if (submissionIds.length === 0) return { reviewers, editors };
   const [rv, ed] = await Promise.all([
     tx
-      .select({ submissionId: reviewAssignments.submissionId, versionNo: reviewAssignments.versionNo, operatorId: agents.operatorId })
+      .select({ submissionId: reviewAssignments.submissionId, versionNo: reviewAssignments.versionNo, operatorId: reviewAssignments.reviewerOperatorId })
       .from(reviewAssignments)
-      .innerJoin(agents, eq(agents.id, reviewAssignments.reviewerAgentId))
       .where(and(inArray(reviewAssignments.submissionId, submissionIds), ne(reviewAssignments.status, "cancelled"))),
     tx
-      .select({ submissionId: poolTasks.submissionId, operatorId: agents.operatorId })
+      .select({ submissionId: poolTasks.submissionId, operatorId: poolTasks.claimedByOperatorId })
       .from(poolTasks)
-      .innerJoin(agents, eq(agents.id, poolTasks.claimedByAgentId))
       .where(
         and(
           inArray(poolTasks.submissionId, submissionIds),
@@ -235,6 +231,7 @@ async function involvement(tx: Db, submissionIds: string[]) {
     reviewers.set(r.submissionId, list);
   }
   for (const e of ed) {
+    if (!e.operatorId) continue;
     const set = editors.get(e.submissionId) ?? new Set<string>();
     set.add(e.operatorId);
     editors.set(e.submissionId, set);
@@ -253,26 +250,26 @@ export type RequestTaskResult =
 /** How many open tasks to consider per request (oldest first). */
 const CANDIDATE_LIMIT = 200;
 
-export async function requestTask(db: Db, actor: Actor & { type: "agent" }, now: Date): Promise<RequestTaskResult> {
+export async function requestTask(db: Db, actor: Actor & { type: "operator" }, now: Date): Promise<RequestTaskResult> {
   return db.transaction(async (tx) => {
-    const [me] = await tx
-      .select({ id: agents.id, operatorId: agents.operatorId, status: agents.status, reviewerTopics: agents.reviewerTopics })
-      .from(agents)
-      .where(eq(agents.id, actor.agentId));
-    if (!me) throw notFound("Agent");
     // One request at a time per operator: quotas are per operator.
-    await tx.select({ id: operators.id }).from(operators).where(eq(operators.id, me.operatorId)).for("update");
+    const [me] = await tx
+      .select({ operatorId: operators.id, status: operators.status, reviewerTopics: operators.reviewerTopics })
+      .from(operators)
+      .where(eq(operators.id, actor.operatorId))
+      .for("update");
+    if (!me) throw notFound("Operator");
 
     const standing = await poolStanding(tx, me.operatorId, now);
     const [held] = await tx
       .select()
       .from(poolTasks)
-      .where(and(eq(poolTasks.claimedByAgentId, actor.agentId), eq(poolTasks.status, "claimed")));
+      .where(and(eq(poolTasks.claimedByOperatorId, actor.operatorId), eq(poolTasks.status, "claimed")));
     if (held) {
       return { task: held, assignmentId: await assignmentFor(tx, held), alreadyHeld: true, standing };
     }
 
-    if (me.status !== "active") throw validationError("Your agent is suspended and cannot take pool tasks.");
+    if (me.status !== "active") throw validationError("Your operator account is suspended and cannot take pool tasks.");
 
     const reviewsAllowed = standing.reviewsInWindow < standing.reviewQuota;
     const kinds = [...(reviewsAllowed ? (["review"] as const) : []), ...(standing.editorialAllowed ? (["editorial"] as const) : [])];
@@ -310,7 +307,7 @@ export async function requestTask(db: Db, actor: Actor & { type: "agent" }, now:
       if (editors.get(sub.id)?.has(me.operatorId)) return false;
       return !asReviewer.some((r) => r.operatorId === me.operatorId && r.versionNo === task.versionNo);
     });
-    // Oldest first, except that reviews outside the agent's topics come after everything else.
+    // Oldest first, except that reviews outside the operator's topics come after everything else.
     const offTopic = ({ task, sub }: (typeof open)[number]) => {
       if (task.kind === "editorial" || topics.length === 0) return 0;
       const kw = keywords.get(sub.id) ?? [];
@@ -322,9 +319,8 @@ export async function requestTask(db: Db, actor: Actor & { type: "agent" }, now:
     const conflictChecked = new Map<string, boolean>();
     const isConflicted = async (submissionId: string) => {
       if (!conflictChecked.has(submissionId)) {
-        const facts = await loadCoiFacts(tx, submissionId, { coauthorMonths: policy.coi_coauthor_months, now });
-        const c = await conflictsFor(tx, facts, [actor.agentId]);
-        conflictChecked.set(submissionId, (c.get(actor.agentId) ?? []).length > 0);
+        const c = await conflictsOf(tx, submissionId, actor.operatorId, { coauthorMonths: policy.coi_coauthor_months, now });
+        conflictChecked.set(submissionId, c.length > 0);
       }
       return conflictChecked.get(submissionId)!;
     };
@@ -334,7 +330,7 @@ export async function requestTask(db: Db, actor: Actor & { type: "agent" }, now:
       const dueAt = addHours(now, task.kind === "review" ? policy.review_deadline_hours : policy.editorial_deadline_hours);
       const [claimed] = await tx
         .update(poolTasks)
-        .set({ status: "claimed", claimedByAgentId: actor.agentId, claimedAt: now, dueAt, updatedAt: now })
+        .set({ status: "claimed", claimedByOperatorId: actor.operatorId, claimedAt: now, dueAt, updatedAt: now })
         .where(and(eq(poolTasks.id, task.id), eq(poolTasks.status, "open")))
         .returning();
       if (!claimed) continue;
@@ -345,7 +341,7 @@ export async function requestTask(db: Db, actor: Actor & { type: "agent" }, now:
           .values({
             submissionId: sub.id,
             versionNo: task.versionNo,
-            reviewerAgentId: actor.agentId,
+            reviewerOperatorId: actor.operatorId,
             poolTaskId: task.id,
             status: "accepted",
             claimedAt: now,
@@ -356,7 +352,7 @@ export async function requestTask(db: Db, actor: Actor & { type: "agent" }, now:
           .returning({ id: reviewAssignments.id });
         assignmentId = a!.id;
       } else {
-        await tx.update(submissions).set({ handlingEditorId: actor.agentId, updatedAt: now }).where(eq(submissions.id, sub.id));
+        await tx.update(submissions).set({ handlingEditorId: actor.operatorId, updatedAt: now }).where(eq(submissions.id, sub.id));
       }
       await recordEvent(tx, actor, "pool.task_claimed", {
         submissionId: sub.id,
@@ -399,10 +395,10 @@ async function currentKeywords(tx: Db, submissionIds: string[]): Promise<Map<str
 }
 
 /** Give a claimed task back to the pool. A released review still counts toward the quota. */
-export async function releaseTask(db: Db, actor: Actor & { type: "agent" }, poolTaskId: string, reason: string | null, now: Date) {
+export async function releaseTask(db: Db, actor: Actor & { type: "operator" }, poolTaskId: string, reason: string | null, now: Date) {
   return db.transaction(async (tx) => {
     const [task] = await tx.select().from(poolTasks).where(eq(poolTasks.id, poolTaskId)).for("update");
-    if (!task || task.claimedByAgentId !== actor.agentId) throw notFound("Task");
+    if (!task || task.claimedByOperatorId !== actor.operatorId) throw notFound("Task");
     if (task.status !== "claimed") throw invalidState(`This task is ${task.status}; only a task you hold can be released.`);
     await returnToPool(tx, task, "declined", now, reason);
     await recordEvent(tx, actor, "pool.task_released", {
@@ -421,7 +417,7 @@ export async function releaseTask(db: Db, actor: Actor & { type: "agent" }, pool
 async function returnToPool(tx: Db, task: PoolTaskRow, assignmentStatus: "declined" | "expired", now: Date, reason: string | null = null) {
   await tx
     .update(poolTasks)
-    .set({ status: "open", claimedByAgentId: null, claimedAt: null, dueAt: null, updatedAt: now })
+    .set({ status: "open", claimedByOperatorId: null, claimedAt: null, dueAt: null, updatedAt: now })
     .where(eq(poolTasks.id, task.id));
   if (task.kind === "review") {
     await tx
@@ -432,7 +428,7 @@ async function returnToPool(tx: Db, task: PoolTaskRow, assignmentStatus: "declin
     await tx
       .update(submissions)
       .set({ handlingEditorId: null, updatedAt: now })
-      .where(and(eq(submissions.id, task.submissionId), eq(submissions.handlingEditorId, task.claimedByAgentId!)));
+      .where(and(eq(submissions.id, task.submissionId), eq(submissions.handlingEditorId, task.claimedByOperatorId!)));
   }
 }
 
@@ -452,7 +448,7 @@ export async function expireClaims(db: Db, now: Date, batchSize = 100): Promise<
       await returnToPool(tx, task, "expired", now);
       await recordEvent(tx, { type: "system" }, task.kind === "review" ? "review.expired" : "pool.editorial_expired", {
         submissionId: task.submissionId,
-        payload: { pool_task_id: task.id, agent_id: task.claimedByAgentId },
+        payload: { pool_task_id: task.id, operator_id: task.claimedByOperatorId },
         now,
       });
       return true;
@@ -472,7 +468,7 @@ export type InboxTask = {
   role: "reviewer" | "editor" | "author";
   tool: string;
   arguments: Record<string, string>;
-  agent_id: string;
+  operator_id: string;
   submission_id: string;
   submission_title: string;
   submission_status: string;
@@ -490,29 +486,28 @@ function editorialInstructions(status: string, versionNo: number): string {
 }
 
 /**
- * What the given agents must do now: the pool tasks they hold and the revisions they owe as
- * submitting authors. Earliest deadline first.
+ * What the operator must do now: the pool task it holds and the revisions it owes as submitting
+ * author. Earliest deadline first.
  */
-export async function listInbox(db: Db, agentIds: string[]): Promise<InboxTask[]> {
-  if (agentIds.length === 0) return [];
+export async function listInbox(db: Db, operatorId: string): Promise<InboxTask[]> {
   const [claimed, revise] = await Promise.all([
     db
       .select({ task: poolTasks, sub: submissions, assignmentId: reviewAssignments.id })
       .from(poolTasks)
       .innerJoin(submissions, eq(submissions.id, poolTasks.submissionId))
       .leftJoin(reviewAssignments, and(eq(reviewAssignments.poolTaskId, poolTasks.id), eq(reviewAssignments.status, "accepted")))
-      .where(and(inArray(poolTasks.claimedByAgentId, agentIds), eq(poolTasks.status, "claimed"))),
+      .where(and(eq(poolTasks.claimedByOperatorId, operatorId), eq(poolTasks.status, "claimed"))),
     db
       .select({ sub: submissions })
       .from(submissions)
-      .where(and(inArray(submissions.submittingAgentId, agentIds), eq(submissions.status, "revision_requested"))),
+      .where(and(eq(submissions.submittingOperatorId, operatorId), eq(submissions.status, "revision_requested"))),
   ]);
 
   const out: InboxTask[] = [
     ...claimed.map(({ task, sub, assignmentId }): InboxTask => {
       const common = {
         task_id: task.id,
-        agent_id: task.claimedByAgentId!,
+        operator_id: task.claimedByOperatorId!,
         submission_id: sub.id,
         submission_title: sub.title,
         submission_status: sub.status,
@@ -543,7 +538,7 @@ export async function listInbox(db: Db, agentIds: string[]): Promise<InboxTask[]
         role: "author",
         tool: "submit_revision",
         arguments: { submission_id: sub.id },
-        agent_id: sub.submittingAgentId,
+        operator_id: sub.submittingOperatorId,
         submission_id: sub.id,
         submission_title: sub.title,
         submission_status: sub.status,
@@ -555,7 +550,7 @@ export async function listInbox(db: Db, agentIds: string[]): Promise<InboxTask[]
   return out.sort((a, b) => (a.due_at?.getTime() ?? Infinity) - (b.due_at?.getTime() ?? Infinity) || a.task_id.localeCompare(b.task_id));
 }
 
-/** Open and claimed pool tasks per kind (for dashboards and agent hints). */
+/** Open and claimed pool tasks per kind (for dashboards and hints). */
 export async function openPoolCounts(db: Db) {
   return db
     .select({ kind: poolTasks.kind, status: poolTasks.status, n: sql<number>`count(*)`.mapWith(Number) })

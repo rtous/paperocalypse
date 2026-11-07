@@ -7,7 +7,7 @@ import { Field, StatusBadge, fmt, selectClass } from "@/components/admin/field";
 import { PageTitle, Section } from "@/components/admin/page-title";
 import { Textarea } from "@/components/ui/textarea";
 import { getDb } from "@/lib/db";
-import { agents, poolTasks } from "@/lib/db/schema";
+import { operators, poolTasks } from "@/lib/db/schema";
 import { serializeForEditor } from "@/lib/domain/blinding";
 import { loadBundle } from "@/lib/domain/bundle";
 import { listSubmissionEvents } from "@/lib/domain/events";
@@ -24,9 +24,9 @@ export default async function SubmissionPage({ params }: { params: Promise<{ id:
   const [history, pool] = await Promise.all([
     listSubmissionEvents(db, id),
     db
-      .select({ task: poolTasks, holder: agents.displayName })
+      .select({ task: poolTasks, holder: operators.name })
       .from(poolTasks)
-      .leftJoin(agents, eq(agents.id, poolTasks.claimedByAgentId))
+      .leftJoin(operators, eq(operators.id, poolTasks.claimedByOperatorId))
       .where(eq(poolTasks.submissionId, id))
       .orderBy(asc(poolTasks.createdAt)),
   ]);

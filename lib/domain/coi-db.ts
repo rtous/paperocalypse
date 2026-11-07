@@ -1,9 +1,8 @@
 import { and, eq, gte, inArray, isNotNull, ne } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { agents, submissionAuthors, submissions } from "@/lib/db/schema";
+import { submissionAuthors, submissions } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
-import { CONFLICT_MESSAGES, findConflicts, type CoiFacts, type ConflictReason } from "./coi";
-import { DomainError } from "./errors";
+import { findConflicts, type CoiFacts, type ConflictReason } from "./coi";
 
 /** Load the facts needed to check conflicts of interest for one submission. */
 export async function loadCoiFacts(
@@ -11,18 +10,11 @@ export async function loadCoiFacts(
   submissionId: string,
   opts: { coauthorMonths: number; now: Date },
 ): Promise<CoiFacts> {
-  const [sub] = await db
-    .select({ id: submissions.id })
-    .from(submissions)
-    .where(eq(submissions.id, submissionId));
-  if (!sub) throw new Error(`Submission ${submissionId} not found`);
-
   const authorRows = await db
-    .select({ agentId: agents.id, operatorContact: agents.operatorContactNormalized })
+    .select({ operatorId: submissionAuthors.operatorId })
     .from(submissionAuthors)
-    .innerJoin(agents, eq(agents.id, submissionAuthors.agentId))
-    .where(eq(submissionAuthors.submissionId, submissionId));
-  const authorIds = authorRows.map((a) => a.agentId);
+    .where(and(eq(submissionAuthors.submissionId, submissionId), isNotNull(submissionAuthors.operatorId)));
+  const authorIds = authorRows.map((a) => a.operatorId!);
 
   const recent = new Set<string>();
   if (authorIds.length > 0 && opts.coauthorMonths > 0) {
@@ -31,7 +23,7 @@ export async function loadCoiFacts(
     const sa1 = alias(submissionAuthors, "sa1");
     const sa2 = alias(submissionAuthors, "sa2");
     const rows = await db
-      .selectDistinct({ agentId: sa2.agentId })
+      .selectDistinct({ operatorId: sa2.operatorId })
       .from(sa1)
       .innerJoin(sa2, eq(sa2.submissionId, sa1.submissionId))
       .innerJoin(submissions, eq(submissions.id, sa1.submissionId))
@@ -39,40 +31,17 @@ export async function loadCoiFacts(
         and(
           ne(submissions.id, submissionId),
           gte(submissions.createdAt, cutoff),
-          inArray(sa1.agentId, authorIds),
-          isNotNull(sa2.agentId),
+          inArray(sa1.operatorId, authorIds),
+          isNotNull(sa2.operatorId),
         ),
       );
-    for (const r of rows) if (r.agentId) recent.add(r.agentId);
+    for (const r of rows) if (r.operatorId) recent.add(r.operatorId);
   }
 
-  return { authors: authorRows, recentCoauthorIds: recent };
+  return { authorIds: new Set(authorIds), recentCoauthorIds: recent };
 }
 
-/** Conflicts for each candidate (empty array = no conflict). */
-export async function conflictsFor(
-  db: Db,
-  facts: CoiFacts,
-  candidateIds: string[],
-): Promise<Map<string, ConflictReason[]>> {
-  const out = new Map<string, ConflictReason[]>();
-  if (candidateIds.length === 0) return out;
-  const rows = await db
-    .select({ agentId: agents.id, operatorContact: agents.operatorContactNormalized })
-    .from(agents)
-    .where(inArray(agents.id, candidateIds));
-  for (const r of rows) out.set(r.agentId, findConflicts(r, facts));
-  return out;
-}
-
-export function assertNoConflict(agentId: string, reasons: ConflictReason[] | undefined, role: string) {
-  if (reasons && reasons.length > 0) {
-    throw new DomainError(
-      "CONFLICT_OF_INTEREST",
-      `Agent ${agentId} cannot act as ${role} on this submission: it ${reasons
-        .map((r) => CONFLICT_MESSAGES[r])
-        .join(" and ")}. Choose someone else.`,
-      { agent_id: agentId, reasons },
-    );
-  }
+/** The operator's conflicts on a submission (empty = none). */
+export async function conflictsOf(db: Db, submissionId: string, operatorId: string, opts: { coauthorMonths: number; now: Date }): Promise<ConflictReason[]> {
+  return findConflicts(operatorId, await loadCoiFacts(db, submissionId, opts));
 }

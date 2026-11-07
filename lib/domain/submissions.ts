@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, asc, count, eq, gte, inArray, isNotNull, max, notInArray, sql } from "drizzle-orm";
 import {
-  agents,
+  operators,
   articles,
   decisions,
   reviewAssignments,
@@ -63,20 +63,18 @@ async function lockSubmission(tx: Db, submissionId: string): Promise<SubmissionR
 function roleFor(actor: Actor, sub: SubmissionRow): ActorRole {
   if (actor.type === "system") return "system";
   if (actor.type === "admin") return "admin";
-  // Humans act through their agents; operators never act on submissions directly.
-  if (actor.type === "operator") throw notAuthorized("Operators act through their agents.");
-  if (actor.agentId === sub.handlingEditorId) return "handling_editor";
-  if (actor.agentId === sub.submittingAgentId) return "author";
-  // Do not reveal the existence of submissions the agent has no relationship with.
+  if (actor.operatorId === sub.handlingEditorId) return "handling_editor";
+  if (actor.operatorId === sub.submittingOperatorId) return "author";
+  // Do not reveal the existence of submissions the operator has no relationship with.
   throw notFound("Submission");
 }
 
-async function agentAuthorIds(tx: Db, submissionId: string): Promise<string[]> {
+async function authorOperatorIds(tx: Db, submissionId: string): Promise<string[]> {
   const rows = await tx
-    .select({ agentId: submissionAuthors.agentId })
+    .select({ operatorId: submissionAuthors.operatorId })
     .from(submissionAuthors)
-    .where(and(eq(submissionAuthors.submissionId, submissionId), isNotNull(submissionAuthors.agentId)));
-  return rows.map((r) => r.agentId!);
+    .where(and(eq(submissionAuthors.submissionId, submissionId), isNotNull(submissionAuthors.operatorId)));
+  return rows.map((r) => r.operatorId!);
 }
 
 /**
@@ -128,7 +126,7 @@ async function cancelOpenAssignments(tx: Db, submissionId: string, now: Date, ve
     .update(reviewAssignments)
     .set({ status: "cancelled", updatedAt: now })
     .where(and(...conds))
-    .returning({ id: reviewAssignments.id, reviewerAgentId: reviewAssignments.reviewerAgentId });
+    .returning({ id: reviewAssignments.id, reviewerOperatorId: reviewAssignments.reviewerOperatorId });
   await cancelPoolTasks(tx, submissionId, now, { versionNo });
   return cancelled;
 }
@@ -148,7 +146,7 @@ async function submittedReviewCount(tx: Db, submissionId: string, versionNo: num
 }
 
 function ensureEditorActor(actor: Actor): void {
-  if (actor.type !== "agent" && actor.type !== "admin") throw notAuthorized("This action needs an editor or admin.");
+  if (actor.type !== "operator" && actor.type !== "admin") throw notAuthorized("This action needs an editor or admin.");
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +233,7 @@ async function flagIfSevere(tx: Db, submissionId: string, where: string, found: 
   if (severe.length === 0) return;
   await tx.insert(flags).values({
     submissionId,
-    raisedByAgentId: null,
+    raisedByOperatorId: null,
     kind: "integrity_scan",
     reasonMd: `Automatic scan of ${where} found:\n\n${severe.map((f) => `- **${f.code}** in \`${f.field}\`: ${f.detail}`).join("\n")}`,
     createdAt: now,
@@ -249,13 +247,13 @@ async function flagIfSevere(tx: Db, submissionId: string, where: string, found: 
 // ---------------------------------------------------------------------------
 
 export type SubmitManuscriptInput = ManuscriptContent & {
-  coAuthorAgentIds?: string[];
+  coAuthorOperatorIds?: string[];
   humanContributors?: { name: string; affiliation?: string | null }[];
 };
 
 export async function submitManuscript(
   db: Db,
-  actor: Actor & { type: "agent" },
+  actor: Actor & { type: "operator" },
   input: SubmitManuscriptInput,
   now: Date,
 ) {
@@ -265,9 +263,9 @@ export async function submitManuscript(
     input = scanned.input;
     validateContent(policy, input);
 
-    // Papercoins first: it's the limit the agent can fix (by reviewing). The charge itself
+    // Papercoins first: it's the limit the operator can fix (by reviewing). The charge itself
     // happens below, under a row lock, once the submission exists.
-    const balance = await getPapercoinBalance(tx, actor.agentId);
+    const balance = await getPapercoinBalance(tx, actor.operatorId);
     if (balance < PAPERCOIN_COST.submission) {
       throw new DomainError(
         "INSUFFICIENT_PAPERCOINS",
@@ -282,14 +280,14 @@ export async function submitManuscript(
       .from(submissions)
       .where(
         and(
-          eq(submissions.submittingAgentId, actor.agentId),
+          eq(submissions.submittingOperatorId, actor.operatorId),
           notInArray(submissions.status, [...FINAL_STATUSES]),
         ),
       );
-    if ((open?.n ?? 0) >= policy.max_open_submissions_per_agent) {
+    if ((open?.n ?? 0) >= policy.max_open_submissions_per_operator) {
       throw new DomainError(
         "RATE_LIMITED",
-        `You already have ${open?.n} open submissions; the limit is ${policy.max_open_submissions_per_agent}. Wait for decisions or withdraw one.`,
+        `You already have ${open?.n} open submissions; the limit is ${policy.max_open_submissions_per_operator}. Wait for decisions or withdraw one.`,
       );
     }
     const dayAgo = new Date(now.getTime() - 24 * HOUR);
@@ -298,33 +296,33 @@ export async function submitManuscript(
       .from(submissions)
       .where(
         and(
-          eq(submissions.submittingAgentId, actor.agentId),
+          eq(submissions.submittingOperatorId, actor.operatorId),
           gte(submissions.createdAt, dayAgo),
         ),
       )
       .orderBy(asc(submissions.createdAt));
-    if (recent.length >= policy.max_submissions_per_agent_per_day) {
+    if (recent.length >= policy.max_submissions_per_operator_per_day) {
       const oldest = recent[0]!.createdAt;
       const retryAfter = Math.max(1, Math.ceil((oldest.getTime() + 24 * HOUR - now.getTime()) / 1000));
       throw new DomainError(
         "RATE_LIMITED",
-        `Daily submission limit (${policy.max_submissions_per_agent_per_day}) reached. Try again later.`,
+        `Daily submission limit (${policy.max_submissions_per_operator_per_day}) reached. Try again later.`,
         { retry_after_seconds: retryAfter },
       );
     }
 
-    // Co-authors must be distinct, active agents.
-    const coAuthors = [...new Set(input.coAuthorAgentIds ?? [])].filter((id) => id !== actor.agentId);
+    // Co-authors must be distinct, active operators.
+    const coAuthors = [...new Set(input.coAuthorOperatorIds ?? [])].filter((id) => id !== actor.operatorId);
     if (coAuthors.length > 0) {
       const found = await tx
-        .select({ agentId: agents.id })
-        .from(agents)
-        .where(and(inArray(agents.id, coAuthors), eq(agents.status, "active")));
-      const ok = new Set(found.map((m) => m.agentId));
+        .select({ id: operators.id })
+        .from(operators)
+        .where(and(inArray(operators.id, coAuthors), eq(operators.status, "active")));
+      const ok = new Set(found.map((m) => m.id));
       const missing = coAuthors.filter((id) => !ok.has(id));
       if (missing.length) {
         throw validationError(
-          `Co-authors must be active agents on the platform: ${missing.join(", ")}.`,
+          `Co-authors must be active operators on the platform: ${missing.join(", ")}.`,
           { invalid_co_author_ids: missing },
         );
       }
@@ -333,7 +331,7 @@ export async function submitManuscript(
     const [sub] = await tx
       .insert(submissions)
       .values({
-        submittingAgentId: actor.agentId,
+        submittingOperatorId: actor.operatorId,
         title: input.title,
         status: "with_editor",
         createdAt: now,
@@ -342,7 +340,7 @@ export async function submitManuscript(
       .returning();
 
     await applyPapercoins(tx, {
-      agentId: actor.agentId,
+      operatorId: actor.operatorId,
       amount: -PAPERCOIN_COST.submission,
       reason: "submission",
       refId: sub!.id,
@@ -350,10 +348,10 @@ export async function submitManuscript(
     });
 
     const authorRows = [
-      { agentId: actor.agentId as string | null, humanName: null as string | null, humanAffiliation: null as string | null },
-      ...coAuthors.map((id) => ({ agentId: id, humanName: null, humanAffiliation: null })),
+      { operatorId: actor.operatorId as string | null, humanName: null as string | null, humanAffiliation: null as string | null },
+      ...coAuthors.map((id) => ({ operatorId: id, humanName: null, humanAffiliation: null })),
       ...(input.humanContributors ?? []).map((h) => ({
-        agentId: null,
+        operatorId: null,
         humanName: h.name,
         humanAffiliation: h.affiliation ?? null,
       })),
@@ -392,7 +390,7 @@ export async function submitManuscript(
 // ---------------------------------------------------------------------------
 // Editor: desk reject, send to review, decide, publish
 //
-// The handling editor is the agent holding the submission's editorial task from the pool.
+// The handling editor is the operator holding the submission's editorial task from the pool.
 // Finishing the step completes that task (and pays its papercoin).
 // ---------------------------------------------------------------------------
 
@@ -413,7 +411,7 @@ async function insertDecision(
     .values({
       submissionId: sub.id,
       versionNo: sub.currentVersionNo,
-      editorAgentId: actor.type === "agent" ? actor.agentId : null,
+      editorOperatorId: actor.type === "operator" ? actor.operatorId : null,
       adminUserId: actor.type === "admin" ? actor.adminId : null,
       decision,
       letterMd,
@@ -432,7 +430,7 @@ export async function deskReject(db: Db, actor: Actor, submissionId: string, let
     await applyTransition(tx, sub, "desk_reject", actor, policy, now, { decision: "desk_reject" });
     await insertDecision(tx, actor, sub, "desk_reject", letterMd, now);
     await completeEditorialTask(tx, actor, sub, now);
-    await enqueueNotifications(tx, await agentAuthorIds(tx, submissionId), "submission.decision", {
+    await enqueueNotifications(tx, await authorOperatorIds(tx, submissionId), "submission.decision", {
       submission_id: submissionId,
       decision: "desk_reject",
     }, now);
@@ -502,7 +500,7 @@ export async function makeDecision(
     await insertDecision(tx, actor, sub, decision, letterMd, now);
     await completeEditorialTask(tx, actor, sub, now);
     await cancelOpenAssignments(tx, submissionId, now, sub.currentVersionNo);
-    await enqueueNotifications(tx, await agentAuthorIds(tx, submissionId), "submission.decision", {
+    await enqueueNotifications(tx, await authorOperatorIds(tx, submissionId), "submission.decision", {
       submission_id: submissionId,
       decision,
     }, now);
@@ -541,9 +539,9 @@ async function publishLocked(tx: Db, actor: Actor, submissionId: string, now: Da
     const year = now.getUTCFullYear();
     const authors: FrozenAuthor[] = bundle.authors.map((a) => ({
       position: a.position,
-      agent_id: a.agent?.id ?? null,
-      display_name: a.agent?.display_name ?? a.human_name ?? "",
-      kind: a.agent ? "agent" : "human",
+      operator_id: a.operator?.id ?? null,
+      display_name: a.operator?.display_name ?? a.human_name ?? "",
+      kind: a.operator ? "operator" : "human",
       affiliation: a.human_affiliation,
     }));
 
@@ -573,7 +571,7 @@ async function publishLocked(tx: Db, actor: Actor, submissionId: string, now: Da
     // The submitting author pays for publication; the balance may go negative so the editor is
     // never blocked (the debt blocks the author's next submission).
     await applyPapercoins(tx, {
-      agentId: sub.submittingAgentId,
+      operatorId: sub.submittingOperatorId,
       amount: -PAPERCOIN_COST.publication,
       reason: "publication",
       refId: article!.id,
@@ -586,7 +584,7 @@ async function publishLocked(tx: Db, actor: Actor, submissionId: string, now: Da
       payload: { article_id: article!.id, public_id: article!.publicId, article_no: articleNo, internal_citations: citations },
       now,
     });
-    await enqueueNotifications(tx, await agentAuthorIds(tx, submissionId), "article.published", {
+    await enqueueNotifications(tx, await authorOperatorIds(tx, submissionId), "article.published", {
       submission_id: submissionId,
       article_id: article!.id,
     }, now);
@@ -598,13 +596,13 @@ async function publishLocked(tx: Db, actor: Actor, submissionId: string, now: Da
 // Reviewer: submit review (review tasks are claimed from the pool, see pool.ts)
 // ---------------------------------------------------------------------------
 
-async function lockOwnAssignment(tx: Db, actor: Actor & { type: "agent" }, assignmentId: string) {
+async function lockOwnAssignment(tx: Db, actor: Actor & { type: "operator" }, assignmentId: string) {
   const [a] = await tx
     .select()
     .from(reviewAssignments)
     .where(eq(reviewAssignments.id, assignmentId))
     .for("update");
-  if (!a || a.reviewerAgentId !== actor.agentId) throw notFound("Review assignment");
+  if (!a || a.reviewerOperatorId !== actor.operatorId) throw notFound("Review assignment");
   return a;
 }
 
@@ -623,7 +621,7 @@ export type ReviewInput = {
 
 export async function submitReview(
   db: Db,
-  actor: Actor & { type: "agent" },
+  actor: Actor & { type: "operator" },
   assignmentId: string,
   input: ReviewInput,
   now: Date,
@@ -697,7 +695,7 @@ export async function submitReview(
         .where(eq(reviewAssignments.id, a.id));
       await completeReviewTask(tx, a.poolTaskId, now);
       await applyPapercoins(tx, {
-        agentId: actor.agentId,
+        operatorId: actor.operatorId,
         amount: PAPERCOIN_REWARD.review,
         reason: "review",
         refId: a.id,
@@ -731,7 +729,7 @@ export type RevisionInput = ManuscriptContent & { responseToReviewersMd: string 
 
 export async function submitRevision(
   db: Db,
-  actor: Actor & { type: "agent" },
+  actor: Actor & { type: "operator" },
   submissionId: string,
   input: RevisionInput,
   now: Date,
@@ -783,7 +781,7 @@ export async function submitRevision(
 
 export async function withdrawSubmission(
   db: Db,
-  actor: Actor & { type: "agent" },
+  actor: Actor & { type: "operator" },
   submissionId: string,
   reason: string | null,
   now: Date,
@@ -797,7 +795,7 @@ export async function withdrawSubmission(
     await syncPool(tx, sub, policy, now);
     await enqueueNotifications(
       tx,
-      [editor, ...cancelled.map((c) => c.reviewerAgentId)],
+      [editor, ...cancelled.map((c) => c.reviewerOperatorId)],
       "submission.withdrawn",
       { submission_id: submissionId },
       now,

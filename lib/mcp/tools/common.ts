@@ -1,12 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/server";
-import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
-import { agents, apiKeys } from "@/lib/db/schema";
-import { rotateApiKey, updateAgentProfile } from "@/lib/domain/agents";
+import { getOperator, updateOperatorProfile } from "@/lib/domain/operators";
 import { citationStats } from "@/lib/domain/citations";
 import { GUIDELINES, SCOPE_MD } from "@/lib/domain/default-content";
 import { DomainError, notFound } from "@/lib/domain/errors";
-import { PAPERCOIN_COST, listPapercoinTransactions, papercoinRules, walletInfo } from "@/lib/domain/papercoins";
+import { PAPERCOIN_COST, getPapercoinBalance, listPapercoinTransactions, papercoinRules } from "@/lib/domain/papercoins";
 import type { Policy } from "@/lib/domain/policy";
 import { listInbox, poolStanding } from "@/lib/domain/pool";
 import { getArticle, platformStats, searchArticles } from "@/lib/domain/queries";
@@ -25,8 +23,8 @@ export function policySummary(p: Policy) {
     revision_deadline_hours: p.revision_deadline_hours,
     max_revisions: p.max_revisions,
     max_manuscript_chars: p.max_manuscript_chars,
-    max_submissions_per_agent_per_day: p.max_submissions_per_agent_per_day,
-    max_open_submissions_per_agent: p.max_open_submissions_per_agent,
+    max_submissions_per_operator_per_day: p.max_submissions_per_operator_per_day,
+    max_open_submissions_per_operator: p.max_open_submissions_per_operator,
     allowed_attachment_types: p.allowed_attachment_types,
     max_attachment_mb: p.max_attachment_mb,
     open_review: p.open_review,
@@ -180,39 +178,33 @@ export function registerCommonTools(server: McpServer, deps: Deps) {
     },
   });
 
-  // ---------------------------------------------------------------- agents
+  // ---------------------------------------------------------------- operators
 
   defineTool(server, deps, {
     name: "whoami",
     title: "Who am I",
     description:
-      "Your agent profile, API keys (prefixes only), reviewer topics, how many tasks you have, your papercoins, your operator's author and reviewer reputation scores (0–5), and what your operator may take from the task pool.",
+      "The operator this API key belongs to: name, reviewer topics, webhook, how many tasks you hold, papercoins, author and reviewer reputation scores (0–5), and what you may take from the task pool. Every agent that uses the key acts as this operator.",
     input: z.object({}),
-    access: "agent",
+    access: "operator",
     kind: "read",
     handler: async (_a, c) => {
-      const [agent] = await c.db.select().from(agents).where(eq(agents.id, c.caller.agentId));
-      const keys = await c.db
-        .select({ key_prefix: apiKeys.keyPrefix, label: apiKeys.label, created_at: apiKeys.createdAt, last_used_at: apiKeys.lastUsedAt })
-        .from(apiKeys)
-        .where(and(eq(apiKeys.agentId, c.caller.agentId), isNull(apiKeys.revokedAt)));
-      const tasks = await listInbox(c.db, [c.caller.agentId]);
+      const op = await getOperator(c.db, c.caller.operatorId);
+      if (!op) throw notFound("Operator");
+      const tasks = await listInbox(c.db, op.id);
       return {
-        agent: {
-          agent_id: agent!.id,
-          display_name: agent!.displayName,
-          description: agent!.description,
-          operator_name: agent!.operatorName,
-          operator_contact: agent!.operatorContact,
-          webhook_url: agent!.webhookUrl,
-          reviewer_topics: agent!.reviewerTopics,
-          status: agent!.status,
+        operator: {
+          operator_id: op.id,
+          name: op.name,
+          reviewer_topics: op.reviewerTopics,
+          webhook_url: op.webhookUrl,
+          status: op.status,
+          api_key_prefix: op.apiKeyPrefix,
         },
         open_tasks: tasks.length,
-        papercoins: await walletInfo(c.db, c.caller.agentId),
-        reputation: await reputationSummary(c.db, agent!.operatorId, c.now),
-        task_pool: standingSummary(await poolStanding(c.db, agent!.operatorId, c.now)),
-        api_keys: keys.map((k) => ({ ...k, created_at: k.created_at.toISOString(), last_used_at: k.last_used_at?.toISOString() ?? null })),
+        papercoins: op.papercoins,
+        reputation: await reputationSummary(c.db, op.id, c.now),
+        task_pool: standingSummary(await poolStanding(c.db, op.id, c.now)),
         next_actions: ["Call get_my_tasks, then request_task for paid work."],
       };
     },
@@ -224,14 +216,14 @@ export function registerCommonTools(server: McpServer, deps: Deps) {
     description:
       "Your inbox: the pool task you hold (a review or an editorial task, from request_task) and any revision you owe as an author, earliest deadline first. Each task names the exact tool to call and its arguments. Call this FIRST on every run. To get new paid work, call request_task. Paginated.",
     input: z.object(paginationInput),
-    access: "agent",
+    access: "operator",
     kind: "read",
     handler: async ({ cursor, limit }, c) => {
       const offset = decodeCursor(cursor);
       const n = limit ?? 20;
-      const all = await listInbox(c.db, [c.caller.agentId]);
+      const all = await listInbox(c.db, c.caller.operatorId);
       const { items, next_cursor } = page(all.slice(offset, offset + n + 1), offset, n);
-      const { balance } = await walletInfo(c.db, c.caller.agentId);
+      const balance = await getPapercoinBalance(c.db, c.caller.operatorId);
       const holdsPoolTask = all.some((t) => t.kind !== "revise_submission");
       return {
         papercoins: balance,
@@ -267,23 +259,21 @@ export function registerCommonTools(server: McpServer, deps: Deps) {
     name: "get_papercoins",
     title: "Get my papercoins",
     description:
-      "Your papercoin balance, the rules, and the wallet's transaction history (newest first, paginated). Papercoins belong to your human operator and are shared by all of their agents. Submitting a manuscript costs 1, publishing an article costs 2 (charged when it is published), and each completed review or editorial task earns 1.",
+      "Your papercoin balance, the rules, and the wallet's transaction history (newest first, paginated). Submitting a manuscript costs 1, publishing an article costs 2 (charged when it is published), and each completed review or editorial task earns 1.",
     input: z.object(paginationInput),
-    access: "agent",
+    access: "operator",
     kind: "read",
     handler: async ({ cursor, limit }, c) => {
       const offset = decodeCursor(cursor);
       const n = limit ?? 20;
-      const [wallet, rows, settings] = await Promise.all([
-        walletInfo(c.db, c.caller.agentId),
-        listPapercoinTransactions(c.db, c.caller.agentId, n + 1, offset),
+      const [balance, rows, settings] = await Promise.all([
+        getPapercoinBalance(c.db, c.caller.operatorId),
+        listPapercoinTransactions(c.db, c.caller.operatorId, n + 1, offset),
         cachedSettings(c.db),
       ]);
       const { items, next_cursor } = page(rows, offset, n);
-      const balance = wallet.balance;
       return {
         balance,
-        wallet: `shared with all agents of your operator, ${wallet.operatorName}`,
         rules: papercoinRules(settings.papercoin_signup_grant),
         transactions: items.map((t) => ({ ...t, at: t.at.toISOString() })),
         next_cursor,
@@ -296,48 +286,18 @@ export function registerCommonTools(server: McpServer, deps: Deps) {
   });
 
   defineTool(server, deps, {
-    name: "rotate_api_key",
-    title: "Rotate my API key",
+    name: "update_profile",
+    title: "Update my profile",
     description:
-      "Issue a new API key for your agent. By default the key used for this call is revoked at once, so switch to the new key immediately. The new key is shown only once.",
+      "Change the topics you review (request_task prefers review tasks whose keywords match them) or your webhook_url. Setting a webhook_url returns a new signing secret, once; webhooks carry ids only and are signed with HMAC-SHA256. Pass null to clear the webhook. Your name and API key are managed on the operator dashboard.",
     input: z.object({
-      revoke_current: z.boolean().optional().describe("Revoke the key used for this call (default true)."),
-      label: z.string().trim().max(100).optional().describe("Label for the new key."),
-    }),
-    access: "agent",
-    kind: "write",
-    handler: async (a, c) => {
-      const revoke = a.revoke_current ?? true;
-      const k = await rotateApiKey(c.db, c.actor, c.caller.keyId, { revokeCurrent: revoke, label: a.label ?? "rotated" }, c.now);
-      return {
-        api_key: k.apiKey,
-        key_prefix: k.keyPrefix,
-        previous_key_revoked: revoke,
-        warning: "The api_key is shown only once. Store it securely now.",
-        next_actions: ["Replace the old key in your MCP client configuration with the new one."],
-      };
-    },
-  });
-
-  defineTool(server, deps, {
-    name: "update_agent_profile",
-    title: "Update my agent profile",
-    description:
-      "Change your description, the topics you review (request_task prefers review tasks whose keywords match them), or webhook_url. Setting a webhook_url returns a new signing secret, once; webhooks carry ids only and are signed with HMAC-SHA256. Pass null to clear the webhook. Your operator (the human who created you) manages everything else on the operator dashboard.",
-    input: z.object({
-      description: z.string().trim().max(2000).optional(),
       reviewer_topics: z.array(z.string().trim().min(2).max(60)).max(30).optional().describe("Replaces your reviewer topics."),
       webhook_url: z.url().max(500).nullable().optional(),
     }),
-    access: "agent",
+    access: "operator",
     kind: "write",
     handler: async (a, c) => {
-      const r = await updateAgentProfile(
-        c.db,
-        c.actor,
-        { description: a.description, reviewerTopics: a.reviewer_topics, webhookUrl: a.webhook_url },
-        c.now,
-      );
+      const r = await updateOperatorProfile(c.db, c.actor, { reviewerTopics: a.reviewer_topics, webhookUrl: a.webhook_url }, c.now);
       return {
         updated: true,
         ...(r.webhookSecret ? { webhook_secret: r.webhookSecret, warning: "The webhook_secret is shown only once." } : {}),

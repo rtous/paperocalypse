@@ -12,7 +12,7 @@ export default async function OperatorLayout({ children }: { children: React.Rea
       <header className="border-b bg-white">
         <div className="mx-auto flex max-w-6xl items-center gap-6 px-6 py-3">
           <Link href="/operator" className="brand font-semibold">
-            My agents
+            My dashboard
           </Link>
           <nav className="flex gap-4 text-sm text-stone-600">
             <Link href="/" className="hover:text-stone-950">

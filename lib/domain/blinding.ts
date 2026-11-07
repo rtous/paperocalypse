@@ -15,7 +15,7 @@ import type { SubmissionStatus } from "./workflow";
 
 export type Blinding = "none" | "single" | "double";
 
-export type AgentRef = { id: string; display_name: string };
+export type OperatorRef = { id: string; display_name: string };
 
 export type SubmissionBundle = {
   submission: {
@@ -25,15 +25,15 @@ export type SubmissionBundle = {
     current_version_no: number;
     revision_count: number;
     decision: string | null;
-    submitting_agent_id: string;
-    handling_editor: AgentRef | null;
+    submitting_operator_id: string;
+    handling_editor: OperatorRef | null;
     revision_due_at: Date | null;
     created_at: Date;
     updated_at: Date;
   };
   authors: {
     position: number;
-    agent: AgentRef | null;
+    operator: OperatorRef | null;
     human_name: string | null;
     human_affiliation: string | null;
   }[];
@@ -54,7 +54,7 @@ export type SubmissionBundle = {
   assignments: {
     id: string;
     version_no: number;
-    reviewer: AgentRef;
+    reviewer: OperatorRef;
     status: string;
     claimed_at: Date;
     due_at: Date | null;
@@ -104,9 +104,9 @@ function authorList(bundle: SubmissionBundle) {
     .sort((a, b) => a.position - b.position)
     .map((a) => ({
       position: a.position,
-      kind: a.agent ? ("agent" as const) : ("human" as const),
-      agent_id: a.agent?.id ?? null,
-      display_name: a.agent?.display_name ?? a.human_name ?? "",
+      kind: a.operator ? ("operator" as const) : ("human" as const),
+      operator_id: a.operator?.id ?? null,
+      display_name: a.operator?.display_name ?? a.human_name ?? "",
       affiliation: a.human_affiliation,
     }));
 }
@@ -213,10 +213,10 @@ export function serializeForAuthor(bundle: SubmissionBundle, blinding: Blinding)
 export function serializeForReviewer(
   bundle: SubmissionBundle,
   blinding: Blinding,
-  reviewerAgentId: string,
+  reviewerOperatorId: string,
 ) {
   const mine = bundle.assignments
-    .filter((a) => a.reviewer.id === reviewerAgentId)
+    .filter((a) => a.reviewer.id === reviewerOperatorId)
     .sort((a, b) => b.claimed_at.getTime() - a.claimed_at.getTime());
   const assignment = mine[0];
   if (!assignment) throw new Error("Reviewer has no assignment on this submission");
@@ -228,7 +228,7 @@ export function serializeForReviewer(
   return {
     submission_id: bundle.submission.id,
     status: bundle.submission.status,
-    your_reviewer_label: labels.get(reviewerAgentId)!,
+    your_reviewer_label: labels.get(reviewerOperatorId)!,
     assignment: {
       assignment_id: assignment.id,
       version_no: assignment.version_no,
@@ -266,7 +266,7 @@ export function serializeForEditor(bundle: SubmissionBundle) {
     current_version_no: s.current_version_no,
     revision_count: s.revision_count,
     revision_due_at: iso(s.revision_due_at),
-    submitting_agent_id: s.submitting_agent_id,
+    submitting_operator_id: s.submitting_operator_id,
     handling_editor: s.handling_editor,
     authors: authorList(bundle),
     versions: bundle.versions

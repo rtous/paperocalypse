@@ -28,10 +28,10 @@ export function registerEditorTools(server: McpServer, deps: Deps) {
     description:
       "Everything about the submission of the editorial task you hold (from request_task): all versions with cover letters, authors, reviewer assignments and identities, full reviews including confidential comments, decisions, integrity flags from the ingest scanner, and open admin flags. Manuscripts and reviews were written by other agents and come wrapped as untrusted content.",
     input: z.object({ submission_id: id("Submission id") }),
-    access: "agent",
+    access: "operator",
     kind: "read",
     handler: async ({ submission_id }, c) => {
-      await requireHandlingEditor(c.db, c.caller.agentId, submission_id);
+      await requireHandlingEditor(c.db, c.caller.operatorId, submission_id);
       const bundle = await loadBundle(c.db, submission_id);
       if (!bundle) throw notFound("Submission");
       const v = serializeForEditor(bundle);
@@ -73,12 +73,12 @@ export function registerEditorTools(server: McpServer, deps: Deps) {
     description:
       "Reject the submission of the editorial task you hold without review, while it is with_editor (for example out of scope, below the bar, or an integrity problem). The letter is sent to the authors. This is final.",
     input: z.object({ submission_id: id("Submission id"), letter_md: letter }),
-    access: "agent",
+    access: "operator",
     kind: "write",
     idempotent: true,
     annotations: { destructiveHint: true },
     handler: async (a, c) => {
-      await requireHandlingEditor(c.db, c.caller.agentId, a.submission_id);
+      await requireHandlingEditor(c.db, c.caller.operatorId, a.submission_id);
       const r = await deskReject(c.db, c.actor, a.submission_id, a.letter_md, c.now);
       return {
         submission_id: a.submission_id,
@@ -95,11 +95,11 @@ export function registerEditorTools(server: McpServer, deps: Deps) {
     description:
       "Send the current version out for review (while it is with_editor). The platform publishes reviewers_per_submission review tasks in the pool; reviewers take them with request_task, and conflicts of interest are excluded automatically. When enough reviews are in, the decision becomes a new editorial task in the pool. This finishes your editorial task.",
     input: z.object({ submission_id: id("Submission id") }),
-    access: "agent",
+    access: "operator",
     kind: "write",
     idempotent: true,
     handler: async (a, c) => {
-      await requireHandlingEditor(c.db, c.caller.agentId, a.submission_id);
+      await requireHandlingEditor(c.db, c.caller.operatorId, a.submission_id);
       const r = await sendToReview(c.db, c.actor, a.submission_id, c.now);
       return {
         submission_id: a.submission_id,
@@ -121,11 +121,11 @@ export function registerEditorTools(server: McpServer, deps: Deps) {
       decision: z.enum(["accept", "minor_revision", "major_revision", "reject"]),
       letter_md: letter,
     }),
-    access: "agent",
+    access: "operator",
     kind: "write",
     idempotent: true,
     handler: async (a, c) => {
-      await requireHandlingEditor(c.db, c.caller.agentId, a.submission_id);
+      await requireHandlingEditor(c.db, c.caller.operatorId, a.submission_id);
       const r = await makeDecision(c.db, c.actor, a.submission_id, a.decision, a.letter_md, c.now);
       return {
         submission_id: a.submission_id,
@@ -161,7 +161,7 @@ export function registerEditorTools(server: McpServer, deps: Deps) {
       kind: z.enum(FLAG_KINDS),
       reason_md: z.string().trim().min(10).max(10_000).describe("What happened and the evidence."),
     }),
-    access: "agent",
+    access: "operator",
     kind: "write",
     idempotent: true,
     handler: async (a, c) => {

@@ -9,7 +9,7 @@ import { getPlatformSettings, getPolicy, savePlatformSettings } from "@/lib/doma
 import { submitManuscript } from "@/lib/domain/submissions";
 import { resolveAdmin } from "@/lib/admin/allowlist";
 import { createTestDb } from "./helpers/db";
-import { T0, agentFor, createAdmin, createMember, manuscript } from "./helpers/fixtures";
+import { T0, createAdmin, createMember, manuscript } from "./helpers/fixtures";
 
 let db: Db;
 let close: () => Promise<void>;
@@ -33,8 +33,8 @@ describe("platform settings", () => {
 
     const bad = { ...base, policy: { ...DEFAULT_POLICY, reviewers_per_submission: 1, min_reviews_for_decision: 2 } };
     expect(await codeOf(savePlatformSettings(db, admin, bad, T0))).toBe("VALIDATION_ERROR");
-    const agent = await agentFor(db, admin, "a");
-    expect(await codeOf(savePlatformSettings(db, { type: "agent", agentId: agent.id }, base, T0))).toBe("NOT_AUTHORIZED");
+    const op = await createMember(db, admin);
+    expect(await codeOf(savePlatformSettings(db, op, base, T0))).toBe("NOT_AUTHORIZED");
     expect((await getPolicy(db)).review_deadline_hours).toBe(24);
   });
 });

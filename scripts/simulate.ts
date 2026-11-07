@@ -22,9 +22,8 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { admins, poolTasks, reviewAssignments } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
-import { createAgent, issueApiKey } from "@/lib/domain/agents";
 import { processDeadlines } from "@/lib/domain/deadlines";
-import { createOperatorAgent, upsertOperatorFromLogin } from "@/lib/domain/operators";
+import { issueApiKey, upsertOperatorFromLogin } from "@/lib/domain/operators";
 import { getPlatformSettings, savePlatformSettings } from "@/lib/domain/settings";
 import { Agent, createHarness, type Harness } from "./lib/harness";
 
@@ -146,7 +145,7 @@ async function main() {
     await savePlatformSettings(
       db,
       admin,
-      { ...settings, policy: { ...settings.policy, ...SIM_POLICY, max_submissions_per_agent_per_day: 10, max_open_submissions_per_agent: 10 } },
+      { ...settings, policy: { ...settings.policy, ...SIM_POLICY, max_submissions_per_operator_per_day: 10, max_open_submissions_per_operator: 10 } },
       now(),
     );
   } else {
@@ -155,35 +154,33 @@ async function main() {
   }
   const run = randomUUID().slice(0, 6);
   const editor = newAgent("Editor");
-  const edOp = (await upsertOperatorFromLogin(db, { email: `editor-${run}@sim.test`, name: "Operator of Editor" }, now()))!;
-  // Editorial work needs no special role: any agent whose operator has a good reviewer score
-  // gets editorial tasks (new operators start at 5).
-  const ed = await createAgent(db, admin, { displayName: "Sim Editor", description: "scripted editorial agent", operatorId: edOp.id }, now());
-  editor.agentId = ed.id;
-  await editor.useKey((await db.transaction((tx) => issueApiKey(tx, admin, ed.id, "simulation", now()))).apiKey);
   const J = "/api/mcp";
-  log(`editorial agent ${ed.id}`);
 
-  // ---------------------------------------------------------------- registration
-  section("Operators create agents (dashboard)");
+  // ---------------------------------------------------------------- operators
+  // Each operator signs in and gets one API key; the scripted agents only hold keys. Editorial
+  // work needs no special role: operators with a good reviewer score get editorial tasks (new
+  // operators start at 5).
+  section("Operators sign in and get their API keys");
   const authors = [1, 2, 3].map((i) => newAgent(`Author${i}`));
   const reviewers = [1, 2, 3, 4, 5].map((i) => newAgent(`Reviewer${i}`));
-  for (const a of [...authors, ...reviewers]) {
-    // Reviewer5 belongs to Author1's operator, so it is conflicted for Author1's papers.
-    const email = a.name === "Reviewer5" ? `author1-${run}@sim.test` : `${a.name.toLowerCase()}-${run}@sim.test`;
-    const op = (await upsertOperatorFromLogin(db, { email, name: `Operator of ${a.name}`, githubLogin: null }, now()))!;
-    const r = await createOperatorAgent(
-      db,
-      { type: "operator", operatorId: op.id },
-      { displayName: `Sim ${a.name}`, description: `${a.name}, a scripted simulation agent (no LLM)` },
-      now(),
-    );
-    a.agentId = r.agent.id;
-    await a.useKey(r.apiKey);
+  const keys = new Map<string, { operatorId: string; apiKey: string }>();
+  for (const a of [editor, ...authors, ...reviewers]) {
+    // Reviewer5 is a second agent run by Author1's operator (same key), so it is conflicted for
+    // Author1's papers.
+    const who = a.name === "Reviewer5" ? "Author1" : a.name;
+    let k = keys.get(who);
+    if (!k) {
+      const op = (await upsertOperatorFromLogin(db, { email: `${who.toLowerCase()}-${run}@sim.test`, name: `Operator of ${who}`, githubLogin: null }, now()))!;
+      k = { operatorId: op.id, apiKey: (await db.transaction((tx) => issueApiKey(tx, { type: "operator", operatorId: op.id }, op.id, now()))).apiKey };
+      keys.set(who, k);
+    }
+    a.operatorId = k.operatorId;
+    await a.useKey(k.apiKey);
   }
-  check(true, "8 agents created from 7 operator accounts");
-  for (const r of reviewers) await r.must(J, "update_agent_profile", { reviewer_topics: ["simulation", "deadlines", "convergence"] });
-  check(((await reviewers[0]!.must(J, "whoami")).agent.reviewer_topics as string[]).includes("simulation"), "reviewers set their topics");
+  check(true, "9 scripted agents running on the keys of 8 operators");
+  check((await reviewers[4]!.must(J, "whoami")).operator.operator_id === authors[0]!.operatorId, "two agents with the same key are the same operator");
+  for (const r of reviewers.slice(0, 4)) await r.must(J, "update_profile", { reviewer_topics: ["simulation", "deadlines", "convergence"] });
+  check(((await reviewers[0]!.must(J, "whoami")).operator.reviewer_topics as string[]).includes("simulation"), "reviewers set their topics");
   const info = await authors[0]!.must(J, "get_platform_info");
   check(info.policy.reviewers_per_submission === 2, "get_platform_info shows the policy");
 
@@ -244,7 +241,7 @@ async function main() {
   const bView = await authors[1]!.must(J, "get_submission", { submission_id: b.submission_id });
   const bText = JSON.stringify(bView);
   check(bView.status === "rejected" && bView.untrusted_content.reviews.length === 2, "author sees the rejection and two reviews");
-  check(!bText.includes("CONFIDENTIAL") && !bText.includes(reviewers[0]!.agentId) && !bText.includes("Sim Reviewer"), "author never sees confidential comments or reviewer identities");
+  check(!bText.includes("CONFIDENTIAL") && !bText.includes(reviewers[0]!.operatorId) && !bText.includes("Operator of Reviewer"), "author never sees confidential comments or reviewer identities");
 
   // ---------------------------------------------------------------- C. two revision rounds → accept
   section("C. Two revision rounds, a released review, accept and automatic publication");
@@ -327,7 +324,7 @@ async function main() {
   const art = await anon.must(J, "get_article", { article_no: firstArticle });
   check(art.untrusted_content.review_file.rounds.length === 3, "the article's review file has 3 rounds");
   const artText = JSON.stringify(art);
-  check(!artText.includes("CONFIDENTIAL") && !artText.includes("Sim Reviewer"), "the public review file is anonymised and has no confidential comments");
+  check(!artText.includes("CONFIDENTIAL") && !artText.includes("Operator of Reviewer"), "the public review file is anonymised and has no confidential comments");
   if (MODE === "http") {
     const page = await fetch(`${BASE}/articles/${firstArticle}`, { headers: h.protectionHeaders() });
     const html = await page.text();

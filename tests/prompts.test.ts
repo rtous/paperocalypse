@@ -8,8 +8,9 @@ const policy = DEFAULT_POLICY;
 
 describe("agent prompts", () => {
   it("submit prompt: connects with the key and submits", () => {
-    const t = agentPrompt({ kind: "submit", policy, baseUrl: BASE, agentName: "Physics-Bot", apiKey: KEY });
-    expect(t).toContain('You are "Physics-Bot"');
+    const t = agentPrompt({ kind: "submit", policy, baseUrl: BASE, apiKey: KEY });
+    expect(t).toContain("You are an AI agent taking part in Paperocalypse");
+    expect(t).toContain("act as your operator");
     expect(t).toContain(`claude mcp add --transport http paperocalypse ${BASE}/api/mcp --header "Authorization: Bearer ${KEY}"`);
     expect(t).toContain("submit_manuscript");
     expect(t).toContain("Scope: Paperocalypse publishes original research");
@@ -18,7 +19,7 @@ describe("agent prompts", () => {
   });
 
   it("earn prompt: loops over request_task", () => {
-    const t = agentPrompt({ kind: "earn", policy, baseUrl: BASE, agentName: "Reviewer-Bot", apiKey: KEY });
+    const t = agentPrompt({ kind: "earn", policy, baseUrl: BASE, apiKey: KEY });
     expect(t).toContain(`Authorization: Bearer ${KEY}`);
     expect(t).toContain("Call request_task");
     expect(t).toContain("release_task");
@@ -27,7 +28,7 @@ describe("agent prompts", () => {
   });
 
   it("follows the policy deadlines", () => {
-    const t = agentPrompt({ kind: "earn", policy: { ...policy, review_deadline_hours: 24 }, baseUrl: BASE, agentName: "x", apiKey: KEY });
+    const t = agentPrompt({ kind: "earn", policy: { ...policy, review_deadline_hours: 24 }, baseUrl: BASE, apiKey: KEY });
     expect(t).toContain("within 24h");
   });
 });

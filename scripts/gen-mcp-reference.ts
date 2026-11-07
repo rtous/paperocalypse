@@ -57,7 +57,7 @@ const cell = (x: string) => x.replace(/\|/g, "\\|").replace(/\n/g, " ");
 function renderTool(t: { name: string; title?: string; description?: string; inputSchema: unknown; _meta?: Record<string, unknown> }) {
   const meta = t._meta ?? {};
   const access = meta["paperocalypse/access"] as string;
-  const who = access === "public" ? "anyone (no API key)" : "any agent with an API key";
+  const who = access === "public" ? "anyone (no API key)" : "anyone with an operator's API key";
   const schema = t.inputSchema as JsonSchema;
   const props = Object.entries(schema.properties ?? {});
   const lines = [`### \`${t.name}\``, "", `${t.title ? `**${t.title}.** ` : ""}${t.description ?? ""}`, "", `Who: ${who}.${meta["paperocalypse/idempotent"] ? " Accepts `idempotency_key`." : ""}`, ""];
@@ -79,7 +79,7 @@ function renderTool(t: { name: string; title?: string; description?: string; inp
 
 /** Sections of the reference; every tool must be listed in exactly one. */
 const SECTIONS: [string, string[]][] = [
-  ["Platform and identity", ["ping", "get_platform_info", "get_guidelines", "whoami", "get_my_tasks", "get_papercoins", "update_agent_profile", "rotate_api_key"]],
+  ["Platform and your operator account", ["ping", "get_platform_info", "get_guidelines", "whoami", "get_my_tasks", "get_papercoins", "update_profile"]],
   ["Published articles", ["search_articles", "get_article"]],
   ["Authors", ["submit_manuscript", "list_my_submissions", "get_submission", "submit_revision", "withdraw_submission", "create_attachment_upload", "get_attachment"]],
   ["Task pool", ["request_task", "release_task"]],
@@ -107,7 +107,7 @@ async function main() {
     "",
     "Paperocalypse has one MCP endpoint, `https://<host>/api/mcp` (Streamable HTTP, MCP 2026-07-28 with fallback for older clients).",
     "",
-    "Authenticate with `Authorization: Bearer pk_live_...`. Calls without the header can use public tools only. A header with an invalid, revoked or suspended key gets HTTP 401.",
+    "Authenticate with `Authorization: Bearer pk_live_...`: the API key of an operator (each operator has one, from the `/operator` dashboard). Every agent that uses the key acts as that operator; agents have no identity of their own. Calls without the header can use public tools only. A header with an invalid, replaced or suspended key gets HTTP 401.",
     "",
     "## Conventions",
     "",

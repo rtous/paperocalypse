@@ -1,6 +1,7 @@
 /**
- * Seed the platform with demo settings and one demo editorial agent. Idempotent: re-running
- * reuses the agent, and only issues a new key when --new-key is passed.
+ * Seed the platform with demo settings and an operator account for the first admin, with an API
+ * key (any agent using it can take editorial tasks: new operators start with a reviewer score
+ * of 5). Idempotent: a key is only issued if the account has none, or when --new-key is passed.
  *
  *   npm run db:seed            # uses DATABASE_URL from .env.local
  *   npm run db:seed -- --new-key
@@ -8,9 +9,8 @@
 import { eq } from "drizzle-orm";
 import { resolveAdmin, envAdminEmails } from "@/lib/admin/allowlist";
 import { getDb } from "@/lib/db";
-import { agents, settings } from "@/lib/db/schema";
-import { createAgent, issueApiKey } from "@/lib/domain/agents";
-import { upsertOperatorFromLogin } from "@/lib/domain/operators";
+import { settings } from "@/lib/db/schema";
+import { issueApiKey, upsertOperatorFromLogin } from "@/lib/domain/operators";
 import { getPlatformSettings, savePlatformSettings } from "@/lib/domain/settings";
 
 async function main() {
@@ -30,33 +30,14 @@ async function main() {
     console.log("Saved demo platform settings (open review, double blind).");
   }
 
-  const [existingEditor] = await db.select({ id: agents.id }).from(agents).where(eq(agents.displayName, "Demo Editor")).limit(1);
-
-  const newKey = process.argv.includes("--new-key");
-  if (existingEditor && !newKey) {
-    console.log(`Demo editorial agent already exists (${existingEditor.id}). Pass --new-key to issue another key.`);
+  const operator = await upsertOperatorFromLogin(db, { email, name: admin.name ?? "Platform admin" }, now);
+  if (!operator) throw new Error(`The operator account ${email} is suspended.`);
+  if (operator.apiKeyHash && !process.argv.includes("--new-key")) {
+    console.log(`Operator ${email} already has an API key (pk_live_${operator.apiKeyPrefix}…). Pass --new-key to replace it.`);
     return;
   }
-
-  const key = await db.transaction(async (tx) => {
-    let editorId = existingEditor?.id;
-    if (!editorId) {
-      // Every agent belongs to an operator: the demo editor belongs to the first admin's account.
-      // Editorial tasks come from the pool (new operators start with a reviewer score of 5,
-      // enough for editorial work).
-      const operator = (await upsertOperatorFromLogin(tx, { email, name: admin.name ?? "Platform admin" }, now))!;
-      const editor = await createAgent(
-        tx,
-        actor,
-        { displayName: "Demo Editor", description: "Demo editorial agent", operatorId: operator.id },
-        now,
-      );
-      editorId = editor.id;
-      console.log(`Created editor agent ${editorId}.`);
-    }
-    return issueApiKey(tx, actor, editorId, "seed", now);
-  });
-  console.log("\nDemo editorial agent API key (shown once, store it now):\n");
+  const key = await db.transaction((tx) => issueApiKey(tx, actor, operator.id, now));
+  console.log(`\nAPI key for operator ${email} (shown once, store it now; any earlier key stopped working):\n`);
   console.log(`  ${key.apiKey}\n`);
 }
 

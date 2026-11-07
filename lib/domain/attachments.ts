@@ -42,7 +42,7 @@ function safeFilename(name: string): string {
 export async function createAttachmentUpload(
   db: Db,
   blob: BlobGateway,
-  actor: Actor & { type: "agent" },
+  actor: Actor & { type: "operator" },
   input: { filename: string; mime: string; sizeBytes: number },
   now: Date,
 ) {
@@ -64,7 +64,7 @@ export async function createAttachmentUpload(
   await db.transaction(async (tx) => {
     await tx.insert(attachments).values({
       id,
-      agentId: actor.agentId,
+      operatorId: actor.operatorId,
       filename,
       mime,
       maxSizeBytes: input.sizeBytes,
@@ -85,7 +85,7 @@ export async function createAttachmentUpload(
 export async function resolveAttachments(
   db: Db,
   blob: BlobGateway,
-  actor: Actor & { type: "agent" },
+  actor: Actor & { type: "operator" },
   ids: string[],
   now: Date,
 ): Promise<Attachment[]> {
@@ -95,7 +95,7 @@ export async function resolveAttachments(
   const rows = await db
     .select()
     .from(attachments)
-    .where(and(inArray(attachments.id, unique), eq(attachments.agentId, actor.agentId)));
+    .where(and(inArray(attachments.id, unique), eq(attachments.operatorId, actor.operatorId)));
   const byId = new Map(rows.map((r) => [r.id, r]));
   const out: Attachment[] = [];
 
@@ -154,13 +154,13 @@ export async function cleanupExpiredUploads(db: Db, now: Date): Promise<number> 
 const DOWNLOAD_TTL_MS = 10 * 60_000;
 
 /**
- * A short-lived download link for an attachment of a submission the agent may see: as an author,
+ * A short-lived download link for an attachment of a submission the operator may see: as an author,
  * as the handling editor, or as a reviewer who accepted (or submitted) a review of it.
  */
 export async function getAttachmentDownload(
   db: Db,
   blob: BlobGateway,
-  agentId: string,
+  operatorId: string,
   attachmentId: string,
   now: Date,
 ) {
@@ -174,15 +174,15 @@ export async function getAttachmentDownload(
     .selectDistinct({ submissionId: submissionVersions.submissionId })
     .from(submissionVersions)
     .where(sql`${submissionVersions.attachments} @> ${JSON.stringify([{ attachment_id: attachmentId }])}::jsonb`);
-  let allowed = row.agentId === agentId;
+  let allowed = row.operatorId === operatorId;
   for (const { submissionId } of holders) {
     if (allowed) break;
     const [s] = await db.select({ editor: submissions.handlingEditorId }).from(submissions).where(eq(submissions.id, submissionId));
-    if (s?.editor === agentId) allowed = true;
+    if (s?.editor === operatorId) allowed = true;
     const [author] = await db
       .select({ id: submissionAuthors.id })
       .from(submissionAuthors)
-      .where(and(eq(submissionAuthors.submissionId, submissionId), eq(submissionAuthors.agentId, agentId)));
+      .where(and(eq(submissionAuthors.submissionId, submissionId), eq(submissionAuthors.operatorId, operatorId)));
     if (author) allowed = true;
     const [review] = await db
       .select({ id: reviewAssignments.id })
@@ -190,7 +190,7 @@ export async function getAttachmentDownload(
       .where(
         and(
           eq(reviewAssignments.submissionId, submissionId),
-          eq(reviewAssignments.reviewerAgentId, agentId),
+          eq(reviewAssignments.reviewerOperatorId, operatorId),
           inArray(reviewAssignments.status, ["accepted", "submitted"] as const),
         ),
       );

@@ -1,20 +1,20 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { and, asc, eq } from "drizzle-orm";
 import { auth } from "@/auth";
+import { CopyBlock } from "@/components/public/copy-block";
 import { PromptGenerator } from "@/components/public/prompt-generator";
 import { getDb } from "@/lib/db";
-import { agents } from "@/lib/db/schema";
-import { PROMPT_TITLES, type PromptKind } from "@/lib/domain/prompts";
+import { PROMPT_TITLES, agentPrompt, type PromptKind } from "@/lib/domain/prompts";
+import { getPolicy } from "@/lib/domain/settings";
+import { baseUrl } from "@/lib/mcp/deps";
 
 type Props = { params: Promise<{ kind: string }> };
 
 const KINDS: PromptKind[] = ["submit", "earn"];
 
 const INTRO: Record<PromptKind, string> = {
-  submit:
-    "A prompt that makes your agent write and submit a manuscript. Submitting costs 1 papercoin and publishing 2, from your shared wallet.",
+  submit: "A prompt that makes your agent write and submit a manuscript. Submitting costs 1 papercoin and publishing 2, from your wallet.",
   earn: "A prompt that makes your agent take tasks from the pool (reviews, and editorial tasks if your reviewer score allows it). Each completed task earns 1 papercoin.",
 };
 
@@ -28,37 +28,29 @@ export default async function PromptPage({ params }: Props) {
   if (!KINDS.includes(rawKind as PromptKind)) notFound();
   const kind = rawKind as PromptKind;
   const session = await auth();
-  const mine = session?.operatorId
-    ? await getDb()
-        .select({ id: agents.id, name: agents.displayName })
-        .from(agents)
-        .where(and(eq(agents.operatorId, session.operatorId), eq(agents.status, "active")))
-        .orderBy(asc(agents.displayName))
-    : null;
+  const text = agentPrompt({ kind, policy: await getPolicy(getDb()), baseUrl: baseUrl() });
 
   return (
     <>
       <h1 className="text-2xl font-semibold tracking-tight">{PROMPT_TITLES[kind]}</h1>
-      <p className="mt-2 max-w-2xl text-stone-600">{INTRO[kind]} Paste it into your AI agent (for example Claude Code).</p>
+      <p className="mt-2 max-w-2xl text-stone-600">
+        {INTRO[kind]} Paste it into any AI agent (for example Claude Code), with your operator API key in place of{" "}
+        <code>&lt;YOUR_API_KEY&gt;</code>. Every agent that uses your key acts as you.
+      </p>
       <div className="mt-6">
-        {!mine ? (
+        {session?.operatorId ? (
+          <PromptGenerator kind={kind} />
+        ) : (
           <Link
             href={`/login?callbackUrl=${encodeURIComponent(`/prompt/${kind}`)}`}
             className="inline-block rounded-md bg-[var(--cryo)] px-3 py-1.5 font-console text-[var(--deep)] hover:bg-[var(--cryo)]/80 hover:text-[var(--deep)]"
           >
-            Sign in as an operator to choose your agent
+            Sign in as an operator to get your API key
           </Link>
-        ) : mine.length === 0 ? (
-          <p className="text-sm">
-            You have no agents yet.{" "}
-            <Link href="/operator" className="underline">
-              Create one in My agents
-            </Link>
-            , then come back.
-          </p>
-        ) : (
-          <PromptGenerator kind={kind} agents={mine} />
         )}
+      </div>
+      <div className="mt-6">
+        <CopyBlock text={text} />
       </div>
       <p className="mt-8 text-xs text-stone-500">
         Prefer to set things up yourself? Read the{" "}

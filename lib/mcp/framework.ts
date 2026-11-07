@@ -21,7 +21,8 @@ export type Deps = {
   baseUrl: string;
 };
 
-export type Caller = { agentId: string; keyId: string };
+/** Whoever sent a valid API key: always an operator (agents have no identity of their own). */
+export type Caller = { operatorId: string };
 
 export type ToolContext = {
   deps: Deps;
@@ -30,12 +31,12 @@ export type ToolContext = {
   ipHash: string | null;
   caller: Caller | null;
 };
-export type AgentContext = ToolContext & { caller: Caller; actor: Actor & { type: "agent" } };
+export type OperatorContext = ToolContext & { caller: Caller; actor: Actor & { type: "operator" } };
 
 export type ToolOutput = Record<string, unknown> & { next_actions: string[] };
 
-type Access = "public" | "agent";
-type CtxFor<A extends Access> = A extends "public" ? ToolContext : AgentContext;
+type Access = "public" | "operator";
+type CtxFor<A extends Access> = A extends "public" ? ToolContext : OperatorContext;
 
 // ---------------------------------------------------------------------------
 // Untrusted content and pagination helpers
@@ -116,7 +117,7 @@ function limitsFor(s: PlatformSettings, kind: "read" | "write", caller: Caller |
   const r = s.rate_limits;
   const out: Limit[] = [];
   if (caller) {
-    out.push({ key: `key:${caller.keyId}:${kind}`, max: kind === "read" ? r.read_per_minute : r.write_per_minute, windowSeconds: 60 });
+    out.push({ key: `op:${caller.operatorId}:${kind}`, max: kind === "read" ? r.read_per_minute : r.write_per_minute, windowSeconds: 60 });
   }
   if (ipHash) {
     out.push({ key: `ip:${ipHash}:${kind}`, max: kind === "read" ? r.ip_read_per_minute : r.ip_write_per_minute, windowSeconds: 60 });
@@ -151,10 +152,8 @@ export type ToolDef<S extends AnyObject, A extends Access> = {
 };
 
 function callerFrom(ctx: ServerContext): Caller | null {
-  const extra = ctx.http?.authInfo?.extra as { agentId?: unknown; keyId?: unknown } | undefined;
-  return typeof extra?.agentId === "string" && typeof extra.keyId === "string"
-    ? { agentId: extra.agentId, keyId: extra.keyId }
-    : null;
+  const extra = ctx.http?.authInfo?.extra as { operatorId?: unknown } | undefined;
+  return typeof extra?.operatorId === "string" ? { operatorId: extra.operatorId } : null;
 }
 
 const IDEMPOTENCY = z
@@ -207,11 +206,11 @@ export function defineTool<S extends AnyObject, A extends Access>(
           if (!caller) {
             throw new DomainError(
               "NOT_AUTHORIZED",
-              `This tool needs an API key. Send 'Authorization: Bearer <api_key>'. Your human operator creates you and your key at ${deps.baseUrl}/operator.`,
+              `This tool needs an API key. Send 'Authorization: Bearer <api_key>'. Operators get their key at ${deps.baseUrl}/operator.`,
             );
           }
-          const actor = { type: "agent" as const, agentId: caller.agentId, ipHash };
-          full = { ...base, caller, actor } as AgentContext;
+          const actor = { type: "operator" as const, operatorId: caller.operatorId, ipHash };
+          full = { ...base, caller, actor } as OperatorContext;
         }
 
         const parsed = schema.safeParse(rawArgs ?? {});
@@ -223,10 +222,10 @@ export function defineTool<S extends AnyObject, A extends Access>(
         const scope = def.name;
         if (def.idempotent && idemKey && caller) {
           const hash = requestHash(args);
-          const prior = await findIdempotent(deps.db, caller.agentId, scope, idemKey, hash, now);
+          const prior = await findIdempotent(deps.db, caller.operatorId, scope, idemKey, hash, now);
           if (prior) return okResult({ ...(prior as ToolOutput), idempotent_replay: true });
           const out = await def.handler(args as z.infer<S>, full as CtxFor<A>);
-          const stored = (await storeIdempotent(deps.db, caller.agentId, scope, idemKey, hash, out, now)) as ToolOutput;
+          const stored = (await storeIdempotent(deps.db, caller.operatorId, scope, idemKey, hash, out, now)) as ToolOutput;
           return okResult(stored);
         }
         return okResult(await def.handler(args as z.infer<S>, full as CtxFor<A>));

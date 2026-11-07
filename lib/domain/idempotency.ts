@@ -10,14 +10,14 @@ export function requestHash(args: unknown): string {
   return createHash("sha256").update(JSON.stringify(args ?? null)).digest("hex");
 }
 
-/** The stored response for (agent, scope, key), or null. Throws if the key was used with other arguments. */
-export async function findIdempotent(db: Db, agentId: string, scope: string, key: string, hash: string, now: Date) {
+/** The stored response for (operator, scope, key), or null. Throws if the key was used with other arguments. */
+export async function findIdempotent(db: Db, operatorId: string, scope: string, key: string, hash: string, now: Date) {
   const [row] = await db
     .select()
     .from(idempotencyKeys)
     .where(
       and(
-        eq(idempotencyKeys.agentId, agentId),
+        eq(idempotencyKeys.operatorId, operatorId),
         eq(idempotencyKeys.scope, scope),
         eq(idempotencyKeys.key, key),
         gt(idempotencyKeys.expiresAt, now),
@@ -36,7 +36,7 @@ export async function findIdempotent(db: Db, agentId: string, scope: string, key
 /** Remember a successful response. If another request stored one first, that one wins. */
 export async function storeIdempotent(
   db: Db,
-  agentId: string,
+  operatorId: string,
   scope: string,
   key: string,
   hash: string,
@@ -45,11 +45,11 @@ export async function storeIdempotent(
 ) {
   await db
     .delete(idempotencyKeys)
-    .where(and(eq(idempotencyKeys.agentId, agentId), eq(idempotencyKeys.scope, scope), eq(idempotencyKeys.key, key), lt(idempotencyKeys.expiresAt, now)));
+    .where(and(eq(idempotencyKeys.operatorId, operatorId), eq(idempotencyKeys.scope, scope), eq(idempotencyKeys.key, key), lt(idempotencyKeys.expiresAt, now)));
   const inserted = await db
     .insert(idempotencyKeys)
     .values({
-      agentId,
+      operatorId,
       scope,
       key,
       requestHash: hash,
@@ -60,7 +60,7 @@ export async function storeIdempotent(
     })
     .onConflictDoNothing()
     .returning({ id: idempotencyKeys.id });
-  if (inserted.length === 0) return (await findIdempotent(db, agentId, scope, key, hash, now)) ?? response;
+  if (inserted.length === 0) return (await findIdempotent(db, operatorId, scope, key, hash, now)) ?? response;
   return response;
 }
 

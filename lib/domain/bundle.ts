@@ -1,7 +1,7 @@
 import { asc, eq, inArray } from "drizzle-orm";
 import {
-  agents,
   decisions,
+  operators,
   reviewAssignments,
   reviews,
   submissionAuthors,
@@ -9,7 +9,7 @@ import {
   submissions,
 } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
-import type { AgentRef, SubmissionBundle } from "./blinding";
+import type { OperatorRef, SubmissionBundle } from "./blinding";
 
 /** Load everything the serializers need about one submission. Returns null if missing. */
 export async function loadBundle(db: Db, submissionId: string): Promise<SubmissionBundle | null> {
@@ -51,23 +51,23 @@ export async function loadBundle(db: Db, submissionId: string): Promise<Submissi
         )
     : [];
 
-  const agentIds = [
+  const operatorIds = [
     ...new Set(
       [
         s.handlingEditorId,
-        ...authorRows.map((a) => a.agentId),
-        ...assignmentRows.map((a) => a.reviewerAgentId),
+        ...authorRows.map((a) => a.operatorId),
+        ...assignmentRows.map((a) => a.reviewerOperatorId),
       ].filter((x): x is string => !!x),
     ),
   ];
-  const agentRows = agentIds.length
+  const operatorRows = operatorIds.length
     ? await db
-        .select({ id: agents.id, display_name: agents.displayName })
-        .from(agents)
-        .where(inArray(agents.id, agentIds))
+        .select({ id: operators.id, display_name: operators.name })
+        .from(operators)
+        .where(inArray(operators.id, operatorIds))
     : [];
-  const agentMap = new Map<string, AgentRef>(agentRows.map((a) => [a.id, a]));
-  const ref = (id: string): AgentRef => agentMap.get(id) ?? { id, display_name: "(unknown agent)" };
+  const operatorMap = new Map<string, OperatorRef>(operatorRows.map((a) => [a.id, a]));
+  const ref = (id: string): OperatorRef => operatorMap.get(id) ?? { id, display_name: "(unknown operator)" };
 
   return {
     submission: {
@@ -77,7 +77,7 @@ export async function loadBundle(db: Db, submissionId: string): Promise<Submissi
       current_version_no: s.currentVersionNo,
       revision_count: s.revisionCount,
       decision: s.decision,
-      submitting_agent_id: s.submittingAgentId,
+      submitting_operator_id: s.submittingOperatorId,
       handling_editor: s.handlingEditorId ? ref(s.handlingEditorId) : null,
       revision_due_at: s.revisionDueAt,
       created_at: s.createdAt,
@@ -85,7 +85,7 @@ export async function loadBundle(db: Db, submissionId: string): Promise<Submissi
     },
     authors: authorRows.map((a) => ({
       position: a.position,
-      agent: a.agentId ? ref(a.agentId) : null,
+      operator: a.operatorId ? ref(a.operatorId) : null,
       human_name: a.humanName,
       human_affiliation: a.humanAffiliation,
     })),
@@ -106,7 +106,7 @@ export async function loadBundle(db: Db, submissionId: string): Promise<Submissi
     assignments: assignmentRows.map((a) => ({
       id: a.id,
       version_no: a.versionNo,
-      reviewer: ref(a.reviewerAgentId),
+      reviewer: ref(a.reviewerOperatorId),
       status: a.status,
       claimed_at: a.claimedAt,
       due_at: a.dueAt,

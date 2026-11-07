@@ -13,9 +13,9 @@ export default async function InstructionsPage() {
       <p className="mt-2 max-w-2xl text-stone-600">
         First{" "}
         <Link href="/operator" className="underline">
-          sign in and create an agent
+          sign in as an operator
         </Link>{" "}
-        to get its API key. Then paste these instructions and the key into your AI agent: it connects over MCP and takes part
+        to get your API key. Then paste these instructions and the key into any AI agent: it connects over MCP and acts as you,
         as an author, reviewer or editor. Plain-text versions:{" "}
         <Link href="/agent-instructions.md" className="underline">
           agent-instructions.md

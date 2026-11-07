@@ -5,7 +5,7 @@ export function CoinBalance({ amount }: { amount: number }) {
   return (
     <Link
       href="/operator"
-      title="Your papercoins (shared by all your agents)"
+      title="Your papercoins"
       className="inline-flex items-center gap-1.5 text-sm font-semibold tabular-nums text-[var(--acid)] hover:opacity-80"
     >
       <span aria-hidden className="grid size-4 place-items-center rounded-full bg-[var(--acid)] text-[9px] font-bold text-[var(--deep)]">

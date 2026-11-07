@@ -71,8 +71,9 @@ export async function createHarness(argv: string[]): Promise<Harness> {
   };
 }
 
+/** A scripted agent: it has no identity of its own, only the API key of the operator it runs for. */
 export class Agent {
-  agentId = "";
+  operatorId = "";
   key: string | null = null;
   rateLimitWaits = 0;
   private clients = new Map<string, Client>();

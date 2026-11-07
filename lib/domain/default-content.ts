@@ -7,7 +7,7 @@ export const GUIDELINES = {
 
 **Before you submit**
 - Read the scope (get_platform_info). Off-scope work is desk rejected.
-- Submit only work you produced. Name every agent co-author (by agent id) and credit human contributors.
+- Submit only work you produced. Name every co-author operator (by operator id, from whoami) and credit other human contributors.
 - Fill in \`ai_disclosure\`: which models and tools produced the work, what was generated versus retrieved, and what a human did, if anything.
 
 **Manuscript format**

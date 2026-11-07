@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
-import { agents, papercoinTransactions, poolTasks, reviewAssignments } from "@/lib/db/schema";
+import { papercoinTransactions, poolTasks, reviewAssignments } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "@/lib/domain/actor";
 import { DomainError } from "@/lib/domain/errors";
 import { listInbox, poolStanding, releaseTask, requestTask, reviewQuota } from "@/lib/domain/pool";
 import { deskReject, sendToReview, submitManuscript, submitReview } from "@/lib/domain/submissions";
-import { setAgentStatus } from "@/lib/domain/agents";
+import { setOperatorStatus } from "@/lib/domain/operators";
 import { createTestDb, resetDb } from "./helpers/db";
 import { LETTER, T0, createAdmin, setPolicy, createMember, hours, manuscript, review, sendOut, takeReview, takeTask } from "./helpers/fixtures";
 
@@ -35,11 +35,10 @@ beforeAll(async () => {
 });
 afterAll(async () => close());
 
-type AgentActor = Actor & { type: "agent" };
+type OpActor = Actor & { type: "operator" };
 
-async function operatorOf(a: AgentActor) {
-  const [r] = await db.select({ op: agents.operatorId }).from(agents).where(eq(agents.id, a.agentId));
-  return r!.op;
+async function operatorOf(a: OpActor) {
+  return a.operatorId;
 }
 
 async function expectCode(p: Promise<unknown>, code: DomainError["code"]) {
@@ -49,10 +48,10 @@ async function expectCode(p: Promise<unknown>, code: DomainError["code"]) {
 async function setup(policy: Parameters<typeof setPolicy>[1] = {}) {
   await resetDb(db);
   admin = await createAdmin(db);
-  await setPolicy(db, { max_open_submissions_per_agent: 50, max_submissions_per_agent_per_day: 50, ...policy });
+  await setPolicy(db, { max_open_submissions_per_operator: 50, max_submissions_per_operator_per_day: 50, ...policy });
   const editor = await createMember(db, admin, { name: "Editor" });
   const author = await createMember(db, admin, { name: "Author" });
-  const reviewers: AgentActor[] = [];
+  const reviewers: OpActor[] = [];
   for (let i = 1; i <= 3; i++) reviewers.push(await createMember(db, admin, { name: `R${i}` }));
   return { editor, author, reviewers };
 }
@@ -82,7 +81,7 @@ describe("request_task", () => {
 
   it("needs an active agent", async () => {
     const { author } = await setup();
-    await setAgentStatus(db, admin, author.agentId, "suspended", T0);
+    await setOperatorStatus(db, admin, author.operatorId, "suspended", T0);
     await expectCode(requestTask(db, author, T0), "VALIDATION_ERROR");
   });
 
@@ -95,19 +94,18 @@ describe("request_task", () => {
     const ed2 = await createMember(db, admin);
     await sendOut(db, ed2, on.submissionId, hours(2));
     const topical = await createMember(db, admin);
-    await db.execute(sql`update agents set reviewer_topics = '{entropy}' where id = ${topical.agentId}`);
+    await db.execute(sql`update operators set reviewer_topics = '{entropy}' where id = ${topical.operatorId}`);
     await takeReview(db, topical, on.submissionId, hours(3));
   });
 
   it("excludes conflicts of interest", async () => {
     const { editor, author } = await setup();
-    const sameOp = await createMember(db, admin);
-    await db.execute(sql`update agents set operator_contact_normalized = (select operator_contact_normalized from agents where id = ${author.agentId}) where id = ${sameOp.agentId}`);
+    // Any agent running on the author's key is the author.
     const { submissionId } = await submitManuscript(db, author, manuscript(), T0);
-    const r = await requestTask(db, sameOp, T0);
+    const r = await requestTask(db, author, T0);
     expect(r.task).toBeNull();
     await sendOut(db, editor, submissionId, T0);
-    expect((await requestTask(db, sameOp, T0)).task).toBeNull();
+    expect((await requestTask(db, author, T0)).task).toBeNull();
   });
 
   it("keeps each operator in one capacity per submission and reviewing each version once", async () => {
@@ -118,12 +116,10 @@ describe("request_task", () => {
     const blocked = await requestTask(db, editor, T0);
     expect(blocked.task).toBeNull();
     expect((blocked as { reasons: string[] }).reasons[0]).toMatch(/may not take/);
-    // A second agent of the same reviewer operator can't take a second slot on the same version.
+    // An operator reviews each version once: after its review, the third slot isn't offered to it.
     const r = reviewers[0]!;
-    await takeReview(db, r, submissionId, T0);
-    const sibling = await createMember(db, admin);
-    await db.update(agents).set({ operatorId: await operatorOf(r) }).where(eq(agents.id, sibling.agentId));
-    expect((await requestTask(db, sibling, T0)).task).toBeNull();
+    await submitReview(db, r, await takeReview(db, r, submissionId, T0), review(), T0);
+    expect((await requestTask(db, r, T0)).task).toBeNull();
   });
 
   it("reviewers of a submission don't get its editorial tasks", async () => {
@@ -189,7 +185,7 @@ describe("release_task and payouts", () => {
     await releaseTask(db, reviewers[0]!, t.task!.id, null, T0);
     await expectCode(releaseTask(db, reviewers[0]!, t.task!.id, null, T0), "NOT_FOUND");
     await expectCode(deskReject(db, reviewers[0]!, submissionId, LETTER, T0), "NOT_FOUND");
-    expect(await listInbox(db, [reviewers[0]!.agentId])).toEqual([]);
+    expect(await listInbox(db, reviewers[0]!.operatorId)).toEqual([]);
     await takeTask(db, reviewers[1]!,  "editorial", submissionId, T0);
   });
 

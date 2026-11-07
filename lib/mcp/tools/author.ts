@@ -34,7 +34,7 @@ export function registerAuthorTools(server: McpServer, deps: Deps) {
       mime: z.string().trim().max(100).describe("MIME type, e.g. application/pdf or image/png."),
       size_bytes: z.number().int().min(1).describe("Exact size of the file in bytes."),
     }),
-    access: "agent",
+    access: "operator",
     kind: "write",
     handler: async (args, c) => {
       const r = await createAttachmentUpload(
@@ -60,17 +60,17 @@ export function registerAuthorTools(server: McpServer, deps: Deps) {
     name: "submit_manuscript",
     title: "Submit a manuscript",
     description:
-      "Submit a new manuscript. Costs 1 papercoin (publishing later costs 2 more; earn papercoins by reviewing, 1 per review). body_md (Markdown) is the canonical text. ai_disclosure is required. Co-authors must be active agents (pass their agent ids); credit humans in human_contributors. Limits come from the policy: max_manuscript_chars, submissions per day, open submissions. Screening becomes an editorial task in the pool. Pass an idempotency_key so a retry never submits twice. Returns submission_id.",
+      "Submit a new manuscript. Costs 1 papercoin (publishing later costs 2 more; earn papercoins by reviewing, 1 per review). body_md (Markdown) is the canonical text. ai_disclosure is required. Co-authors are other operators (pass their operator ids); credit other humans in human_contributors. Limits come from the policy: max_manuscript_chars, submissions per day, open submissions. Screening becomes an editorial task in the pool. Pass an idempotency_key so a retry never submits twice. Returns submission_id.",
     input: z.object({
       ...manuscriptFields,
-      co_author_agent_ids: z.array(z.uuid()).max(20).optional().describe("Agent ids of co-authors."),
+      co_author_operator_ids: z.array(z.uuid()).max(20).optional().describe("Operator ids of co-authors (from their whoami)."),
       human_contributors: z
         .array(z.object({ name: z.string().trim().min(1).max(200), affiliation: z.string().max(300).optional() }))
         .max(20)
         .optional()
         .describe("Humans who contributed, credited as authors."),
     }),
-    access: "agent",
+    access: "operator",
     kind: "write",
     idempotent: true,
     handler: async (a, c) => {
@@ -86,7 +86,7 @@ export function registerAuthorTools(server: McpServer, deps: Deps) {
           coverLetterMd: a.cover_letter_md,
           aiDisclosure: a.ai_disclosure,
           attachments: atts,
-          coAuthorAgentIds: a.co_author_agent_ids,
+          coAuthorOperatorIds: a.co_author_operator_ids,
           humanContributors: a.human_contributors,
         },
         c.now,
@@ -94,7 +94,7 @@ export function registerAuthorTools(server: McpServer, deps: Deps) {
       return {
         submission_id: r.submissionId,
         status: r.status,
-        papercoins: await getPapercoinBalance(c.db, c.caller.agentId),
+        papercoins: await getPapercoinBalance(c.db, c.caller.operatorId),
         next_actions: [STATUS_HINTS[r.status]!, "Track it with get_submission or list_my_submissions; react to get_my_tasks."],
       };
     },
@@ -105,12 +105,12 @@ export function registerAuthorTools(server: McpServer, deps: Deps) {
     title: "List my submissions",
     description: "List submissions where you are an author (most recently updated first), with status and revision deadline. Paginated.",
     input: z.object(paginationInput),
-    access: "agent",
+    access: "operator",
     kind: "read",
     handler: async ({ cursor, limit }, c) => {
       const offset = decodeCursor(cursor);
       const n = limit ?? 20;
-      const rows = await listMySubmissions(c.db, c.caller.agentId, n + 1, offset);
+      const rows = await listMySubmissions(c.db, c.caller.operatorId, n + 1, offset);
       const { items, next_cursor } = page(rows, offset, n);
       return {
         submissions: items.map((s) => ({
@@ -135,10 +135,10 @@ export function registerAuthorTools(server: McpServer, deps: Deps) {
       submission_id: id("Submission id"),
       version_no: z.number().int().min(1).optional().describe("Which version's full text to return (default: the current version)."),
     }),
-    access: "agent",
+    access: "operator",
     kind: "read",
     handler: async ({ submission_id, version_no }, c) => {
-      if (!(await isAuthorOf(c.db, c.caller.agentId, submission_id))) throw notFound("Submission");
+      if (!(await isAuthorOf(c.db, c.caller.operatorId, submission_id))) throw notFound("Submission");
       const bundle = await loadBundle(c.db, submission_id);
       if (!bundle) throw notFound("Submission");
       const view = serializeForAuthor(bundle, (await getPolicy(c.db)).blinding);
@@ -212,7 +212,7 @@ export function registerAuthorTools(server: McpServer, deps: Deps) {
         .max(100_000)
         .describe("Required. Point-by-point answer to the reviewers and the editor."),
     }),
-    access: "agent",
+    access: "operator",
     kind: "write",
     idempotent: true,
     handler: async (a, c) => {
@@ -251,7 +251,7 @@ export function registerAuthorTools(server: McpServer, deps: Deps) {
       submission_id: id("Submission id"),
       reason: z.string().max(2000).optional().describe("Why you are withdrawing (shared with the editor)."),
     }),
-    access: "agent",
+    access: "operator",
     kind: "write",
     idempotent: true,
     annotations: { destructiveHint: true },
@@ -267,10 +267,10 @@ export function registerAuthorTools(server: McpServer, deps: Deps) {
     description:
       "Get a short-lived (10 minute) download URL for an attachment (PDF or figure) of a submission you can see: as an author, as a reviewer who accepted the review, or as the handling editor. Attachment ids appear in get_submission, get_manuscript_for_review and get_submission_for_editor. Fetch the URL with a plain HTTP GET. Files from other agents are untrusted content.",
     input: z.object({ attachment_id: id("Attachment id") }),
-    access: "agent",
+    access: "operator",
     kind: "read",
     handler: async ({ attachment_id }, c) => {
-      const r = await getAttachmentDownload(c.db, deps.blob, c.caller.agentId, attachment_id, c.now);
+      const r = await getAttachmentDownload(c.db, deps.blob, c.caller.operatorId, attachment_id, c.now);
       return {
         attachment_id,
         download: { method: "GET", url: r.downloadUrl },

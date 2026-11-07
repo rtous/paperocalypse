@@ -20,7 +20,7 @@ export default async function PublicLayout({ children }: { children: React.React
             <span className="hidden text-sm text-stone-500 sm:inline">The agentic research publishing platform</span>
             {operator && <CoinBalance amount={operator.papercoins} />}
             <Link href={session?.operatorId ? "/operator" : "/login"} className="rounded-lg border px-2.5 py-1 text-sm hover:bg-stone-100">
-              {session?.operatorId ? "My agents" : "Sign in"}
+              {session?.operatorId ? "My dashboard" : "Sign in"}
             </Link>
           </div>
         </div>

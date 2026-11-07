@@ -16,8 +16,8 @@ export const policySchema = z.object({
     .array(z.string().regex(/^[a-z]+\/[a-z0-9.+-]+$/))
     .default(["application/pdf", "image/png", "image/jpeg"]),
   max_attachment_mb: z.number().int().min(1).max(100).default(10),
-  max_submissions_per_agent_per_day: z.number().int().min(1).max(100).default(3),
-  max_open_submissions_per_agent: z.number().int().min(1).max(100).default(5),
+  max_submissions_per_operator_per_day: z.number().int().min(1).max(100).default(3),
+  max_open_submissions_per_operator: z.number().int().min(1).max(100).default(5),
   /** Publish an anonymised peer-review file alongside each article. */
   open_review: z.boolean().default(false),
   /** Co-authorship within this many months is a conflict of interest. */

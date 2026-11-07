@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { admins, settings } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "@/lib/domain/actor";
-import { createAgent } from "@/lib/domain/agents";
 import { adjustPapercoins } from "@/lib/domain/papercoins";
 import { DEFAULT_POLICY, type Policy } from "@/lib/domain/policy";
 import { getPlatformSettings } from "@/lib/domain/settings";
@@ -28,16 +27,16 @@ export async function setPolicy(db: Db, policy: Partial<Policy> = {}) {
     .onConflictDoUpdate({ target: settings.key, set: { value } });
 }
 
-/** An active agent (with its own operator) holding plenty of papercoins. */
+/** An active operator holding plenty of papercoins, as an actor. */
 export async function createMember(
   db: Db,
   admin: Actor,
   opts: { name?: string; operatorContact?: string } = {},
-): Promise<Actor & { type: "agent" }> {
-  const agent = await agentFor(db, admin, opts.name ?? `agent-${randomUUID().slice(0, 6)}`, { email: opts.operatorContact });
+): Promise<Actor & { type: "operator" }> {
+  const op = await operatorFor(db, opts.name ?? `op-${randomUUID().slice(0, 6)}`, { email: opts.operatorContact });
   // Plenty of papercoins so tests about other rules aren't limited by the economy.
-  await adjustPapercoins(db, admin, agent.operatorId, 500, "test fixture balance", T0);
-  return { type: "agent", agentId: agent.id };
+  await adjustPapercoins(db, admin, op.id, 500, "test fixture balance", T0);
+  return { type: "operator", operatorId: op.id };
 }
 
 /** An operator account (as created on first GitHub sign-in) and its actor. */
@@ -47,19 +46,18 @@ export async function createOperator(db: Db, email: string, name = email.split("
   return { operator: op, actor: { type: "operator" as const, operatorId: op.id } };
 }
 
-/** An agent of an operator (the operator is created, or reused, by email). */
-export async function agentFor(db: Db, actor: Actor, name: string, opts: { email?: string; operatorName?: string } = {}) {
+/** An operator account named `name` (created, or reused, by email). */
+export async function operatorFor(db: Db, name: string, opts: { email?: string } = {}) {
   const email = (opts.email ?? `${randomUUID()}@operators.test`).toLowerCase();
-  const { operator } = await createOperator(db, email, opts.operatorName);
-  return createAgent(db, actor, { displayName: name, operatorId: operator.id }, T0);
+  return (await createOperator(db, email, name)).operator;
 }
 
-/** An agent created from an operator's dashboard, with its API key. */
-export async function createDashboardAgent(db: Db, operatorEmail: string, name: string) {
-  const { createOperatorAgent } = await import("@/lib/domain/operators");
-  const { actor } = await createOperator(db, operatorEmail);
-  const r = await createOperatorAgent(db, actor, { displayName: name, description: `${name}, a scripted test agent` }, T0);
-  return { agentId: r.agent.id, key: r.apiKey };
+/** An operator with an API key, as created on the dashboard. */
+export async function createKeyedOperator(db: Db, email: string, name?: string) {
+  const { operatorIssueKey } = await import("@/lib/domain/operators");
+  const { operator, actor } = await createOperator(db, email, name);
+  const k = await operatorIssueKey(db, actor, T0);
+  return { operatorId: operator.id, key: k.apiKey };
 }
 
 export function manuscript(overrides: Partial<SubmitManuscriptInput> = {}): SubmitManuscriptInput {
@@ -95,13 +93,13 @@ export const LETTER = "Thank you for your submission. Please see the reviews bel
 // Task pool helpers: the platform hands out work through request_task.
 // ---------------------------------------------------------------------------
 
-type AgentActor = Actor & { type: "agent" };
+type OperatorActor = Actor & { type: "operator" };
 
 /** Ask the pool for a task; fails unless it is of `kind` on `submissionId`. */
-export async function takeTask(db: Db, agent: AgentActor, kind: "review" | "editorial", submissionId: string, now: Date) {
+export async function takeTask(db: Db, agent: OperatorActor, kind: "review" | "editorial", submissionId: string, now: Date) {
   const { requestTask } = await import("@/lib/domain/pool");
   const r = await requestTask(db, agent, now);
-  if (!r.task) throw new Error(`No task for ${agent.agentId}: ${r.reasons.join(" ")}`);
+  if (!r.task) throw new Error(`No task for ${agent.operatorId}: ${r.reasons.join(" ")}`);
   if (r.task.kind !== kind || r.task.submissionId !== submissionId) {
     throw new Error(`Expected a ${kind} task on ${submissionId}, got a ${r.task.kind} task on ${r.task.submissionId}`);
   }
@@ -109,12 +107,12 @@ export async function takeTask(db: Db, agent: AgentActor, kind: "review" | "edit
 }
 
 /** Take a review task and return its assignment id. */
-export async function takeReview(db: Db, reviewer: AgentActor, submissionId: string, now: Date) {
+export async function takeReview(db: Db, reviewer: OperatorActor, submissionId: string, now: Date) {
   return (await takeTask(db, reviewer, "review", submissionId, now)).assignmentId!;
 }
 
 /** Take the editorial task on the submission and send it to review. */
-export async function sendOut(db: Db, editor: AgentActor, submissionId: string, now: Date) {
+export async function sendOut(db: Db, editor: OperatorActor, submissionId: string, now: Date) {
   const { sendToReview } = await import("@/lib/domain/submissions");
   await takeTask(db, editor, "editorial", submissionId, now);
   return sendToReview(db, editor, submissionId, now);
@@ -123,7 +121,7 @@ export async function sendOut(db: Db, editor: AgentActor, submissionId: string, 
 /** Take the editorial task on the submission and decide. */
 export async function decide(
   db: Db,
-  editor: AgentActor,
+  editor: OperatorActor,
   submissionId: string,
   decision: "accept" | "reject" | "minor_revision" | "major_revision",
   now: Date,

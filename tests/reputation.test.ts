@@ -7,7 +7,7 @@ import { contributorRanking, reviewerRanking } from "@/lib/domain/rankings";
 import { computeReputation, loadReputation, operatorReputation, relativeScore } from "@/lib/domain/reputation";
 import { submitManuscript, submitReview } from "@/lib/domain/submissions";
 import { createTestDb } from "./helpers/db";
-import { T0, agentFor, createAdmin, setPolicy, decide, hours, manuscript, review, sendOut, takeReview } from "./helpers/fixtures";
+import { T0, operatorFor, createAdmin, setPolicy, decide, hours, manuscript, review, sendOut, takeReview } from "./helpers/fixtures";
 
 const days = (d: number, from = T0) => hours(24 * d, from);
 
@@ -53,14 +53,14 @@ describe("reputation from the database", () => {
   });
   afterAll(async () => close());
 
-  async function agent(name: string, operatorName: string) {
-    const a = await agentFor(db, admin, name, { email: `${operatorName.toLowerCase()}@lab.org`, operatorName });
-    await adjustPapercoins(db, admin, a.operatorId, 100, "test balance", T0);
-    return { type: "agent" as const, agentId: a.id, operatorId: a.operatorId };
+  async function agent(_label: string, operatorName: string) {
+    const op = await operatorFor(db, operatorName, { email: `${operatorName.toLowerCase()}@lab.org` });
+    await adjustPapercoins(db, admin, op.id, 100, "test balance", T0);
+    return { type: "operator" as const, operatorId: op.id };
   }
 
   it("scores papers, authors and reviewers from first-year citations", async () => {
-    await setPolicy(db, { max_submissions_per_agent_per_day: 50, max_open_submissions_per_agent: 50 });
+    await setPolicy(db, { max_submissions_per_operator_per_day: 50, max_open_submissions_per_operator: 50 });
     const editor = await agent("Editor-Bot", "Eve");
     const rita = await agent("Rita-Bot", "Rita");
     const rex = await agent("Rex-Bot", "Rex");
@@ -69,7 +69,7 @@ describe("reputation from the database", () => {
     const cat = await agent("Cat-Bot", "Cat");
 
     /** Publish a paper at `at`; Rita and Rex give the overall scores in `scores`. */
-    async function publish(author: Actor & { type: "agent" }, body: string, at: Date, scores: [number, number]) {
+    async function publish(author: Actor & { type: "operator" }, body: string, at: Date, scores: [number, number]) {
       const { submissionId } = await submitManuscript(db, author, manuscript({ bodyMd: body }), at);
       await sendOut(db, editor, submissionId, at);
       for (const [i, r] of [rita, rex].entries()) {

@@ -1,15 +1,15 @@
 import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, webhookDeliveries } from "@/lib/db/schema";
+import { operators, webhookDeliveries } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import { DomainError } from "@/lib/domain/errors";
-import { updateAgentProfile } from "@/lib/domain/agents";
+import { updateOperatorProfile } from "@/lib/domain/operators";
 import { submitManuscript } from "@/lib/domain/submissions";
 import { runTick } from "@/lib/domain/tick";
 import { checkWebhookUrl, deliverWebhooks, isBlockedAddress, signWebhook, type WebhookFetch } from "@/lib/domain/webhooks";
 import { createTestDb } from "./helpers/db";
-import { T0, createAdmin, createDashboardAgent, setPolicy, createMember, createOperator, hours, manuscript } from "./helpers/fixtures";
+import { T0, createAdmin, createKeyedOperator, setPolicy, createMember, createOperator, hours, manuscript } from "./helpers/fixtures";
 
 describe("SSRF guard", () => {
   it.each(["127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fc00::1", "fd12::1", "fe80::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1", "224.0.0.1", "not-an-ip"])(
@@ -40,25 +40,22 @@ describe("webhook delivery", () => {
     const admin = await createAdmin(db);
     await setPolicy(db);
     await createMember(db, admin);
-    const reg = await createDashboardAgent(db, "h@ops.test", "Hooked");
-    const { webhookSecret } = await updateAgentProfile(db, { type: "agent", agentId: reg.agentId }, { webhookUrl: "https://hooks.example.org/in" }, T0);
-    return { author: { type: "agent" as const, agentId: reg.agentId }, secret: webhookSecret! };
+    const reg = await createKeyedOperator(db, "h@ops.test", "Hooked");
+    const { webhookSecret } = await updateOperatorProfile(db, { type: "operator", operatorId: reg.operatorId }, { webhookUrl: "https://hooks.example.org/in" }, T0);
+    return { author: { type: "operator" as const, operatorId: reg.operatorId }, secret: webhookSecret! };
   }
 
   it("refuses unsafe webhook URLs when they are set", async () => {
-    const reg = await createDashboardAgent(db, "x@ops.test", "Agent X");
-    await expect(
-      updateAgentProfile(db, { type: "agent", agentId: reg.agentId }, { webhookUrl: "https://169.254.169.254/latest" }, T0),
-    ).rejects.toBeInstanceOf(DomainError);
-    const { createOperatorAgent } = await import("@/lib/domain/operators");
-    const { actor } = await createOperator(db, "y@ops.test");
-    await expect(createOperatorAgent(db, actor, { displayName: "y", description: "", webhookUrl: "http://example.org" }, T0)).rejects.toBeInstanceOf(DomainError);
+    const { actor } = await createOperator(db, "x@ops.test");
+    for (const webhookUrl of ["https://169.254.169.254/latest", "http://example.org"]) {
+      await expect(updateOperatorProfile(db, actor, { webhookUrl }, T0)).rejects.toBeInstanceOf(DomainError);
+    }
   });
 
   it("sends signed, id-only payloads and marks them delivered", async () => {
     const { author, secret } = await withWebhook();
     // The editor gets a notification only if it has a webhook; give the author a decision-free event:
-    await db.insert(webhookDeliveries).values({ agentId: author.agentId, eventType: "submission.decision", payload: { submission_id: "s1" }, nextAttemptAt: T0 });
+    await db.insert(webhookDeliveries).values({ operatorId: author.operatorId, eventType: "submission.decision", payload: { submission_id: "s1" }, nextAttemptAt: T0 });
 
     const calls: { url: string; headers: Record<string, string>; body: string }[] = [];
     const send: WebhookFetch = async (url, init) => {
@@ -79,7 +76,7 @@ describe("webhook delivery", () => {
 
   it("retries with backoff, gives up after 3 retries, and disables after repeated failures", async () => {
     const { author } = await withWebhook();
-    await db.insert(webhookDeliveries).values({ agentId: author.agentId, eventType: "x", payload: {}, nextAttemptAt: T0 });
+    await db.insert(webhookDeliveries).values({ operatorId: author.operatorId, eventType: "x", payload: {}, nextAttemptAt: T0 });
     const failing: WebhookFetch = async () => ({ status: 500 });
 
     expect((await deliverWebhooks(db, failing, T0)).retried).toBe(1);
@@ -95,11 +92,11 @@ describe("webhook delivery", () => {
     expect(row).toMatchObject({ status: "failed", attempts: 4, lastError: "HTTP 500" });
 
     // Ten failed deliveries in a row disable the webhook.
-    await db.update(agents).set({ webhookFailureCount: 9 }).where(eq(agents.id, author.agentId));
-    await db.insert(webhookDeliveries).values({ agentId: author.agentId, eventType: "x", payload: {}, nextAttemptAt: t, attempts: 3 });
+    await db.update(operators).set({ webhookFailureCount: 9 }).where(eq(operators.id, author.operatorId));
+    await db.insert(webhookDeliveries).values({ operatorId: author.operatorId, eventType: "x", payload: {}, nextAttemptAt: t, attempts: 3 });
     await deliverWebhooks(db, failing, t);
-    const [agent] = await db.select().from(agents).where(eq(agents.id, author.agentId));
-    expect(agent!.webhookDisabledAt).not.toBeNull();
+    const [op] = await db.select().from(operators).where(eq(operators.id, author.operatorId));
+    expect(op!.webhookDisabledAt).not.toBeNull();
   });
 
   it("treats network errors as failures and enqueues on workflow events", async () => {
@@ -109,7 +106,7 @@ describe("webhook delivery", () => {
     const throwing: WebhookFetch = async () => {
       throw new Error("refusing to connect");
     };
-    await db.insert(webhookDeliveries).values({ agentId: author.agentId, eventType: "x", payload: {}, nextAttemptAt: T0 });
+    await db.insert(webhookDeliveries).values({ operatorId: author.operatorId, eventType: "x", payload: {}, nextAttemptAt: T0 });
     expect((await deliverWebhooks(db, throwing, T0)).retried).toBe(1);
     const [row] = await db.select().from(webhookDeliveries);
     expect(row!.lastError).toContain("refusing to connect");

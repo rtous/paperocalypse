@@ -250,6 +250,9 @@ Every item in the definition of done (spec section 10) is met:
   settings; papers numbered platform-wide (`/articles/<n>`); every agent can author and review.
   Migrations restarted from a fresh init (demo data dropped). Tests: 534; simulation: 103 checks.
 
+- **No agent identities:** operators are the only identity, with one API key each; any agent
+  using the key acts as the operator. Fresh migrations. Tests: 531; simulation: 104 checks.
+
 ## Later (from the spec, not started)
 
 A reputation and quality system for reviews and agents (planned); OAuth 2.1 for MCP clients that support only OAuth connectors; persistent identifiers and DOI

@@ -3,11 +3,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { settings } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
-import { issueApiKey } from "@/lib/domain/agents";
+import { issueApiKey } from "@/lib/domain/operators";
 import { GUIDELINES } from "@/lib/domain/default-content";
 import { clearSettingsCache } from "@/lib/mcp/framework";
 import { createTestDb } from "./helpers/db";
-import { T0, agentFor, createAdmin, createDashboardAgent, hours, setPolicy } from "./helpers/fixtures";
+import { T0, createAdmin, createKeyedOperator, hours, operatorFor, setPolicy } from "./helpers/fixtures";
 import { connect, fakeBlob, makeDeps, router } from "./helpers/mcp";
 
 let db: Db;
@@ -39,9 +39,9 @@ const reviewArgs = (assignment_id: string, over: Record<string, unknown> = {}) =
   ...over,
 });
 
-/** Agents are created by their operator in the dashboard (agents can't self-register). */
+/** Operators sign in and get one API key; agents only hold it (they can't self-register). */
 async function register(name: string, operator = `${name}@ops.test`) {
-  return createDashboardAgent(db, operator.toLowerCase(), name);
+  return createKeyedOperator(db, operator.toLowerCase(), name);
 }
 
 async function client(key: string | null) {
@@ -57,7 +57,7 @@ beforeAll(async () => {
 afterAll(async () => close());
 
 describe("public tools and auth", () => {
-  it("serves public tools without a key and rejects agent tools", async () => {
+  it("serves public tools without a key and rejects keyed tools", async () => {
     const anon = await client(null);
     expect((await anon.must("ping")).message).toBe("pong");
     const info = await anon.must("get_platform_info");
@@ -91,8 +91,8 @@ describe("public tools and auth", () => {
         "create_attachment_upload", "desk_reject", "flag_for_admin", "get_article", "get_attachment", "get_guidelines",
         "get_manuscript_for_review", "get_my_tasks", "get_papercoins", "get_platform_info", "get_submission",
         "get_submission_for_editor", "list_my_submissions", "make_decision", "ping", "release_task", "request_task",
-        "rotate_api_key", "search_articles", "send_to_review", "submit_manuscript", "submit_review", "submit_revision",
-        "update_agent_profile", "whoami", "withdraw_submission",
+        "search_articles", "send_to_review", "submit_manuscript", "submit_review", "submit_revision",
+        "update_profile", "whoami", "withdraw_submission",
       ].sort(),
     );
     const submit = tools.find((t) => t.name === "submit_manuscript")!;
@@ -129,14 +129,14 @@ describe("public tools and auth", () => {
 
 describe("full review cycle over MCP", () => {
   it("register → submit → screen → review → revise → accept (published), all through the pool", async () => {
-    // The editorial agent is an agent like any other (editorial work depends on reputation).
-    const editorAgent = await agentFor(db, admin, "Editor", { email: "editor@ops.test" });
-    const editorKey = (await db.transaction((tx) => issueApiKey(tx, admin, editorAgent.id, "test", T0))).apiKey;
+    // The editorial operator is like any other (editorial work depends on reputation).
+    const editorOp = await operatorFor(db, "Editor", { email: "editor@ops.test" });
+    const editorKey = (await db.transaction((tx) => issueApiKey(tx, admin, editorOp.id, T0))).apiKey;
 
     const author = await register("Author");
     const reviewers = await Promise.all(["R1", "R2", "R3"].map((n) => register(n)));
-    // Shares the author's operator, so it is conflicted.
-    const sameOp = await register("SameOperator", "author@ops.test");
+    // A second agent running on the author's key: it is the author, so it is conflicted.
+    const sameOp = author;
 
     const ed = await client(editorKey);
     const au = await client(author.key);
@@ -144,11 +144,12 @@ describe("full review cycle over MCP", () => {
     const so = await client(sameOp.key);
 
     // Reviewers say what they review.
-    for (const c of [...rv, so]) await c.must("update_agent_profile", { reviewer_topics: ["Epistemology"] });
-    expect((await rv[0]!.must("whoami")).agent.reviewer_topics).toEqual(["epistemology"]);
+    for (const c of [...rv, so]) await c.must("update_profile", { reviewer_topics: ["Epistemology"] });
+    expect((await rv[0]!.must("whoami")).operator.reviewer_topics).toEqual(["epistemology"]);
 
     const me = await au.must("whoami");
-    expect(me.agent.agent_id).toBe(author.agentId);
+    expect(me.operator.operator_id).toBe(author.operatorId);
+    expect((await so.must("whoami")).operator.operator_id).toBe(author.operatorId);
     expect(me.reputation).toMatchObject({ author_score: 5, author_score_is_new: true, reviewer_score: 5, reviewer_score_is_new: true });
 
     // Submit with an idempotency key, twice.
@@ -200,7 +201,7 @@ describe("full review cycle over MCP", () => {
       const full = await c.must("get_manuscript_for_review", { assignment_id });
       expect(full.untrusted_content.body_md).toBe(BODY);
       expect(full.untrusted_content.authors).toBeUndefined(); // double blind
-      expect(JSON.stringify(full)).not.toContain(author.agentId);
+      expect(JSON.stringify(full)).not.toContain(author.operatorId);
       expect(full.review_form_schema.properties.recommendation).toBeTruthy();
       await c.must("submit_review", reviewArgs(assignment_id, { idempotency_key: `review-${i}` }));
     }
@@ -215,7 +216,7 @@ describe("full review cycle over MCP", () => {
     expect(auView.untrusted_content.reviews).toHaveLength(2);
     const auText = JSON.stringify(auView);
     expect(auText).not.toContain("SECRET-FOR-EDITOR");
-    for (const r of reviewers) expect(auText).not.toContain(r.agentId);
+    for (const r of reviewers) expect(auText).not.toContain(r.operatorId);
     expect(auText).not.toContain("R1");
     expect(auView.timeline.map((e: any) => e.event)).toContain("decide_major_revision");
     // The author gets its own current text back, ready to revise.
@@ -249,7 +250,7 @@ describe("full review cycle over MCP", () => {
     expect(art.untrusted_content.review_file.rounds).toHaveLength(2);
     expect(JSON.stringify(art)).not.toContain("SECRET-FOR-EDITOR");
 
-    // Flag for admin: a reviewer of the submission may flag it; an unrelated agent may not.
+    // Flag for admin: a reviewer of the submission may flag it; an unrelated operator may not.
     expect((await rv[0]!.must("flag_for_admin", { submission_id: sid, kind: "other", reason_md: "Testing the flag pipeline." })).flag_id).toBeTruthy();
     expect((await rv[2]!.call("flag_for_admin", { submission_id: sid, kind: "other", reason_md: "Testing the flag pipeline." })).code).toBe("NOT_FOUND");
 
@@ -258,14 +259,16 @@ describe("full review cycle over MCP", () => {
 });
 
 describe("keys, rate limits and validation", () => {
-  it("rotates keys: the old key stops working", async () => {
+  it("one key per operator: a new key from the dashboard replaces the old one", async () => {
     const a = await register("Rotator");
     const g = await connect(handle, "/api/mcp", a.key);
-    const r = await g.must("rotate_api_key");
+    expect((await g.must("whoami")).operator.operator_id).toBe(a.operatorId);
     await g.close();
+    const again = await register("Rotator"); // same email: same operator, new key
+    expect(again.operatorId).toBe(a.operatorId);
     await expect(connect(handle, "/api/mcp", a.key)).rejects.toThrow();
-    const g2 = await connect(handle, "/api/mcp", r.api_key);
-    expect((await g2.must("whoami")).agent.agent_id).toBe(a.agentId);
+    const g2 = await connect(handle, "/api/mcp", again.key);
+    expect((await g2.must("whoami")).operator.operator_id).toBe(a.operatorId);
     await g2.close();
   });
 
@@ -351,11 +354,11 @@ describe("task pool over MCP", () => {
     const reviewer = await register("PoolReviewer");
     const au = await client(author.key);
     const rv = await client(reviewer.key);
-    await rv.must("update_agent_profile", { reviewer_topics: ["epistemology"] });
+    await rv.must("update_profile", { reviewer_topics: ["epistemology"] });
 
     const me = await rv.must("whoami");
     expect(me.task_pool).toMatchObject({ reviewer_score: 5, review_limit_per_30_days: 11, reviews_taken_last_30_days: 0, editorial_tasks_allowed: true });
-    expect(me.agent.reviewer_topics).toEqual(["epistemology"]);
+    expect(me.operator.reviewer_topics).toEqual(["epistemology"]);
 
     await au.must("submit_manuscript", manuscript());
     // Earlier tests left submissions in the pool too; the oldest open task comes first.

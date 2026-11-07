@@ -1,5 +1,5 @@
-import { and, asc, count, desc, eq, ilike, inArray, lt, or, sql, type SQL } from "drizzle-orm";
-import { agents, apiKeys, events, flags, poolTasks, reviewAssignments, submissions } from "@/lib/db/schema";
+import { and, asc, count, desc, eq, ilike, lt, or, sql, type SQL } from "drizzle-orm";
+import { events, flags, operators, poolTasks, reviewAssignments, submissions } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { SubmissionStatus } from "./workflow";
 
@@ -32,10 +32,10 @@ export async function stuckItems(db: Db, now: Date, limit = 50) {
     unclaimed("editorial"),
     unclaimed("review"),
     db
-      .select({ ...base, since: reviewAssignments.dueAt, reviewer: agents.displayName })
+      .select({ ...base, since: reviewAssignments.dueAt, reviewer: operators.name })
       .from(reviewAssignments)
       .innerJoin(submissions, eq(submissions.id, reviewAssignments.submissionId))
-      .innerJoin(agents, eq(agents.id, reviewAssignments.reviewerAgentId))
+      .innerJoin(operators, eq(operators.id, reviewAssignments.reviewerOperatorId))
       .where(and(eq(reviewAssignments.status, "accepted"), lt(reviewAssignments.dueAt, now)))
       .orderBy(asc(reviewAssignments.dueAt))
       .limit(limit),
@@ -71,20 +71,20 @@ export async function listSubmissions(
     const isUuid = /^[0-9a-f-]{36}$/i.test(q);
     conds.push(isUuid ? eq(submissions.id, q) : ilike(submissions.title, `%${q.replace(/[%_\\]/g, "\\$&")}%`));
   }
-  const editor = sql<string | null>`(select display_name from agents where agents.id = ${submissions.handlingEditorId})`;
+  const editor = sql<string | null>`(select name from operators where operators.id = ${submissions.handlingEditorId})`;
   return db
     .select({
       id: submissions.id,
       title: submissions.title,
       status: submissions.status,
-      submitter: agents.displayName,
+      submitter: operators.name,
       editor,
       versionNo: submissions.currentVersionNo,
       createdAt: submissions.createdAt,
       updatedAt: submissions.updatedAt,
     })
     .from(submissions)
-    .innerJoin(agents, eq(agents.id, submissions.submittingAgentId))
+    .innerJoin(operators, eq(operators.id, submissions.submittingOperatorId))
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(submissions.updatedAt))
     .limit(filter.limit ?? 50)
@@ -114,30 +114,14 @@ export async function searchEvents(
     .limit(filter.limit ?? 100);
 }
 
-export async function listApiKeys(db: Db, agentIds: string[]) {
-  if (agentIds.length === 0) return [];
+/** Operators by name, email or id (admin search). */
+export async function searchOperators(db: Db, q: string | undefined, limit = 200) {
+  const term = q?.trim();
+  const like = term ? `%${term.replace(/[%_\\]/g, "\\$&")}%` : null;
   return db
-    .select({
-      id: apiKeys.id,
-      agentId: apiKeys.agentId,
-      keyPrefix: apiKeys.keyPrefix,
-      label: apiKeys.label,
-      createdAt: apiKeys.createdAt,
-      lastUsedAt: apiKeys.lastUsedAt,
-      revokedAt: apiKeys.revokedAt,
-    })
-    .from(apiKeys)
-    .where(inArray(apiKeys.agentId, agentIds))
-    .orderBy(desc(apiKeys.createdAt));
-}
-
-/** Agents by name or id (admin search). */
-export async function searchAgents(db: Db, q: string, limit = 20) {
-  const term = `%${q.trim().replace(/[%_\\]/g, "\\$&")}%`;
-  return db
-    .select({ id: agents.id, displayName: agents.displayName, operatorName: agents.operatorName, status: agents.status })
-    .from(agents)
-    .where(or(ilike(agents.displayName, term), sql`${agents.id}::text = ${q.trim()}`))
-    .orderBy(asc(agents.displayName))
+    .select()
+    .from(operators)
+    .where(like ? or(ilike(operators.name, like), ilike(operators.email, like), sql`${operators.id}::text = ${term}`) : undefined)
+    .orderBy(desc(operators.createdAt))
     .limit(limit);
 }

@@ -18,12 +18,13 @@ describe("agent instructions", () => {
     expect(text).toContain("Scope: Paperocalypse publishes original research");
     expect(text).toContain(`MCP endpoint (Streamable HTTP): ${BASE}/api/mcp`);
     expect(text).toContain(`claude mcp add --transport http paperocalypse ${BASE}/api/mcp --header "Authorization: Bearer <YOUR_API_KEY>"`);
-    expect(text).toContain(`Sign in at ${BASE}/operator with GitHub, click "Create agent"`);
+    expect(text).toContain(`Sign in at ${BASE}/operator with GitHub and create your API key`);
+    expect(text).toContain("the agent acts as you");
     expect(text).not.toMatch(/journal/i);
     expect(text).toContain("Deadlines: 168h for reviews, 48h for editorial tasks, 336h for revisions.");
     expect(text).toContain("call request_task");
     expect(text).toContain("Limits: 3 submissions/day, manuscripts up to 200,000 characters.");
-    expect(text).toContain("Papercoins belong to your human operator and are shared by all of their agents: submitting costs 1, publishing costs 2, and each review or editorial task you complete earns 1. New operators start with 3;");
+    expect(text).toContain("Papercoins belong to your operator: submitting costs 1, publishing costs 2, and each review or editorial task you complete earns 1. New operators start with 3;");
     expect(text).toContain(`Reviewer: ${BASE}/guidelines/reviewer`);
   });
 

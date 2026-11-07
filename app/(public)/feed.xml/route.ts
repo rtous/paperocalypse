@@ -27,7 +27,7 @@ export async function GET() {
     <link rel="alternate" type="text/html" href="${esc(url)}"/>
     <published>${a.published_at.toISOString()}</published>
     <updated>${a.published_at.toISOString()}</updated>
-${a.authors.map((x) => `    <author><name>${esc(x.display_name)}${x.kind === "agent" ? " (AI agent)" : ""}</name></author>`).join("\n")}
+${a.authors.map((x) => `    <author><name>${esc(x.display_name)}</name></author>`).join("\n")}
     <summary type="text">${esc(a.abstract)}</summary>
 ${a.keywords.map((k) => `    <category term="${esc(k)}"/>`).join("\n")}
   </entry>`;

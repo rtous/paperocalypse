@@ -10,7 +10,7 @@ import { eligibleCitationsSql, firstYearEndsAt, rowsOf } from "@/lib/domain/cita
  * - Author score (per operator, 0–5): 5 until one of their papers is mature. Then it compares the
  *   operator's 1YP (the mean over their mature papers) with the average 1YP of all authors.
  * - Reviewer score (per operator, 0–5): 5 until a paper they reviewed is mature. Then it is
- *   5 minus the mean gap between the overall_score their agents gave and the score the paper
+ *   5 minus the mean gap between the overall_score they gave and the score the paper
  *   earned: its 1YP compared with the average 1YP of all mature papers.
  *
  * A value equal to the average maps to 2.5; twice the average or more maps to 5; no citations
@@ -24,7 +24,7 @@ export const NEW_SCORE = 5;
 export type RepArticle = { id: string; publishedAt: Date; operatorIds: string[] };
 /** An eligible citation (self-citations already removed). */
 export type RepCitation = { citingId: string; citedId: string; withinFirstYear: boolean };
-/** A reviewer agent's latest review of a published paper. */
+/** A reviewer operator's latest review of a published paper. */
 export type RepReview = { operatorId: string; articleId: string; overallScore: number };
 
 export type PaperStats = { citations: number; firstYear: number; mature: boolean };
@@ -147,7 +147,7 @@ export function earnedPaperScore(rep: Reputation, articleId: string): number | n
 // ---------------------------------------------------------------------------
 
 export type ReputationData = {
-  articles: (RepArticle & { authorAgents: { agentId: string; operatorId: string; displayName: string }[] })[];
+  articles: RepArticle[];
   citations: RepCitation[];
   reviews: RepReview[];
   /** Submitted reviews per reviewer operator (published or not), for rankings. */
@@ -157,29 +157,26 @@ export type ReputationData = {
 export async function loadReputationData(db: Db): Promise<ReputationData> {
   const [articleRows, citationRows, reviewRows, countRows] = await Promise.all([
     db.execute(sql`
-      SELECT a.id, a.published_at, ag.id AS agent_id, ag.operator_id, ag.display_name
+      SELECT a.id, a.published_at, au->>'operator_id' AS operator_id
       FROM articles a
       LEFT JOIN LATERAL jsonb_array_elements(a.authors) au ON true
-      LEFT JOIN agents ag ON ag.id::text = au->>'agent_id'
     `),
     db.execute(sql`SELECT citing_article_id, cited_article_id, within_first_year FROM (${eligibleCitationsSql}) ec`),
     db.execute(sql`
-      SELECT DISTINCT ON (ra.reviewer_agent_id, art.id)
-             ag.operator_id, art.id AS article_id, r.overall_score
+      SELECT DISTINCT ON (ra.reviewer_operator_id, art.id)
+             ra.reviewer_operator_id AS operator_id, art.id AS article_id, r.overall_score
       FROM reviews r
       JOIN review_assignments ra ON ra.id = r.assignment_id
       JOIN articles art ON art.submission_id = ra.submission_id
-      JOIN agents ag ON ag.id = ra.reviewer_agent_id
       WHERE ra.status = 'submitted'
-      ORDER BY ra.reviewer_agent_id, art.id, ra.version_no DESC
+      ORDER BY ra.reviewer_operator_id, art.id, ra.version_no DESC
     `),
     db.execute(sql`
-      SELECT ag.operator_id, count(*) AS n
+      SELECT ra.reviewer_operator_id AS operator_id, count(*) AS n
       FROM reviews r
       JOIN review_assignments ra ON ra.id = r.assignment_id
-      JOIN agents ag ON ag.id = ra.reviewer_agent_id
       WHERE ra.status = 'submitted'
-      GROUP BY ag.operator_id
+      GROUP BY ra.reviewer_operator_id
     `),
   ]);
 
@@ -188,13 +185,12 @@ export async function loadReputationData(db: Db): Promise<ReputationData> {
     const id = String(r.id);
     let a = articles.get(id);
     if (!a) {
-      a = { id, publishedAt: new Date(r.published_at as string), operatorIds: [], authorAgents: [] };
+      a = { id, publishedAt: new Date(r.published_at as string), operatorIds: [] };
       articles.set(id, a);
     }
-    if (r.agent_id && r.operator_id) {
+    if (r.operator_id) {
       const operatorId = String(r.operator_id);
       if (!a.operatorIds.includes(operatorId)) a.operatorIds.push(operatorId);
-      a.authorAgents.push({ agentId: String(r.agent_id), operatorId, displayName: String(r.display_name) });
     }
   }
 
@@ -234,11 +230,11 @@ export async function operatorReputation(db: Db, operatorId: string, now: Date) 
 
 const round1 = (x: number) => Math.round(x * 10) / 10;
 
-/** The reputation block agents see in whoami. */
+/** The reputation block shown in whoami. */
 export async function reputationSummary(db: Db, operatorId: string, now: Date) {
   const { author, reviewer } = await operatorReputation(db, operatorId, now);
   return {
-    scale: "0 to 5, shared by all agents of your operator; 5 until a paper completes its first year after publication",
+    scale: "0 to 5; 5 until a paper completes its first year after publication",
     author_score: round1(author.score),
     author_score_is_new: author.isNew,
     reviewer_score: round1(reviewer.score),

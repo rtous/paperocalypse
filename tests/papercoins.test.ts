@@ -5,15 +5,15 @@ import { operators, papercoinTransactions, settings, submissions } from "@/lib/d
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "@/lib/domain/actor";
 import { DomainError } from "@/lib/domain/errors";
-import { adjustPapercoins, applyPapercoins, getPapercoinBalance, operatorOfAgent } from "@/lib/domain/papercoins";
+import { adjustPapercoins, applyPapercoins, getPapercoinBalance } from "@/lib/domain/papercoins";
 import { submitManuscript, submitReview } from "@/lib/domain/submissions";
 import { clearSettingsCache } from "@/lib/mcp/framework";
 import { createTestDb } from "./helpers/db";
 import {
   T0,
-  agentFor,
+  operatorFor,
   createAdmin,
-  createDashboardAgent,
+  createKeyedOperator,
   setPolicy,
   createMember,
   decide,
@@ -36,39 +36,39 @@ afterAll(async () => close());
 
 const code = (p: Promise<unknown>) => p.then(() => null, (e) => (e instanceof DomainError ? e.code : String(e)));
 
-/** An agent created without the fixture's generous balance. */
+/** An operator created without the fixture's generous balance. */
 async function plainMember(name: string) {
-  const a = await agentFor(db, admin, name, { email: `${name}@coins.test` });
-  return { type: "agent" as const, agentId: a.id };
+  const op = await operatorFor(db, name, { email: `${name}@coins.test` });
+  return { type: "operator" as const, operatorId: op.id };
 }
 
 /** The operator's cached wallet equals the sum of its ledger. */
-async function ledgerIsConsistent(agentId: string) {
-  const operatorId = await operatorOfAgent(db, agentId);
+async function ledgerIsConsistent(operatorId: string) {
   const [sum] = await db
     .select({ s: sql<number>`coalesce(sum(${papercoinTransactions.amount}), 0)`.mapWith(Number) })
     .from(papercoinTransactions)
     .where(eq(papercoinTransactions.operatorId, operatorId));
-  return (await getPapercoinBalance(db, agentId)) === sum!.s;
+  return (await getPapercoinBalance(db, operatorId)) === sum!.s;
 }
 
 describe("papercoins", () => {
-  it("new operators get the welcome grant once; their agents share it (configurable)", async () => {
-    const a = await agentFor(db, admin, "Newbie", { email: "newbie@coins.test" });
+  it("new operators get the welcome grant once (configurable)", async () => {
+    const a = await operatorFor(db, "Newbie", { email: "newbie@coins.test" });
     expect(await getPapercoinBalance(db, a.id)).toBe(3);
-    const b = await agentFor(db, admin, "Newbie-2", { email: "newbie@coins.test" });
+    const b = await operatorFor(db, "Newbie", { email: "newbie@coins.test" });
+    expect(b.id).toBe(a.id);
     expect(await getPapercoinBalance(db, b.id)).toBe(3);
-    const reg = await createDashboardAgent(db, "dash@coins.test", "Dashboard-created");
-    expect(await getPapercoinBalance(db, reg.agentId)).toBe(3);
+    const reg = await createKeyedOperator(db, "dash@coins.test", "Dashboard-created");
+    expect(await getPapercoinBalance(db, reg.operatorId)).toBe(3);
 
     await db.insert(settings).values({ key: "platform", value: { papercoin_signup_grant: 0 } });
-    const c = await agentFor(db, admin, "No grant", { email: "nogrant@coins.test" });
+    const c = await operatorFor(db, "No grant", { email: "nogrant@coins.test" });
     expect(await getPapercoinBalance(db, c.id)).toBe(0);
     await db.delete(settings).where(eq(settings.key, "platform"));
   });
 
   it("charges submissions and publications, rewards reviews, and blocks authors in debt", async () => {
-    await setPolicy(db, { max_submissions_per_agent_per_day: 50, max_open_submissions_per_agent: 50 });
+    await setPolicy(db, { max_submissions_per_operator_per_day: 50, max_open_submissions_per_operator: 50 });
     const editor = await createMember(db, admin);
     const author = await plainMember("Author");
     const r1 = await plainMember("R1");
@@ -76,9 +76,9 @@ describe("papercoins", () => {
 
     // Submit (3 → 2). A failed submission (validation) charges nothing.
     expect(await code(submitManuscript(db, author, manuscript({ aiDisclosure: " " }), T0))).toBe("VALIDATION_ERROR");
-    expect(await getPapercoinBalance(db, author.agentId)).toBe(3);
+    expect(await getPapercoinBalance(db, author.operatorId)).toBe(3);
     const { submissionId } = await submitManuscript(db, author, manuscript(), T0);
-    expect(await getPapercoinBalance(db, author.agentId)).toBe(2);
+    expect(await getPapercoinBalance(db, author.operatorId)).toBe(2);
 
     // Two reviews: each reviewer earns 1; editing doesn't pay twice.
     await sendOut(db, editor, submissionId, T0);
@@ -88,28 +88,28 @@ describe("papercoins", () => {
       await submitReview(db, r, assignments.at(-1)!, review(), T0);
     }
     await submitReview(db, r1, assignments[0]!, review({ summaryMd: "Edited summary." }), T0);
-    expect(await getPapercoinBalance(db, r1.agentId)).toBe(4);
-    expect(await getPapercoinBalance(db, r2.agentId)).toBe(4);
+    expect(await getPapercoinBalance(db, r1.operatorId)).toBe(4);
+    expect(await getPapercoinBalance(db, r2.operatorId)).toBe(4);
 
     // Two more submissions take the author to 0; the next is refused, nothing is created.
     await submitManuscript(db, author, manuscript(), hours(1));
     await submitManuscript(db, author, manuscript(), hours(2));
-    expect(await getPapercoinBalance(db, author.agentId)).toBe(0);
-    const before = (await db.select().from(submissions).where(eq(submissions.submittingAgentId, author.agentId))).length;
+    expect(await getPapercoinBalance(db, author.operatorId)).toBe(0);
+    const before = (await db.select().from(submissions).where(eq(submissions.submittingOperatorId, author.operatorId))).length;
     const err = await submitManuscript(db, author, manuscript(), hours(3)).catch((e) => e);
     expect(err).toBeInstanceOf(DomainError);
     expect(err.code).toBe("INSUFFICIENT_PAPERCOINS");
     expect(err.details).toMatchObject({ balance: 0, required: 1 });
     expect(err.message).toMatch(/review/i);
-    expect((await db.select().from(submissions).where(eq(submissions.submittingAgentId, author.agentId))).length).toBe(before);
+    expect((await db.select().from(submissions).where(eq(submissions.submittingOperatorId, author.operatorId))).length).toBe(before);
 
     // Publication charges 2 even at 0 (the editor is never blocked): balance goes to -2.
     // Accepting publishes at once (the decision was the oldest open editorial task).
-    const editorBefore = await getPapercoinBalance(db, editor.agentId);
+    const editorBefore = await getPapercoinBalance(db, editor.operatorId);
     await decide(db, editor, submissionId, "accept", hours(4));
-    expect(await getPapercoinBalance(db, author.agentId)).toBe(-2);
+    expect(await getPapercoinBalance(db, author.operatorId)).toBe(-2);
     // Each editorial task (screening, decision) pays the editorial agent 1.
-    expect(await getPapercoinBalance(db, editor.agentId)).toBe(editorBefore + 1);
+    expect(await getPapercoinBalance(db, editor.operatorId)).toBe(editorBefore + 1);
 
     // The author's two pending submissions go to review (the author can't review them: conflict).
     for (const s of await db.select({ id: submissions.id }).from(submissions).where(eq(submissions.status, "with_editor"))) {
@@ -122,34 +122,34 @@ describe("papercoins", () => {
       await sendOut(db, editor, s.submissionId, hours(6 + i));
       await submitReview(db, author, await takeReview(db, author, s.submissionId, hours(6 + i)), review(), hours(6 + i));
     }
-    expect(await getPapercoinBalance(db, author.agentId)).toBe(1);
+    expect(await getPapercoinBalance(db, author.operatorId)).toBe(1);
     await submitManuscript(db, author, manuscript(), hours(10));
-    expect(await getPapercoinBalance(db, author.agentId)).toBe(0);
+    expect(await getPapercoinBalance(db, author.operatorId)).toBe(0);
 
-    for (const a of [author, r1, r2]) expect(await ledgerIsConsistent(a.agentId)).toBe(true);
-    const reasons = (await db.select().from(papercoinTransactions).where(eq(papercoinTransactions.agentId, author.agentId))).map((t) => t.reason);
+    for (const a of [author, r1, r2]) expect(await ledgerIsConsistent(a.operatorId)).toBe(true);
+    const reasons = (await db.select().from(papercoinTransactions).where(eq(papercoinTransactions.operatorId, author.operatorId))).map((t) => t.reason);
     expect(reasons.filter((r) => r === "submission")).toHaveLength(4);
     expect(reasons.filter((r) => r === "publication")).toHaveLength(1);
     expect(reasons.filter((r) => r === "review")).toHaveLength(3);
   });
 
   it("applies a referenced entry only once", async () => {
-    const a = await agentFor(db, admin, "Once");
+    const a = await operatorFor(db, "Once");
     const ref = "00000000-0000-0000-0000-0000000000aa";
-    await db.transaction((tx) => applyPapercoins(tx, { agentId: a.id, amount: 1, reason: "review", refId: ref, now: T0 }));
-    await db.transaction((tx) => applyPapercoins(tx, { agentId: a.id, amount: 1, reason: "review", refId: ref, now: T0 }));
+    await db.transaction((tx) => applyPapercoins(tx, { operatorId: a.id, amount: 1, reason: "review", refId: ref, now: T0 }));
+    await db.transaction((tx) => applyPapercoins(tx, { operatorId: a.id, amount: 1, reason: "review", refId: ref, now: T0 }));
     expect(await getPapercoinBalance(db, a.id)).toBe(4);
   });
 
   it("admins can adjust balances; others cannot", async () => {
-    const a = await agentFor(db, admin, "Adjusted");
-    expect(await adjustPapercoins(db, admin, a.operatorId, 10, "Pilot lab grant", T0)).toBe(13);
-    expect(await adjustPapercoins(db, admin, a.operatorId, -20, "Penalty for junk reviews", T0)).toBe(-7);
-    expect(await code(adjustPapercoins(db, admin, a.operatorId, 0, "nothing", T0))).toBe("VALIDATION_ERROR");
-    expect(await code(adjustPapercoins(db, admin, a.operatorId, 5, "", T0))).toBe("VALIDATION_ERROR");
-    expect(await code(adjustPapercoins(db, { type: "agent", agentId: a.id }, a.operatorId, 5, "self grant", T0))).toBe("NOT_AUTHORIZED");
+    const a = await operatorFor(db, "Adjusted");
+    expect(await adjustPapercoins(db, admin, a.id, 10, "Pilot lab grant", T0)).toBe(13);
+    expect(await adjustPapercoins(db, admin, a.id, -20, "Penalty for junk reviews", T0)).toBe(-7);
+    expect(await code(adjustPapercoins(db, admin, a.id, 0, "nothing", T0))).toBe("VALIDATION_ERROR");
+    expect(await code(adjustPapercoins(db, admin, a.id, 5, "", T0))).toBe("VALIDATION_ERROR");
+    expect(await code(adjustPapercoins(db, { type: "operator", operatorId: a.id }, a.id, 5, "self grant", T0))).toBe("NOT_AUTHORIZED");
     expect(await ledgerIsConsistent(a.id)).toBe(true);
-    const [row] = await db.select().from(operators).where(eq(operators.id, a.operatorId));
+    const [row] = await db.select().from(operators).where(eq(operators.id, a.id));
     expect(row!.papercoins).toBe(-7);
   });
 });
@@ -162,7 +162,8 @@ describe("papercoins over MCP", () => {
     await setPolicy(db);
     await createMember(db, admin);
 
-    const reg = await createDashboardAgent(db, "coin@ops.test", "Coin Bot");
+    const reg = await createKeyedOperator(db, "coin@ops.test", "Coin Bot");
+    // Two agents on the same key share one wallet.
     const g = await connect(handle, "/api/mcp", reg.key);
     const c = await connect(handle, "/api/mcp", reg.key);
     expect((await c.must("get_my_tasks")).papercoins).toBe(3);
@@ -184,8 +185,7 @@ describe("papercoins over MCP", () => {
     expect(coins.balance).toBe(0);
     expect(coins.rules).toMatchObject({ submission_cost: 1, publication_cost: 2, review_reward: 1, signup_grant: 3 });
     expect(coins.transactions.map((t: any) => t.reason)).toEqual(["submission", "submission", "submission", "signup_grant"]);
-    expect((await g.must("whoami")).papercoins).toMatchObject({ balance: 0, operatorName: "coin" });
-    expect(coins.wallet).toMatch(/shared with all agents of your operator/);
+    expect((await g.must("whoami")).papercoins).toBe(0);
     await g.close();
     await c.close();
   });

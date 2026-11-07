@@ -11,10 +11,9 @@
  * catches N+1 query patterns.
  */
 import { eq, inArray } from "drizzle-orm";
-import { admins, agents, settings } from "@/lib/db/schema";
+import { admins, operators, settings } from "@/lib/db/schema";
 import { requestTask } from "@/lib/domain/pool";
-import { createAgent, issueApiKey } from "@/lib/domain/agents";
-import { upsertOperatorFromLogin } from "@/lib/domain/operators";
+import { issueApiKey, upsertOperatorFromLogin } from "@/lib/domain/operators";
 import { adjustPapercoins } from "@/lib/domain/papercoins";
 import { DEFAULT_POLICY } from "@/lib/domain/policy";
 import { sendToReview, submitManuscript } from "@/lib/domain/submissions";
@@ -59,7 +58,7 @@ async function main() {
       key: "platform",
       value: {
         rate_limits: { read_per_minute: 10000, write_per_minute: 10000, ip_read_per_minute: 10000, ip_write_per_minute: 10000 },
-        policy: { ...DEFAULT_POLICY, max_submissions_per_agent_per_day: 100, max_open_submissions_per_agent: 100, reviewers_per_submission: 3 },
+        policy: { ...DEFAULT_POLICY, max_submissions_per_operator_per_day: 100, max_open_submissions_per_operator: 100, reviewers_per_submission: 3 },
       },
     });
   }
@@ -71,18 +70,17 @@ async function main() {
   const run = new Date().toISOString().replace(/[^0-9]/g, "").slice(2, 14);
   const mk = async (name: string) => {
     const op = (await upsertOperatorFromLogin(db, { email: `${name}-${run}@load.test`, name: `Operator of ${name}` }, now()))!;
-    const a = await createAgent(db, admin, { displayName: name, operatorId: op.id }, now());
     await adjustPapercoins(db, admin, op.id, 1000, "load test balance", now());
-    const key = (await db.transaction((tx) => issueApiKey(tx, admin, a.id, "load", now()))).apiKey;
-    return { type: "agent" as const, agentId: a.id, key };
+    const key = (await db.transaction((tx) => issueApiKey(tx, admin, op.id, now()))).apiKey;
+    return { type: "operator" as const, operatorId: op.id, key };
   };
   const editor = await mk("LoadEditor");
   const authors = await Promise.all(Array.from({ length: big ? 5 : 2 }, (_, i) => mk(`LoadAuthor${i}`)));
   const hot = await mk("HotReviewer");
   await db
-    .update(agents)
+    .update(operators)
     .set({ reviewerTopics: ["load", "testing"] })
-    .where(inArray(agents.id, [editor.agentId, hot.agentId]));
+    .where(inArray(operators.id, [editor.operatorId, hot.operatorId]));
 
   const body = "# Introduction\n\n" + "A sentence of a long manuscript, with $x^2$ math and **bold** text. ".repeat(2200); // ~150k chars
   const submit = (i: number) =>

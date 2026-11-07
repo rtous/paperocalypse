@@ -1,5 +1,5 @@
 {
-  "id": "a8e2b47a-b83d-4aa8-9eb2-e52ccbb645de",
+  "id": "0e3f20f5-e3a8-46a3-83cf-f2ad49c96283",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -51,277 +51,6 @@
           "nullsNotDistinct": false,
           "columns": [
             "email"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.agents": {
-      "name": "agents",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "display_name": {
-          "name": "display_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "description": {
-          "name": "description",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "operator_name": {
-          "name": "operator_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "operator_contact": {
-          "name": "operator_contact",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "operator_contact_normalized": {
-          "name": "operator_contact_normalized",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "webhook_url": {
-          "name": "webhook_url",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "webhook_secret": {
-          "name": "webhook_secret",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "webhook_failure_count": {
-          "name": "webhook_failure_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "webhook_disabled_at": {
-          "name": "webhook_disabled_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "status": {
-          "name": "status",
-          "type": "agent_status",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'active'"
-        },
-        "operator_id": {
-          "name": "operator_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "last_seen_at": {
-          "name": "last_seen_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "reviewer_topics": {
-          "name": "reviewer_topics",
-          "type": "text[]",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::text[]"
-        }
-      },
-      "indexes": {
-        "agents_operator_contact_idx": {
-          "name": "agents_operator_contact_idx",
-          "columns": [
-            {
-              "expression": "operator_contact_normalized",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "agents_operator_idx": {
-          "name": "agents_operator_idx",
-          "columns": [
-            {
-              "expression": "operator_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "agents_operator_id_operators_id_fk": {
-          "name": "agents_operator_id_operators_id_fk",
-          "tableFrom": "agents",
-          "tableTo": "operators",
-          "columnsFrom": [
-            "operator_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.api_keys": {
-      "name": "api_keys",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "agent_id": {
-          "name": "agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "key_prefix": {
-          "name": "key_prefix",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "key_hash": {
-          "name": "key_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "label": {
-          "name": "label",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "''"
-        },
-        "last_used_at": {
-          "name": "last_used_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "revoked_at": {
-          "name": "revoked_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "api_keys_agent_idx": {
-          "name": "api_keys_agent_idx",
-          "columns": [
-            {
-              "expression": "agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "api_keys_agent_id_agents_id_fk": {
-          "name": "api_keys_agent_id_agents_id_fk",
-          "tableFrom": "api_keys",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "api_keys_key_hash_unique": {
-          "name": "api_keys_key_hash_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "key_hash"
           ]
         }
       },
@@ -631,8 +360,8 @@
           "notNull": true,
           "default": "now()"
         },
-        "agent_id": {
-          "name": "agent_id",
+        "operator_id": {
+          "name": "operator_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
@@ -695,11 +424,11 @@
         }
       },
       "indexes": {
-        "attachments_agent_idx": {
-          "name": "attachments_agent_idx",
+        "attachments_operator_idx": {
+          "name": "attachments_operator_idx",
           "columns": [
             {
-              "expression": "agent_id",
+              "expression": "operator_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -712,12 +441,12 @@
         }
       },
       "foreignKeys": {
-        "attachments_agent_id_agents_id_fk": {
-          "name": "attachments_agent_id_agents_id_fk",
+        "attachments_operator_id_operators_id_fk": {
+          "name": "attachments_operator_id_operators_id_fk",
           "tableFrom": "attachments",
-          "tableTo": "agents",
+          "tableTo": "operators",
           "columnsFrom": [
-            "agent_id"
+            "operator_id"
           ],
           "columnsTo": [
             "id"
@@ -777,8 +506,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "editor_agent_id": {
-          "name": "editor_agent_id",
+        "editor_operator_id": {
+          "name": "editor_operator_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
@@ -834,12 +563,12 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "decisions_editor_agent_id_agents_id_fk": {
-          "name": "decisions_editor_agent_id_agents_id_fk",
+        "decisions_editor_operator_id_operators_id_fk": {
+          "name": "decisions_editor_operator_id_operators_id_fk",
           "tableFrom": "decisions",
-          "tableTo": "agents",
+          "tableTo": "operators",
           "columnsFrom": [
-            "editor_agent_id"
+            "editor_operator_id"
           ],
           "columnsTo": [
             "id"
@@ -867,7 +596,7 @@
       "checkConstraints": {
         "decision_actor": {
           "name": "decision_actor",
-          "value": "(\"decisions\".\"editor_agent_id\" IS NOT NULL) <> (\"decisions\".\"admin_user_id\" IS NOT NULL)"
+          "value": "(\"decisions\".\"editor_operator_id\" IS NOT NULL) <> (\"decisions\".\"admin_user_id\" IS NOT NULL)"
         }
       },
       "isRLSEnabled": false
@@ -1018,8 +747,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "raised_by_agent_id": {
-          "name": "raised_by_agent_id",
+        "raised_by_operator_id": {
+          "name": "raised_by_operator_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
@@ -1094,12 +823,12 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "flags_raised_by_agent_id_agents_id_fk": {
-          "name": "flags_raised_by_agent_id_agents_id_fk",
+        "flags_raised_by_operator_id_operators_id_fk": {
+          "name": "flags_raised_by_operator_id_operators_id_fk",
           "tableFrom": "flags",
-          "tableTo": "agents",
+          "tableTo": "operators",
           "columnsFrom": [
-            "raised_by_agent_id"
+            "raised_by_operator_id"
           ],
           "columnsTo": [
             "id"
@@ -1152,8 +881,8 @@
           "notNull": true,
           "default": "now()"
         },
-        "agent_id": {
-          "name": "agent_id",
+        "operator_id": {
+          "name": "operator_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
@@ -1194,7 +923,7 @@
           "name": "idempotency_uq",
           "columns": [
             {
-              "expression": "agent_id",
+              "expression": "operator_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -1219,12 +948,12 @@
         }
       },
       "foreignKeys": {
-        "idempotency_keys_agent_id_agents_id_fk": {
-          "name": "idempotency_keys_agent_id_agents_id_fk",
+        "idempotency_keys_operator_id_operators_id_fk": {
+          "name": "idempotency_keys_operator_id_operators_id_fk",
           "tableFrom": "idempotency_keys",
-          "tableTo": "agents",
+          "tableTo": "operators",
           "columnsFrom": [
-            "agent_id"
+            "operator_id"
           ],
           "columnsTo": [
             "id"
@@ -1302,6 +1031,62 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
+        },
+        "api_key_hash": {
+          "name": "api_key_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "api_key_prefix": {
+          "name": "api_key_prefix",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "api_key_created_at": {
+          "name": "api_key_created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "api_key_last_used_at": {
+          "name": "api_key_last_used_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reviewer_topics": {
+          "name": "reviewer_topics",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'{}'::text[]"
+        },
+        "webhook_url": {
+          "name": "webhook_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "webhook_secret": {
+          "name": "webhook_secret",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "webhook_failure_count": {
+          "name": "webhook_failure_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "webhook_disabled_at": {
+          "name": "webhook_disabled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -1313,6 +1098,13 @@
           "nullsNotDistinct": false,
           "columns": [
             "email"
+          ]
+        },
+        "operators_api_key_hash_unique": {
+          "name": "operators_api_key_hash_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "api_key_hash"
           ]
         }
       },
@@ -1350,12 +1142,6 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
-        },
-        "agent_id": {
-          "name": "agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
         },
         "amount": {
           "name": "amount",
@@ -1396,27 +1182,6 @@
         }
       },
       "indexes": {
-        "papercoin_agent_idx": {
-          "name": "papercoin_agent_idx",
-          "columns": [
-            {
-              "expression": "agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "papercoin_operator_idx": {
           "name": "papercoin_operator_idx",
           "columns": [
@@ -1473,19 +1238,6 @@
             "id"
           ],
           "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "papercoin_transactions_agent_id_agents_id_fk": {
-          "name": "papercoin_transactions_agent_id_agents_id_fk",
-          "tableFrom": "papercoin_transactions",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
           "onUpdate": "no action"
         },
         "papercoin_transactions_admin_id_admins_id_fk": {
@@ -1560,8 +1312,8 @@
           "notNull": true,
           "default": "'open'"
         },
-        "claimed_by_agent_id": {
-          "name": "claimed_by_agent_id",
+        "claimed_by_operator_id": {
+          "name": "claimed_by_operator_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
@@ -1643,11 +1395,11 @@
           "method": "btree",
           "with": {}
         },
-        "pool_tasks_one_per_agent_uq": {
-          "name": "pool_tasks_one_per_agent_uq",
+        "pool_tasks_one_per_operator_uq": {
+          "name": "pool_tasks_one_per_operator_uq",
           "columns": [
             {
-              "expression": "claimed_by_agent_id",
+              "expression": "claimed_by_operator_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -1690,12 +1442,12 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "pool_tasks_claimed_by_agent_id_agents_id_fk": {
-          "name": "pool_tasks_claimed_by_agent_id_agents_id_fk",
+        "pool_tasks_claimed_by_operator_id_operators_id_fk": {
+          "name": "pool_tasks_claimed_by_operator_id_operators_id_fk",
           "tableFrom": "pool_tasks",
-          "tableTo": "agents",
+          "tableTo": "operators",
           "columnsFrom": [
-            "claimed_by_agent_id"
+            "claimed_by_operator_id"
           ],
           "columnsTo": [
             "id"
@@ -1710,11 +1462,11 @@
       "checkConstraints": {
         "pool_tasks_open_unclaimed": {
           "name": "pool_tasks_open_unclaimed",
-          "value": "\"pool_tasks\".\"status\" <> 'open' OR \"pool_tasks\".\"claimed_by_agent_id\" IS NULL"
+          "value": "\"pool_tasks\".\"status\" <> 'open' OR \"pool_tasks\".\"claimed_by_operator_id\" IS NULL"
         },
         "pool_tasks_claimed_holder": {
           "name": "pool_tasks_claimed_holder",
-          "value": "\"pool_tasks\".\"status\" <> 'claimed' OR (\"pool_tasks\".\"claimed_by_agent_id\" IS NOT NULL AND \"pool_tasks\".\"due_at\" IS NOT NULL)"
+          "value": "\"pool_tasks\".\"status\" <> 'claimed' OR (\"pool_tasks\".\"claimed_by_operator_id\" IS NOT NULL AND \"pool_tasks\".\"due_at\" IS NOT NULL)"
         }
       },
       "isRLSEnabled": false
@@ -1832,8 +1584,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "reviewer_agent_id": {
-          "name": "reviewer_agent_id",
+        "reviewer_operator_id": {
+          "name": "reviewer_operator_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
@@ -1903,7 +1655,7 @@
           "name": "assignments_reviewer_idx",
           "columns": [
             {
-              "expression": "reviewer_agent_id",
+              "expression": "reviewer_operator_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -1956,12 +1708,12 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "review_assignments_reviewer_agent_id_agents_id_fk": {
-          "name": "review_assignments_reviewer_agent_id_agents_id_fk",
+        "review_assignments_reviewer_operator_id_operators_id_fk": {
+          "name": "review_assignments_reviewer_operator_id_operators_id_fk",
           "tableFrom": "review_assignments",
-          "tableTo": "agents",
+          "tableTo": "operators",
           "columnsFrom": [
-            "reviewer_agent_id"
+            "reviewer_operator_id"
           ],
           "columnsTo": [
             "id"
@@ -2198,8 +1950,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "agent_id": {
-          "name": "agent_id",
+        "operator_id": {
+          "name": "operator_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
@@ -2239,11 +1991,11 @@
           "method": "btree",
           "with": {}
         },
-        "submission_authors_agent_idx": {
-          "name": "submission_authors_agent_idx",
+        "submission_authors_operator_idx": {
+          "name": "submission_authors_operator_idx",
           "columns": [
             {
-              "expression": "agent_id",
+              "expression": "operator_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -2269,12 +2021,12 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "submission_authors_agent_id_agents_id_fk": {
-          "name": "submission_authors_agent_id_agents_id_fk",
+        "submission_authors_operator_id_operators_id_fk": {
+          "name": "submission_authors_operator_id_operators_id_fk",
           "tableFrom": "submission_authors",
-          "tableTo": "agents",
+          "tableTo": "operators",
           "columnsFrom": [
-            "agent_id"
+            "operator_id"
           ],
           "columnsTo": [
             "id"
@@ -2289,7 +2041,7 @@
       "checkConstraints": {
         "submission_author_kind": {
           "name": "submission_author_kind",
-          "value": "(\"submission_authors\".\"agent_id\" IS NOT NULL) <> (\"submission_authors\".\"human_name\" IS NOT NULL)"
+          "value": "(\"submission_authors\".\"operator_id\" IS NOT NULL) <> (\"submission_authors\".\"human_name\" IS NOT NULL)"
         }
       },
       "isRLSEnabled": false
@@ -2465,8 +2217,8 @@
           "notNull": true,
           "default": "now()"
         },
-        "submitting_agent_id": {
-          "name": "submitting_agent_id",
+        "submitting_operator_id": {
+          "name": "submitting_operator_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
@@ -2556,11 +2308,11 @@
           "method": "btree",
           "with": {}
         },
-        "submissions_agent_idx": {
-          "name": "submissions_agent_idx",
+        "submissions_operator_idx": {
+          "name": "submissions_operator_idx",
           "columns": [
             {
-              "expression": "submitting_agent_id",
+              "expression": "submitting_operator_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -2573,12 +2325,12 @@
         }
       },
       "foreignKeys": {
-        "submissions_submitting_agent_id_agents_id_fk": {
-          "name": "submissions_submitting_agent_id_agents_id_fk",
+        "submissions_submitting_operator_id_operators_id_fk": {
+          "name": "submissions_submitting_operator_id_operators_id_fk",
           "tableFrom": "submissions",
-          "tableTo": "agents",
+          "tableTo": "operators",
           "columnsFrom": [
-            "submitting_agent_id"
+            "submitting_operator_id"
           ],
           "columnsTo": [
             "id"
@@ -2586,10 +2338,10 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
-        "submissions_handling_editor_id_agents_id_fk": {
-          "name": "submissions_handling_editor_id_agents_id_fk",
+        "submissions_handling_editor_id_operators_id_fk": {
+          "name": "submissions_handling_editor_id_operators_id_fk",
           "tableFrom": "submissions",
-          "tableTo": "agents",
+          "tableTo": "operators",
           "columnsFrom": [
             "handling_editor_id"
           ],
@@ -2631,8 +2383,8 @@
           "notNull": true,
           "default": "now()"
         },
-        "agent_id": {
-          "name": "agent_id",
+        "operator_id": {
+          "name": "operator_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
@@ -2707,12 +2459,12 @@
         }
       },
       "foreignKeys": {
-        "webhook_deliveries_agent_id_agents_id_fk": {
-          "name": "webhook_deliveries_agent_id_agents_id_fk",
+        "webhook_deliveries_operator_id_operators_id_fk": {
+          "name": "webhook_deliveries_operator_id_operators_id_fk",
           "tableFrom": "webhook_deliveries",
-          "tableTo": "agents",
+          "tableTo": "operators",
           "columnsFrom": [
-            "agent_id"
+            "operator_id"
           ],
           "columnsTo": [
             "id"
@@ -2733,18 +2485,9 @@
       "name": "actor_type",
       "schema": "public",
       "values": [
-        "agent",
+        "operator",
         "admin",
-        "system",
-        "operator"
-      ]
-    },
-    "public.agent_status": {
-      "name": "agent_status",
-      "schema": "public",
-      "values": [
-        "active",
-        "suspended"
+        "system"
       ]
     },
     "public.assignment_status": {

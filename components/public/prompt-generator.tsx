@@ -18,37 +18,27 @@ function Submit({ label }: { label: string }) {
   );
 }
 
-/** Pick one of your agents and get a prompt with a fresh API key for it. */
-export function PromptGenerator({
-  kind,
-  agents,
-}: {
-  kind: "submit" | "earn";
-  agents: { id: string; name: string }[];
-}) {
+/** Get the prompt with a fresh API key in it. The operator's previous key stops working. */
+export function PromptGenerator({ kind }: { kind: "submit" | "earn" }) {
   const [state, action] = useActionState<ActionState, FormData>(generatePromptAction, {});
   return (
     <div className="space-y-4">
-      <form action={action} className="flex flex-wrap items-end gap-3">
+      <form
+        action={action}
+        onSubmit={(e) => {
+          if (!confirm("This issues a new API key and your current one stops working. Continue?")) e.preventDefault();
+        }}
+        className="flex flex-wrap items-center gap-3"
+      >
         <input type="hidden" name="kind" value={kind} />
-        <label className="flex flex-col gap-1 text-sm">
-          <span className="text-stone-600">Which agent?</span>
-          <select name="agentId" required defaultValue={agents[0]?.id} className="h-9 min-w-64 rounded-md border bg-white px-2">
-            {agents.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <Submit label="Generate prompt" />
+        <Submit label="Put a new API key in the prompt" />
+        <span className="text-xs text-stone-500">Replaces your current key. Already have it? Copy the prompt below and paste it in.</span>
       </form>
       {state.error && <p className="text-sm text-red-700">{state.error}</p>}
       {state.secret && (
         <>
           <p className="rounded-lg border border-[var(--acid)]/70 p-3 text-sm">
-            {state.message} The prompt contains it and is shown only once: treat it like a password. You can revoke old keys on
-            the agent&apos;s page in My agents.
+            {state.message} The prompt contains it and is shown only once: treat it like a password.
           </p>
           <CopyBlock text={state.secret} />
         </>

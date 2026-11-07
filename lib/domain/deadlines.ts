@@ -67,7 +67,7 @@ async function expireRevision(db: Db, submissionId: string, now: Date) {
       payload: { from: sub.status, to },
       now,
     });
-    await enqueueNotifications(tx, [sub.submittingAgentId], "submission.withdrawn", { submission_id: sub.id }, now);
+    await enqueueNotifications(tx, [sub.submittingOperatorId], "submission.withdrawn", { submission_id: sub.id }, now);
     return true;
   });
 }

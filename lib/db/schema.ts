@@ -49,9 +49,9 @@ export type IntegrityFlag = {
 
 export type FrozenAuthor = {
   position: number;
-  agent_id: string | null;
+  operator_id: string | null;
   display_name: string;
-  kind: "agent" | "human";
+  kind: "operator" | "human";
   affiliation: string | null;
 };
 
@@ -59,7 +59,6 @@ export type FrozenAuthor = {
 // Enums
 // ---------------------------------------------------------------------------
 
-export const agentStatus = pgEnum("agent_status", ["active", "suspended"]);
 
 export const submissionStatus = pgEnum("submission_status", [
   "with_editor",
@@ -98,7 +97,7 @@ export const recommendation = pgEnum("recommendation", [
 export const poolTaskKind = pgEnum("pool_task_kind", ["review", "editorial"]);
 export const poolTaskStatus = pgEnum("pool_task_status", ["open", "claimed", "done", "cancelled"]);
 
-export const actorType = pgEnum("actor_type", ["agent", "admin", "system", "operator"]);
+export const actorType = pgEnum("actor_type", ["operator", "admin", "system"]);
 export const operatorStatus = pgEnum("operator_status", ["active", "suspended"]);
 export const flagStatus = pgEnum("flag_status", ["open", "resolved", "dismissed"]);
 export const attachmentStatus = pgEnum("attachment_status", ["pending", "uploaded"]);
@@ -117,18 +116,33 @@ export const papercoinReason = pgEnum("papercoin_reason", [
 // Admins and platform settings
 // ---------------------------------------------------------------------------
 
-/** Humans who run agents. They sign in with GitHub and create their agents in /operator. */
+/**
+ * Operators: the humans who take part. They sign in with GitHub and get one API key. Whatever
+ * agent uses the key acts as the operator: agents are ephemeral and have no identity here.
+ */
 export const operators = pgTable("operators", {
   ...base,
   /** Verified primary email from GitHub (lower-cased). Private. */
   email: text("email").notNull().unique(),
-  /** Public display name (shown in rankings and on agent profiles). */
+  /** Public display name (authors of papers, rankings). */
   name: text("name").notNull(),
   githubLogin: text("github_login"),
   status: operatorStatus("status").notNull().default("active"),
   lastLoginAt: tz("last_login_at"),
-  /** Papercoin wallet shared by all of this operator's agents (sum of their ledger entries). */
+  /** Papercoin wallet (sum of the operator's ledger entries). */
   papercoins: integer("papercoins").notNull().default(0),
+  /** The operator's one API key: HMAC-SHA256 with API_KEY_PEPPER. A new key replaces it. */
+  apiKeyHash: text("api_key_hash").unique(),
+  /** First characters of the key's random part, so the operator can recognise it. */
+  apiKeyPrefix: text("api_key_prefix"),
+  apiKeyCreatedAt: tz("api_key_created_at"),
+  apiKeyLastUsedAt: tz("api_key_last_used_at"),
+  /** Topics the operator's agents review; request_task prefers review tasks whose keywords match. */
+  reviewerTopics: text("reviewer_topics").array().notNull().default(sql`'{}'::text[]`),
+  webhookUrl: text("webhook_url"),
+  webhookSecret: text("webhook_secret"),
+  webhookFailureCount: integer("webhook_failure_count").notNull().default(0),
+  webhookDisabledAt: tz("webhook_disabled_at"),
 });
 
 export const admins = pgTable("admins", {
@@ -146,52 +160,6 @@ export const settings = pgTable("settings", {
 });
 
 // ---------------------------------------------------------------------------
-// Agents and keys
-// ---------------------------------------------------------------------------
-
-export const agents = pgTable(
-  "agents",
-  {
-    ...base,
-    displayName: text("display_name").notNull(),
-    description: text("description").notNull().default(""),
-    operatorName: text("operator_name"),
-    operatorContact: text("operator_contact"),
-    /** Lower-cased, trimmed operator_contact, used for conflict-of-interest checks. */
-    operatorContactNormalized: text("operator_contact_normalized"),
-    webhookUrl: text("webhook_url"),
-    webhookSecret: text("webhook_secret"),
-    webhookFailureCount: integer("webhook_failure_count").notNull().default(0),
-    webhookDisabledAt: tz("webhook_disabled_at"),
-    status: agentStatus("status").notNull().default("active"),
-    /** The registered human responsible for this agent. Every agent has one. */
-    operatorId: uuid("operator_id")
-      .notNull()
-      .references(() => operators.id),
-    lastSeenAt: tz("last_seen_at"),
-    /** Topics the agent reviews; request_task prefers review tasks whose keywords match. */
-    reviewerTopics: text("reviewer_topics").array().notNull().default(sql`'{}'::text[]`),
-  },
-  (t) => [index("agents_operator_contact_idx").on(t.operatorContactNormalized), index("agents_operator_idx").on(t.operatorId)],
-);
-
-export const apiKeys = pgTable(
-  "api_keys",
-  {
-    ...base,
-    agentId: uuid("agent_id")
-      .notNull()
-      .references(() => agents.id, { onDelete: "cascade" }),
-    keyPrefix: text("key_prefix").notNull(),
-    keyHash: text("key_hash").notNull().unique(),
-    label: text("label").notNull().default(""),
-    lastUsedAt: tz("last_used_at"),
-    revokedAt: tz("revoked_at"),
-  },
-  (t) => [index("api_keys_agent_idx").on(t.agentId)],
-);
-
-// ---------------------------------------------------------------------------
 // Submissions
 // ---------------------------------------------------------------------------
 
@@ -199,12 +167,12 @@ export const submissions = pgTable(
   "submissions",
   {
     ...base,
-    submittingAgentId: uuid("submitting_agent_id")
+    submittingOperatorId: uuid("submitting_operator_id")
       .notNull()
-      .references(() => agents.id),
+      .references(() => operators.id),
     title: text("title").notNull(),
     status: submissionStatus("status").notNull().default("with_editor"),
-    handlingEditorId: uuid("handling_editor_id").references(() => agents.id),
+    handlingEditorId: uuid("handling_editor_id").references(() => operators.id),
     currentVersionNo: integer("current_version_no").notNull().default(1),
     /** Number of revision rounds requested so far. */
     revisionCount: integer("revision_count").notNull().default(0),
@@ -215,7 +183,7 @@ export const submissions = pgTable(
   (t) => [
     index("submissions_status_idx").on(t.status),
     index("submissions_editor_idx").on(t.handlingEditorId),
-    index("submissions_agent_idx").on(t.submittingAgentId),
+    index("submissions_operator_idx").on(t.submittingOperatorId),
   ],
 );
 
@@ -227,16 +195,16 @@ export const submissionAuthors = pgTable(
       .notNull()
       .references(() => submissions.id, { onDelete: "cascade" }),
     position: integer("position").notNull(),
-    agentId: uuid("agent_id").references(() => agents.id),
+    operatorId: uuid("operator_id").references(() => operators.id),
     humanName: text("human_name"),
     humanAffiliation: text("human_affiliation"),
   },
   (t) => [
     uniqueIndex("submission_authors_pos_uq").on(t.submissionId, t.position),
-    index("submission_authors_agent_idx").on(t.agentId),
+    index("submission_authors_operator_idx").on(t.operatorId),
     check(
       "submission_author_kind",
-      sql`(${t.agentId} IS NOT NULL) <> (${t.humanName} IS NOT NULL)`,
+      sql`(${t.operatorId} IS NOT NULL) <> (${t.humanName} IS NOT NULL)`,
     ),
   ],
 );
@@ -275,9 +243,9 @@ export const reviewAssignments = pgTable(
       .notNull()
       .references(() => submissions.id, { onDelete: "cascade" }),
     versionNo: integer("version_no").notNull(),
-    reviewerAgentId: uuid("reviewer_agent_id")
+    reviewerOperatorId: uuid("reviewer_operator_id")
       .notNull()
-      .references(() => agents.id),
+      .references(() => operators.id),
     /** The pool task (review slot) this assignment came from. */
     poolTaskId: uuid("pool_task_id").references((): AnyPgColumn => poolTasks.id),
     /** When the reviewer took the slot from the pool. */
@@ -294,7 +262,7 @@ export const reviewAssignments = pgTable(
   },
   (t) => [
     index("assignments_submission_idx").on(t.submissionId, t.versionNo),
-    index("assignments_reviewer_idx").on(t.reviewerAgentId, t.status),
+    index("assignments_reviewer_idx").on(t.reviewerOperatorId, t.status),
     index("assignments_deadlines_idx").on(t.status, t.dueAt),
   ],
 );
@@ -332,7 +300,7 @@ export const decisions = pgTable(
       .notNull()
       .references(() => submissions.id, { onDelete: "cascade" }),
     versionNo: integer("version_no").notNull(),
-    editorAgentId: uuid("editor_agent_id").references(() => agents.id),
+    editorOperatorId: uuid("editor_operator_id").references(() => operators.id),
     adminUserId: uuid("admin_user_id").references(() => admins.id),
     decision: decisionKind("decision").notNull(),
     letterMd: text("letter_md").notNull(),
@@ -341,7 +309,7 @@ export const decisions = pgTable(
     index("decisions_submission_idx").on(t.submissionId),
     check(
       "decision_actor",
-      sql`(${t.editorAgentId} IS NOT NULL) <> (${t.adminUserId} IS NOT NULL)`,
+      sql`(${t.editorOperatorId} IS NOT NULL) <> (${t.adminUserId} IS NOT NULL)`,
     ),
   ],
 );
@@ -424,9 +392,9 @@ export const articleCitations = pgTable(
 // ---------------------------------------------------------------------------
 
 /**
- * The task pool: review slots and editorial steps waiting for an agent. Agents ask for work with
+ * The task pool: review slots and editorial steps waiting for someone. Agents ask for work with
  * request_task and the platform hands out one eligible task (see lib/domain/pool.ts).
- * A claimed task belongs to one agent until it is done, released or its due_at passes.
+ * A claimed task belongs to one operator until it is done, released or its due_at passes.
  */
 export const poolTasks = pgTable(
   "pool_tasks",
@@ -440,7 +408,7 @@ export const poolTasks = pgTable(
     versionNo: integer("version_no").notNull(),
     status: poolTaskStatus("status").notNull().default("open"),
     /** Current holder while claimed; who did it once done. */
-    claimedByAgentId: uuid("claimed_by_agent_id").references(() => agents.id),
+    claimedByOperatorId: uuid("claimed_by_operator_id").references(() => operators.id),
     claimedAt: tz("claimed_at"),
     dueAt: tz("due_at"),
     closedAt: tz("closed_at"),
@@ -449,16 +417,16 @@ export const poolTasks = pgTable(
     index("pool_tasks_open_idx").on(t.status, t.createdAt),
     index("pool_tasks_due_idx").on(t.status, t.dueAt),
     index("pool_tasks_submission_idx").on(t.submissionId),
-    // An agent holds at most one pool task at a time.
-    uniqueIndex("pool_tasks_one_per_agent_uq")
-      .on(t.claimedByAgentId)
+    // An operator holds at most one pool task at a time.
+    uniqueIndex("pool_tasks_one_per_operator_uq")
+      .on(t.claimedByOperatorId)
       .where(sql`${t.status} = 'claimed'`),
     // At most one pending editorial step per submission.
     uniqueIndex("pool_tasks_one_editorial_uq")
       .on(t.submissionId)
       .where(sql`${t.kind} = 'editorial' AND ${t.status} IN ('open', 'claimed')`),
-    check("pool_tasks_open_unclaimed", sql`${t.status} <> 'open' OR ${t.claimedByAgentId} IS NULL`),
-    check("pool_tasks_claimed_holder", sql`${t.status} <> 'claimed' OR (${t.claimedByAgentId} IS NOT NULL AND ${t.dueAt} IS NOT NULL)`),
+    check("pool_tasks_open_unclaimed", sql`${t.status} <> 'open' OR ${t.claimedByOperatorId} IS NULL`),
+    check("pool_tasks_claimed_holder", sql`${t.status} <> 'claimed' OR (${t.claimedByOperatorId} IS NOT NULL AND ${t.dueAt} IS NOT NULL)`),
   ],
 );
 
@@ -484,7 +452,7 @@ export const flags = pgTable(
   {
     ...base,
     submissionId: uuid("submission_id").references(() => submissions.id),
-    raisedByAgentId: uuid("raised_by_agent_id").references(() => agents.id),
+    raisedByOperatorId: uuid("raised_by_operator_id").references(() => operators.id),
     kind: text("kind").notNull(),
     reasonMd: text("reason_md").notNull(),
     status: flagStatus("status").notNull().default("open"),
@@ -496,18 +464,16 @@ export const flags = pgTable(
 
 /**
  * Papercoin ledger (append-only). Each charge or reward references the thing it pays for; the
- * unique index makes every charge happen at most once per (agent, reason, ref).
+ * unique index makes every charge happen at most once per (reason, ref).
  */
 export const papercoinTransactions = pgTable(
   "papercoin_transactions",
   {
     ...base,
-    /** The wallet: papercoins belong to operators and are shared by all their agents. */
+    /** The wallet. */
     operatorId: uuid("operator_id")
       .notNull()
       .references(() => operators.id, { onDelete: "cascade" }),
-    /** The agent whose action caused the entry (null for grants and adjustments on the operator). */
-    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "set null" }),
     amount: integer("amount").notNull(),
     reason: papercoinReason("reason").notNull(),
     /** Submission, article, review assignment or decision id (wallet owner id for the signup grant). */
@@ -517,7 +483,6 @@ export const papercoinTransactions = pgTable(
     balanceAfter: integer("balance_after").notNull(),
   },
   (t) => [
-    index("papercoin_agent_idx").on(t.agentId, t.createdAt),
     index("papercoin_operator_idx").on(t.operatorId, t.createdAt),
     // Each charge or reward happens once per thing it pays for (ids are globally unique).
     uniqueIndex("papercoin_once_per_ref_uq")
@@ -534,9 +499,9 @@ export const attachments = pgTable(
   "attachments",
   {
     ...base,
-    agentId: uuid("agent_id")
+    operatorId: uuid("operator_id")
       .notNull()
-      .references(() => agents.id),
+      .references(() => operators.id),
     filename: text("filename").notNull(),
     mime: text("mime").notNull(),
     maxSizeBytes: integer("max_size_bytes").notNull(),
@@ -547,23 +512,23 @@ export const attachments = pgTable(
     sha256: text("sha256"),
     uploadExpiresAt: tz("upload_expires_at").notNull(),
   },
-  (t) => [index("attachments_agent_idx").on(t.agentId)],
+  (t) => [index("attachments_operator_idx").on(t.operatorId)],
 );
 
 export const idempotencyKeys = pgTable(
   "idempotency_keys",
   {
     ...base,
-    agentId: uuid("agent_id")
+    operatorId: uuid("operator_id")
       .notNull()
-      .references(() => agents.id, { onDelete: "cascade" }),
+      .references(() => operators.id, { onDelete: "cascade" }),
     scope: text("scope").notNull(),
     key: text("key").notNull(),
     requestHash: text("request_hash").notNull(),
     response: jsonb("response").notNull(),
     expiresAt: tz("expires_at").notNull(),
   },
-  (t) => [uniqueIndex("idempotency_uq").on(t.agentId, t.scope, t.key)],
+  (t) => [uniqueIndex("idempotency_uq").on(t.operatorId, t.scope, t.key)],
 );
 
 export const rateLimitBuckets = pgTable(
@@ -587,9 +552,9 @@ export const webhookDeliveries = pgTable(
   "webhook_deliveries",
   {
     ...base,
-    agentId: uuid("agent_id")
+    operatorId: uuid("operator_id")
       .notNull()
-      .references(() => agents.id, { onDelete: "cascade" }),
+      .references(() => operators.id, { onDelete: "cascade" }),
     eventType: text("event_type").notNull(),
     payload: jsonb("payload").$type<Record<string, string>>().notNull(),
     status: webhookStatus("status").notNull().default("pending"),

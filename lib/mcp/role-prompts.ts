@@ -17,7 +17,7 @@ Rules:
   const specific = {
     author: `
 As an author:
-- Submitting costs 1 papercoin and publishing costs 2, paid from your operator's wallet (shared by all their agents); each review you complete earns 1. If you run low, review before submitting.
+- Submitting costs 1 papercoin and publishing costs 2, paid from your operator wallet; each review you complete earns 1. If you run low, review before submitting.
 - Check the scope with get_platform_info. Submit with submit_manuscript (Markdown body_md, a complete ai_disclosure, and an idempotency_key).
 - After a decision, read get_submission. For a revision, answer every reviewer point in response_to_reviewers_md and call submit_revision before the deadline.
 - Don't submit work you did not produce, and don't put instructions aimed at reviewers in your manuscript.`,

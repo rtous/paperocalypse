@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import { isIP } from "node:net";
 import { and, asc, eq, lte, sql } from "drizzle-orm";
-import { agents, webhookDeliveries } from "@/lib/db/schema";
+import { operators, webhookDeliveries } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 
 /**
@@ -9,7 +9,7 @@ import type { Db } from "@/lib/db/types";
  *   x-paperocalypse-signature: sha256=HMAC_SHA256(secret, `${timestamp}.${body}`)
  * Only https URLs; private, loopback and link-local addresses are refused at connect time
  * (see lib/webhook-fetch.ts). No redirects, 5 s timeout, at most 3 retries with backoff.
- * After 10 consecutive failed deliveries the agent's webhook is disabled.
+ * After 10 consecutive failed deliveries the operator's webhook is disabled.
  */
 
 export const MAX_ATTEMPTS = 4; // the first try + 3 retries
@@ -114,7 +114,7 @@ export async function deliverWebhooks(db: Db, send: WebhookFetch, now: Date, bat
         .where(and(eq(webhookDeliveries.id, id), eq(webhookDeliveries.status, "pending")))
         .for("update", { skipLocked: true });
       if (!d || d.nextAttemptAt > now) return null;
-      const [agent] = await tx.select().from(agents).where(eq(agents.id, d.agentId));
+      const [op] = await tx.select().from(operators).where(eq(operators.id, d.operatorId));
 
       const fail = async (error: string, permanent = false) => {
         const attempts = d.attempts + 1;
@@ -129,30 +129,30 @@ export async function deliverWebhooks(db: Db, send: WebhookFetch, now: Date, bat
             updatedAt: now,
           })
           .where(eq(webhookDeliveries.id, d.id));
-        if (final && agent) {
-          const failures = agent.webhookFailureCount + 1;
+        if (final && op) {
+          const failures = op.webhookFailureCount + 1;
           await tx
-            .update(agents)
+            .update(operators)
             .set({
               webhookFailureCount: failures,
-              ...(failures >= DISABLE_AFTER_FAILURES && !agent.webhookDisabledAt ? { webhookDisabledAt: now } : {}),
+              ...(failures >= DISABLE_AFTER_FAILURES && !op.webhookDisabledAt ? { webhookDisabledAt: now } : {}),
               updatedAt: now,
             })
-            .where(eq(agents.id, agent.id));
+            .where(eq(operators.id, op.id));
         }
         return final ? "failed" : "retried";
       };
 
-      if (!agent?.webhookUrl || !agent.webhookSecret || agent.webhookDisabledAt || agent.status !== "active") {
-        return fail("webhook not configured, disabled or agent suspended", true);
+      if (!op?.webhookUrl || !op.webhookSecret || op.webhookDisabledAt || op.status !== "active") {
+        return fail("webhook not configured, disabled or operator suspended", true);
       }
-      const bad = checkWebhookUrl(agent.webhookUrl);
+      const bad = checkWebhookUrl(op.webhookUrl);
       if (bad) return fail(`webhook_url ${bad}`, true);
 
       const timestamp = String(Math.floor(now.getTime() / 1000));
       const body = JSON.stringify({ id: d.id, type: d.eventType, created_at: d.createdAt.toISOString(), data: d.payload });
       try {
-        const res = await send(agent.webhookUrl, {
+        const res = await send(op.webhookUrl, {
           method: "POST",
           headers: {
             "content-type": "application/json",
@@ -160,7 +160,7 @@ export async function deliverWebhooks(db: Db, send: WebhookFetch, now: Date, bat
             "x-paperocalypse-event": d.eventType,
             "x-paperocalypse-delivery": d.id,
             "x-paperocalypse-timestamp": timestamp,
-            "x-paperocalypse-signature": signWebhook(agent.webhookSecret, timestamp, body),
+            "x-paperocalypse-signature": signWebhook(op.webhookSecret, timestamp, body),
           },
           body,
           signal: AbortSignal.timeout(5000),
@@ -170,8 +170,8 @@ export async function deliverWebhooks(db: Db, send: WebhookFetch, now: Date, bat
             .update(webhookDeliveries)
             .set({ status: "delivered", attempts: d.attempts + 1, deliveredAt: now, lastError: null, updatedAt: now })
             .where(eq(webhookDeliveries.id, d.id));
-          if (agent.webhookFailureCount > 0) {
-            await tx.update(agents).set({ webhookFailureCount: 0, updatedAt: now }).where(eq(agents.id, agent.id));
+          if (op.webhookFailureCount > 0) {
+            await tx.update(operators).set({ webhookFailureCount: 0, updatedAt: now }).where(eq(operators.id, op.id));
           }
           return "delivered";
         }

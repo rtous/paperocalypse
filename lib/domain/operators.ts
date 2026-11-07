@@ -1,22 +1,95 @@
-import { randomBytes } from "node:crypto";
-import { and, eq, isNull } from "drizzle-orm";
-import { agents, apiKeys, operators } from "@/lib/db/schema";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { and, eq, isNull, lt, or } from "drizzle-orm";
+import { operators } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
-import type { Actor } from "./actor";
-import { createAgent, issueApiKey, revokeApiKey } from "./agents";
+import type { Actor, OperatorActor } from "./actor";
 import { DomainError, notAuthorized, notFound, validationError } from "./errors";
 import { recordEvent } from "./events";
 import { grantOperatorWelcome } from "./papercoins";
 import { checkWebhookUrl } from "./webhooks";
 
 /**
- * Human operators. They sign in with GitHub, create their agents (and API keys) in /operator,
- * and see what their agents are doing. Agents created this way carry the operator's name and
- * email as operator_name / operator_contact, so conflict-of-interest checks and contributor
- * rankings group every agent of one human together.
+ * Operators: the humans who take part. They sign in with GitHub and get one API key. Any agent
+ * that uses the key acts as the operator; agents have no identity of their own.
  */
 
-export type OperatorActor = Actor & { type: "operator" };
+export type { OperatorActor };
+
+// ---------------------------------------------------------------------------
+// API keys (one per operator)
+// ---------------------------------------------------------------------------
+
+export const API_KEY_PREFIX = "pk_live_";
+
+function pepper(): string {
+  const p = process.env.API_KEY_PEPPER;
+  if (!p || p.length < 16) throw new Error("API_KEY_PEPPER must be set (at least 16 characters)");
+  return p;
+}
+
+export function hashApiKey(plain: string): string {
+  return createHmac("sha256", pepper()).update(plain).digest("hex");
+}
+
+/** A new random key. The plain value is returned once and never stored. */
+export function generateApiKey(): { plain: string; prefix: string; hash: string } {
+  const secret = randomBytes(32).toString("base64url");
+  const plain = `${API_KEY_PREFIX}${secret}`;
+  // The prefix is the first 8 characters of the random part (the "pk_live_" part is constant).
+  return { plain, prefix: secret.slice(0, 8), hash: hashApiKey(plain) };
+}
+
+/** Give the operator a new API key. Their previous key, if any, stops working at once. */
+export async function issueApiKey(tx: Db, actor: Actor, operatorId: string, now: Date): Promise<{ apiKey: string; keyPrefix: string }> {
+  const key = generateApiKey();
+  const [row] = await tx
+    .update(operators)
+    .set({ apiKeyHash: key.hash, apiKeyPrefix: key.prefix, apiKeyCreatedAt: now, apiKeyLastUsedAt: null, updatedAt: now })
+    .where(eq(operators.id, operatorId))
+    .returning({ id: operators.id });
+  if (!row) throw notFound("Operator");
+  await recordEvent(tx, actor, "api_key.issued", { payload: { operator_id: operatorId, key_prefix: key.prefix }, now });
+  return { apiKey: key.plain, keyPrefix: key.prefix };
+}
+
+/** Remove the operator's API key: nothing can act for them over MCP until they get a new one. */
+export async function revokeApiKey(tx: Db, actor: Actor, operatorId: string, now: Date): Promise<void> {
+  const [row] = await tx
+    .update(operators)
+    .set({ apiKeyHash: null, apiKeyPrefix: null, apiKeyCreatedAt: null, apiKeyLastUsedAt: null, updatedAt: now })
+    .where(eq(operators.id, operatorId))
+    .returning({ id: operators.id });
+  if (!row) throw notFound("Operator");
+  await recordEvent(tx, actor, "api_key.revoked", { payload: { operator_id: operatorId }, now });
+}
+
+/**
+ * Resolve a bearer token to an active operator. Returns null for unknown keys and suspended
+ * operators. Updates api_key_last_used_at (at most once a minute).
+ */
+export async function verifyApiKey(db: Db, plain: string, now: Date): Promise<{ operatorId: string } | null> {
+  if (!plain.startsWith(API_KEY_PREFIX) || plain.length > 200) return null;
+  const hash = hashApiKey(plain);
+  const [row] = await db
+    .select({ id: operators.id, hash: operators.apiKeyHash, status: operators.status })
+    .from(operators)
+    .where(eq(operators.apiKeyHash, hash))
+    .limit(1);
+  if (!row?.hash) return null;
+  // The lookup is by hash already; compare again in constant time as defence in depth.
+  if (!timingSafeEqual(Buffer.from(row.hash, "hex"), Buffer.from(hash, "hex"))) return null;
+  if (row.status !== "active") return null;
+  const stale = new Date(now.getTime() - 60_000);
+  await db
+    .update(operators)
+    .set({ apiKeyLastUsedAt: now })
+    .where(and(eq(operators.id, row.id), or(isNull(operators.apiKeyLastUsedAt), lt(operators.apiKeyLastUsedAt, stale))));
+  return { operatorId: row.id };
+}
+
+// ---------------------------------------------------------------------------
+// Accounts
+// ---------------------------------------------------------------------------
 
 /** Create or refresh an operator account on GitHub sign-in. Returns null for suspended accounts. */
 export async function upsertOperatorFromLogin(
@@ -55,105 +128,73 @@ async function requireActiveOperator(db: Db, actor: OperatorActor) {
   return op;
 }
 
-/** The agent, if it belongs to this operator; NOT_FOUND otherwise (no probing other operators' agents). */
-export async function requireOwnAgent(db: Db, actor: OperatorActor, agentId: string) {
-  const [a] = await db
-    .select()
-    .from(agents)
-    .where(and(eq(agents.id, agentId), eq(agents.operatorId, actor.operatorId)));
-  if (!a) throw notFound("Agent");
-  return a;
-}
-
-/** Create an agent owned by the operator and its first API key (shown once). */
-export async function createOperatorAgent(
-  db: Db,
-  actor: OperatorActor,
-  input: { displayName: string; description: string; webhookUrl?: string | null },
-  now: Date,
-) {
-  const displayName = input.displayName.trim();
-  if (displayName.length < 2 || displayName.length > 80) throw validationError("The agent name must be 2 to 80 characters.");
-  if (input.description.length > 2000) throw validationError("The description is too long (max 2000 characters).");
-  const webhookProblem = input.webhookUrl ? checkWebhookUrl(input.webhookUrl) : null;
-  if (webhookProblem) throw validationError(`webhook_url ${webhookProblem}.`);
-
-  return db.transaction(async (tx) => {
-    const op = await requireActiveOperator(tx, actor);
-    const agent = await createAgent(
-      tx,
-      actor,
-      { displayName, description: input.description.trim(), webhookUrl: input.webhookUrl || null, operatorId: op.id },
-      now,
-    );
-    const key = await issueApiKey(tx, actor, agent.id, "created in dashboard", now);
-    return { agent: { ...agent, operatorId: op.id }, apiKey: key.apiKey, keyPrefix: key.keyPrefix };
-  });
-}
-
-export async function operatorIssueKey(db: Db, actor: OperatorActor, agentId: string, label: string, now: Date) {
+/** The operator issues (or replaces) their own API key on the dashboard. */
+export async function operatorIssueKey(db: Db, actor: OperatorActor, now: Date) {
   return db.transaction(async (tx) => {
     await requireActiveOperator(tx, actor);
-    const a = await requireOwnAgent(tx, actor, agentId);
-    if (a.status !== "active") throw new DomainError("INVALID_STATE", "This agent is suspended by the platform admins.");
-    return issueApiKey(tx, actor, agentId, label.trim().slice(0, 100) || "dashboard", now);
+    return issueApiKey(tx, actor, actor.operatorId, now);
   });
 }
 
-export async function operatorRevokeKey(db: Db, actor: OperatorActor, keyId: string, now: Date) {
+export async function operatorRevokeKey(db: Db, actor: OperatorActor, now: Date) {
   return db.transaction(async (tx) => {
-    const [k] = await tx
-      .select({ agentId: apiKeys.agentId })
-      .from(apiKeys)
-      .innerJoin(agents, eq(agents.id, apiKeys.agentId))
-      .where(and(eq(apiKeys.id, keyId), eq(agents.operatorId, actor.operatorId), isNull(apiKeys.revokedAt)));
-    if (!k) throw notFound("Active API key");
-    await revokeApiKey(tx, actor, keyId, now);
+    const op = await requireActiveOperator(tx, actor);
+    if (!op.apiKeyHash) throw notFound("API key");
+    await revokeApiKey(tx, actor, actor.operatorId, now);
   });
 }
 
-export async function operatorUpdateAgent(
+/** Lower-cased, trimmed, de-duplicated, at most 30. */
+export function normalizeTopics(topics: string[]): string[] {
+  return [...new Set(topics.map((t) => t.trim().toLowerCase()).filter(Boolean))].slice(0, 30);
+}
+
+/**
+ * Change reviewer topics and/or the webhook. A new webhook URL gets a fresh signing secret,
+ * returned once; null clears the webhook.
+ */
+export async function updateOperatorProfile(
   db: Db,
   actor: OperatorActor,
-  agentId: string,
-  input: { description: string; webhookUrl: string | null },
+  input: { reviewerTopics?: string[]; webhookUrl?: string | null },
   now: Date,
 ) {
   const webhookProblem = input.webhookUrl ? checkWebhookUrl(input.webhookUrl) : null;
-  if (webhookProblem) throw validationError(`webhook_url ${webhookProblem}.`);
+  if (webhookProblem) throw new DomainError("VALIDATION_ERROR", `webhook_url ${webhookProblem}.`);
   return db.transaction(async (tx) => {
-    const a = await requireOwnAgent(tx, actor, agentId);
-    const urlChanged = (input.webhookUrl || null) !== a.webhookUrl;
-    const secret = urlChanged && input.webhookUrl ? randomBytes(32).toString("hex") : undefined;
-    await tx
-      .update(agents)
-      .set({
-        description: input.description.trim().slice(0, 2000),
-        ...(urlChanged
-          ? { webhookUrl: input.webhookUrl || null, webhookSecret: secret ?? null, webhookFailureCount: 0, webhookDisabledAt: null }
-          : {}),
-        updatedAt: now,
-      })
-      .where(eq(agents.id, agentId));
-    await recordEvent(tx, actor, "agent.profile_updated", { payload: { agent_id: agentId, webhook_changed: urlChanged }, now });
-    return { webhookSecret: secret ?? null };
+    const op = await requireActiveOperator(tx, actor);
+    const set: Partial<typeof operators.$inferInsert> = { updatedAt: now };
+    if (input.reviewerTopics !== undefined) set.reviewerTopics = normalizeTopics(input.reviewerTopics);
+    let secret: string | null = null;
+    if (input.webhookUrl !== undefined && (input.webhookUrl || null) !== op.webhookUrl) {
+      secret = input.webhookUrl ? randomBytes(32).toString("hex") : null;
+      Object.assign(set, { webhookUrl: input.webhookUrl || null, webhookSecret: secret, webhookFailureCount: 0, webhookDisabledAt: null });
+    }
+    await tx.update(operators).set(set).where(eq(operators.id, actor.operatorId));
+    await recordEvent(tx, actor, "operator.profile_updated", {
+      payload: { fields: Object.keys(input).filter((k) => (input as Record<string, unknown>)[k] !== undefined) },
+      now,
+    });
+    return { webhookSecret: secret };
   });
 }
 
-/** Change the operator's public name; their agents' operator_name follows. */
+/** Change the operator's public name (shown as the author of their papers and in rankings). */
 export async function updateOperatorName(db: Db, actor: OperatorActor, name: string, now: Date) {
   const clean = name.trim();
   if (clean.length < 2 || clean.length > 120) throw validationError("The name must be 2 to 120 characters.");
   await db.transaction(async (tx) => {
     await tx.update(operators).set({ name: clean, updatedAt: now }).where(eq(operators.id, actor.operatorId));
-    await tx.update(agents).set({ operatorName: clean, updatedAt: now }).where(eq(agents.operatorId, actor.operatorId));
     await recordEvent(tx, actor, "operator.renamed", { payload: { name: clean }, now });
   });
 }
 
-/** An active operator by email (admins attach new editor agents to one). */
-export async function findOperatorByEmail(db: Db, email: string) {
-  const [op] = await db.select().from(operators).where(eq(operators.email, email.trim().toLowerCase()));
-  if (!op || op.status !== "active") throw validationError("No active operator with that email. They must sign in once at /login first.");
-  return op;
+/** Admins suspend or reactivate an operator. A suspended operator can't sign in or use the API. */
+export async function setOperatorStatus(db: Db, actor: Actor, operatorId: string, status: "active" | "suspended", now: Date) {
+  if (actor.type !== "admin") throw notAuthorized("Only admins can suspend or reactivate operators.");
+  await db.transaction(async (tx) => {
+    const [row] = await tx.update(operators).set({ status, updatedAt: now }).where(eq(operators.id, operatorId)).returning({ id: operators.id });
+    if (!row) throw notFound("Operator");
+    await recordEvent(tx, actor, `operator.${status === "active" ? "reactivated" : "suspended"}`, { payload: { operator_id: operatorId }, now });
+  });
 }

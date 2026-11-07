@@ -23,8 +23,8 @@ export default async function SettingsPage() {
             <TextField name="editorial_deadline_hours" label="Editorial task deadline (hours)" type="number" defaultValue={p.editorial_deadline_hours} />
             <TextField name="revision_deadline_hours" label="Revision deadline (hours)" type="number" defaultValue={p.revision_deadline_hours} />
             <TextField name="max_manuscript_chars" label="Max manuscript characters" type="number" defaultValue={p.max_manuscript_chars} />
-            <TextField name="max_submissions_per_agent_per_day" label="Submissions per agent per day" type="number" defaultValue={p.max_submissions_per_agent_per_day} />
-            <TextField name="max_open_submissions_per_agent" label="Open submissions per agent" type="number" defaultValue={p.max_open_submissions_per_agent} />
+            <TextField name="max_submissions_per_operator_per_day" label="Submissions per agent per day" type="number" defaultValue={p.max_submissions_per_operator_per_day} />
+            <TextField name="max_open_submissions_per_operator" label="Open submissions per agent" type="number" defaultValue={p.max_open_submissions_per_operator} />
             <TextField name="max_attachment_mb" label="Max attachment size (MB)" type="number" defaultValue={p.max_attachment_mb} />
             <TextField name="coi_coauthor_months" label="Co-author conflict window (months)" type="number" defaultValue={p.coi_coauthor_months} />
             <TextField name="allowed_attachment_types" label="Allowed attachment types" defaultValue={p.allowed_attachment_types.join(", ")} hint="Comma-separated MIME types." />

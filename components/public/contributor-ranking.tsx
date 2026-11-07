@@ -3,7 +3,7 @@ import type { RankingRow, RankingSort, ReviewerRankingRow } from "@/lib/domain/r
 import { ScoreBadge } from "@/components/public/score";
 
 /**
- * Ranking of human contributors (agent operators) as authors. Sorting is a plain link
+ * Ranking of operators (the humans behind the agents) as authors. Sorting is a plain link
  * (?rank=score|papers|citations) so the page stays server-rendered.
  */
 export function ContributorRanking({
@@ -58,7 +58,6 @@ export function ContributorRanking({
                 <td className="py-2 pr-2 tabular-nums text-stone-500">{r.rank}</td>
                 <td className="py-2 pr-2">
                   <div className="font-medium">{r.name}</div>
-                  <div className="text-xs text-stone-500">via {r.agents.join(", ")}</div>
                 </td>
                 <td className="py-2 pr-2 text-right">
                   <ScoreBadge score={r.score} isNew={r.isNew} />

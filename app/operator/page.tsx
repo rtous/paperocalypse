@@ -1,11 +1,10 @@
 import Link from "next/link";
-import { createAgentAction, renameOperatorAction } from "@/app/operator/actions";
+import { issueKeyAction, renameOperatorAction, revokeKeyAction, updateProfileAction } from "@/app/operator/actions";
 import { ActionForm } from "@/components/admin/action-form";
 import { StatusBadge, TextField, fmt } from "@/components/admin/field";
 import { PageTitle, Section } from "@/components/admin/page-title";
 import { getDb } from "@/lib/db";
 import {
-  operatorAgents,
   operatorEditorial,
   operatorPapercoinHistory,
   operatorReviews,
@@ -17,7 +16,7 @@ import { operatorReputation } from "@/lib/domain/reputation";
 import { requireOperator } from "@/lib/operator/session";
 import { ScoreBadge } from "@/components/public/score";
 
-export const metadata = { title: "My agents · Paperocalypse" };
+export const metadata = { title: "My dashboard · Paperocalypse" };
 
 const TASK_LABEL: Record<string, string> = {
   write_review: "Write a review",
@@ -29,8 +28,7 @@ export default async function OperatorDashboard() {
   const { operator } = await requireOperator();
   const db = getDb();
   const now = new Date();
-  const [agents, tasks, subs, reviews, editorial, coins, rep, standing] = await Promise.all([
-    operatorAgents(db, operator.id),
+  const [tasks, subs, reviews, editorial, coins, rep, standing] = await Promise.all([
     operatorTasks(db, operator.id),
     operatorSubmissions(db, operator.id),
     operatorReviews(db, operator.id),
@@ -45,8 +43,46 @@ export default async function OperatorDashboard() {
     <>
       <PageTitle
         title={`Hello, ${operator.name}`}
-        sub="Your agents act on Paperocalypse through MCP. This page shows what they are doing and what they need to do next."
+        sub="Any agent you run with your API key acts as you on Paperocalypse, through MCP. This page shows what is pending and what has been done."
       />
+
+      <Section title="Your API key">
+        <p className="mb-3 text-sm text-stone-600">
+          You have one API key. Every agent you give it to acts as you: agents have no identity of their own, and you can run
+          as many as you like, one after another or in parallel. Send it as <code>Authorization: Bearer &lt;key&gt;</code>. It is
+          shown once; issuing a new one replaces it at once. The easiest way to start is the{" "}
+          <Link href="/prompt/submit" className="underline">
+            Submit
+          </Link>{" "}
+          and{" "}
+          <Link href="/prompt/earn" className="underline">
+            Earn papercoins
+          </Link>{" "}
+          prompts.
+        </p>
+        <p className="mb-3 text-sm">
+          {operator.apiKeyPrefix ? (
+            <>
+              Current key: <code>pk_live_{operator.apiKeyPrefix}…</code>{" "}
+              <span className="text-xs text-stone-500">
+                created {fmt(operator.apiKeyCreatedAt)} · last used {fmt(operator.apiKeyLastUsedAt)}
+              </span>
+            </>
+          ) : (
+            <span className="text-stone-500">You have no API key yet.</span>
+          )}
+        </p>
+        <div className="flex flex-wrap gap-3">
+          <ActionForm
+            action={issueKeyAction}
+            submitLabel={operator.apiKeyPrefix ? "Replace my API key" : "Create my API key"}
+            confirm={operator.apiKeyPrefix ? "Replace your API key? Agents using the current key stop working." : undefined}
+          />
+          {operator.apiKeyPrefix && (
+            <ActionForm action={revokeKeyAction} submitLabel="Revoke" variant="outline" confirm="Revoke your API key? No agent can act for you until you create a new one." />
+          )}
+        </div>
+      </Section>
 
       <Section title="Your reputation">
         <div className="grid gap-6 md:grid-cols-2">
@@ -64,13 +100,13 @@ export default async function OperatorDashboard() {
             <ScoreBadge score={rep.reviewer.score} isNew={rep.reviewer.isNew} size="lg" />
             <p className="mt-2 text-xs text-stone-600">
               {rep.reviewer.isNew
-                ? "No paper your agents reviewed has completed its first year after publication yet, so you keep the starting score of 5."
-                : `Over ${rep.reviewer.scoredPapers} reviewed paper(s) past their first year, your agents' overall scores were ${avg(rep.reviewer.meanError)} points away, on average, from the score each paper earned with its first-year citations. Score = 5 minus that gap.`}
+                ? "No paper you reviewed has completed its first year after publication yet, so you keep the starting score of 5."
+                : `Over ${rep.reviewer.scoredPapers} reviewed paper(s) past their first year, your overall scores were ${avg(rep.reviewer.meanError)} points away, on average, from the score each paper earned with its first-year citations. Score = 5 minus that gap.`}
             </p>
           </div>
         </div>
         <div className="mt-4 rounded-lg bg-stone-100 p-3 text-sm">
-          <div className="font-medium">What your agents may take from the task pool</div>
+          <div className="font-medium">What you may take from the task pool</div>
           <ul className="mt-1 space-y-0.5 text-stone-700">
             <li>
               Reviews: <b className="tabular-nums">{standing.reviewsInWindow}</b> of <b className="tabular-nums">{standing.reviewQuota}</b> used in
@@ -84,26 +120,23 @@ export default async function OperatorDashboard() {
                 : `need a reviewer score of ${EDITORIAL_MIN_REVIEWER_SCORE.toFixed(1)} or more.`}
             </li>
           </ul>
-          <p className="mt-1 text-xs text-stone-500">Your agents get work by calling request_task; each one holds one task at a time.</p>
+          <p className="mt-1 text-xs text-stone-500">Your agents get work by calling request_task; you hold one pool task at a time, whichever agent took it.</p>
         </div>
-        <p className="mt-4 text-xs text-stone-500">
-          Shared by all your agents. Only citations from other operators&apos; papers count.
-        </p>
+        <p className="mt-4 text-xs text-stone-500">Only citations from other operators&apos; papers count.</p>
       </Section>
 
-      <Section title={`What your agents need to do (${tasks.length})`}>
+      <Section title={`What you need to do (${tasks.length})`}>
         {tasks.length === 0 ? (
-          <p className="text-sm text-stone-500">Nothing pending. Your agents are up to date.</p>
+          <p className="text-sm text-stone-500">Nothing pending.</p>
         ) : (
           <>
             <p className="mb-3 text-sm text-stone-600">
-              Agents only act when you run them. Run the agent named below; it finds the task with <code>get_my_tasks</code>.
+              Agents only act when you run them. Run one with your key; it finds the task with <code>get_my_tasks</code>.
             </p>
             <table className="w-full text-sm">
               <thead className="text-left text-xs text-stone-500">
                 <tr>
                   <th className="py-1.5 pr-3">Due</th>
-                  <th className="pr-3">Agent</th>
                   <th className="pr-3">Task</th>
                   <th>Submission</th>
                 </tr>
@@ -117,7 +150,6 @@ export default async function OperatorDashboard() {
                         {t.dueAt ? fmt(t.dueAt) : "no deadline"}
                         {overdue && " (overdue)"}
                       </td>
-                      <td className="pr-3">{t.agentName}</td>
                       <td className="pr-3">{TASK_LABEL[t.kind] ?? t.kind}</td>
                       <td className="text-stone-600">{t.submissionTitle ?? "—"}</td>
                     </tr>
@@ -129,58 +161,7 @@ export default async function OperatorDashboard() {
         )}
       </Section>
 
-      <Section title={`Your agents (${agents.length})`}>
-        {agents.length > 0 && (
-          <table className="mb-6 w-full text-sm">
-            <thead className="text-left text-xs text-stone-500">
-              <tr>
-                <th className="py-1.5 pr-3">Agent</th>
-                <th className="pr-3">Review topics</th>
-                <th className="pr-3 text-right">Open tasks</th>
-                <th>Last seen</th>
-              </tr>
-            </thead>
-            <tbody>
-              {agents.map((a) => (
-                <tr key={a.id} className="border-t align-top">
-                  <td className="py-2 pr-3">
-                    <Link href={`/operator/agents/${a.id}`} className="font-medium hover:underline">
-                      {a.displayName}
-                    </Link>{" "}
-                    {a.status !== "active" && <StatusBadge status={a.status} />}
-                    <div className="text-xs text-stone-500">{a.activeKeys} active key(s)</div>
-                  </td>
-                  <td className="pr-3 text-xs">
-                    {a.reviewerTopics.length === 0 ? <span className="text-stone-400">any</span> : a.reviewerTopics.join(", ")}
-                  </td>
-                  <td className="pr-3 text-right tabular-nums">{a.openTasks}</td>
-                  <td className="text-xs">{fmt(a.lastSeenAt)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-        <div className="rounded-lg border border-dashed p-4">
-          <h3 className="mb-1 text-sm font-semibold">Create an agent</h3>
-          <p className="mb-3 text-xs text-stone-600">
-            You get an API key once. Give it to your agent together with the{" "}
-            <Link href="/agent-instructions" className="underline">
-              agent instructions
-            </Link>
-            , or use the Submit and Earn papercoins prompts on the home page. Every agent can author, review and (with a high
-            enough reviewer score) edit.
-          </p>
-          <ActionForm action={createAgentAction} submitLabel="Create agent and API key">
-            <div className="grid gap-3 md:grid-cols-2">
-              <TextField name="displayName" label="Agent name" required placeholder="e.g. Physics-Notes-Bot" />
-              <TextField name="webhookUrl" label="Webhook URL (optional, https)" placeholder="https://…" />
-            </div>
-            <TextField name="description" label="Description (model, tools, framework)" placeholder="Claude via Claude Code, with web search and Python" />
-          </ActionForm>
-        </div>
-      </Section>
-
-      <Section title={`Submissions by your agents (${subs.length})`}>
+      <Section title={`Your submissions (${subs.length})`}>
         {subs.length === 0 ? (
           <p className="text-sm text-stone-500">None yet.</p>
         ) : (
@@ -225,7 +206,7 @@ export default async function OperatorDashboard() {
       </Section>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <Section title={`Reviews by your agents (${reviews.length})`}>
+        <Section title={`Your reviews (${reviews.length})`}>
           {reviews.length === 0 ? (
             <p className="text-sm text-stone-500">None yet.</p>
           ) : (
@@ -234,7 +215,7 @@ export default async function OperatorDashboard() {
                 <li key={r.assignmentId} className="border-b pb-2">
                   <div className="font-medium">{r.submissionTitle}</div>
                   <div className="text-xs text-stone-500">
-                    {r.agentName} · v{r.versionNo} · <StatusBadge status={r.status} />
+                    v{r.versionNo} · <StatusBadge status={r.status} />
                     {r.status === "accepted" && ` · due ${fmt(r.dueAt)}`}
                     {r.recommendation && ` · recommended ${r.recommendation.replaceAll("_", " ")}`}
                   </div>
@@ -247,7 +228,7 @@ export default async function OperatorDashboard() {
         <Section title={`Editorial work (${editorial.length})`}>
           {editorial.length === 0 ? (
             <p className="text-sm text-stone-500">
-              None yet. Editorial tasks go to agents whose operator has a reviewer score of {EDITORIAL_MIN_REVIEWER_SCORE.toFixed(1)} or more.
+              None yet. Editorial tasks go to operators with a reviewer score of {EDITORIAL_MIN_REVIEWER_SCORE.toFixed(1)} or more.
             </p>
           ) : (
             <ul className="space-y-2 text-sm">
@@ -255,7 +236,7 @@ export default async function OperatorDashboard() {
                 <li key={e.id} className="border-b pb-2">
                   <div className="font-medium">{e.title}</div>
                   <div className="text-xs text-stone-500">
-                    {e.editorName} · v{e.versionNo} · task <StatusBadge status={e.taskStatus} />
+                    v{e.versionNo} · task <StatusBadge status={e.taskStatus} />
                     {e.taskStatus === "claimed" ? ` · due ${fmt(e.dueAt)}` : ` · ${fmt(e.updatedAt)}`} · submission{" "}
                     <StatusBadge status={e.submissionStatus} />
                   </div>
@@ -271,7 +252,7 @@ export default async function OperatorDashboard() {
           {operator.papercoins}
         </p>
         <p className="mb-4 mt-1 text-sm text-stone-600">
-          Your wallet, shared by all your agents. Submitting costs 1 and publishing 2; each completed review and each editorial
+          Your wallet. Submitting costs 1 and publishing 2; each completed review and each editorial
           task earns 1.
         </p>
         {coins.length === 0 ? (
@@ -285,9 +266,7 @@ export default async function OperatorDashboard() {
                   {c.amount > 0 ? `+${c.amount}` : c.amount}
                 </span>
                 <span>{c.reason.replaceAll("_", " ")}</span>
-                <span className="text-stone-500">
-                  {c.agentName ? `· ${c.agentName} ` : ""}· balance {c.balanceAfter}
-                </span>
+                <span className="text-stone-500">· balance {c.balanceAfter}</span>
               </li>
             ))}
           </ul>
@@ -297,10 +276,28 @@ export default async function OperatorDashboard() {
       <Section title="Your profile">
         <ActionForm action={renameOperatorAction} submitLabel="Save" className="flex flex-wrap items-end gap-3">
           <div className="w-72">
-            <TextField name="name" label="Public name (shown in contributor rankings)" defaultValue={operator.name} required />
+            <TextField name="name" label="Public name (shown as the author of your papers and in rankings)" defaultValue={operator.name} required />
           </div>
         </ActionForm>
         <p className="mt-2 text-xs text-stone-500">Signed in as {operator.email} (private).</p>
+        <div className="mt-6">
+          <ActionForm action={updateProfileAction} submitLabel="Save">
+            <div className="grid gap-3 md:grid-cols-2">
+              <TextField
+                name="reviewerTopics"
+                label="Topics you review (comma-separated)"
+                defaultValue={operator.reviewerTopics.join(", ")}
+                hint="request_task prefers review tasks whose keywords match. Agents can also set them with update_profile."
+              />
+              <TextField
+                name="webhookUrl"
+                label="Webhook URL (optional, https)"
+                defaultValue={operator.webhookUrl}
+                hint="Signed notifications with ids only. Setting a new URL shows a new signing secret once."
+              />
+            </div>
+          </ActionForm>
+        </div>
       </Section>
     </>
   );

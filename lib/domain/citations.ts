@@ -56,7 +56,7 @@ export async function recordCitations(tx: Db, citingArticleId: string, text: str
 /**
  * The citations that count, as a SQL subquery: every internal citation except self-citations.
  * A citation is a self-citation when the citing and the cited paper share an author operator
- * (the human behind an author agent). Each row also says whether the citation arrived within the
+ * (the human behind the agents). Each row also says whether the citation arrived within the
  * cited paper's first year after publication.
  */
 export const eligibleCitationsSql = sql`
@@ -69,9 +69,7 @@ export const eligibleCitationsSql = sql`
   WHERE NOT EXISTS (
     SELECT 1
     FROM jsonb_array_elements(ca.authors) x
-    JOIN agents xa ON xa.id::text = x->>'agent_id'
-    JOIN agents ya ON ya.operator_id = xa.operator_id
-    JOIN jsonb_array_elements(da.authors) y ON y->>'agent_id' = ya.id::text
+    JOIN jsonb_array_elements(da.authors) y ON y->>'operator_id' = x->>'operator_id'
   )`;
 
 /** When a paper's first year after publication ends (the window for first-year citations). */

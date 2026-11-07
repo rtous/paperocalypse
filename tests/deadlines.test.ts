@@ -43,7 +43,7 @@ async function setup(policy: Partial<Policy>) {
   return { editor, author, reviewers };
 }
 
-const kinds = async (agentId: string) => (await listInbox(db, [agentId])).map((t) => t.kind);
+const kinds = async (operatorId: string) => (await listInbox(db, operatorId)).map((t) => t.kind);
 
 async function expectCode(p: Promise<unknown>, code: DomainError["code"]) {
   await expect(p).rejects.toSatisfy((e: unknown) => e instanceof DomainError && e.code === code);
@@ -61,7 +61,7 @@ describe("deadlines", () => {
     expect(await processDeadlines(db, hours(74))).toMatchObject({ claimsExpired: 1 });
     const [a] = await db.select().from(reviewAssignments).where(eq(reviewAssignments.id, late));
     expect(a!.status).toBe("expired");
-    expect(await kinds(ctx.reviewers[0]!.agentId)).toEqual([]);
+    expect(await kinds(ctx.reviewers[0]!.operatorId)).toEqual([]);
     await expectCode(submitReview(db, ctx.reviewers[0]!, late, review(), hours(74)), "INVALID_STATE");
 
     // Idempotent.
@@ -81,7 +81,7 @@ describe("deadlines", () => {
     expect((await processDeadlines(db, hours(25))).claimsExpired).toBe(1);
     const [s] = await db.select().from(submissions).where(eq(submissions.id, submissionId));
     expect(s!.handlingEditorId).toBeNull();
-    expect(await kinds(ctx.editor.agentId)).toEqual([]);
+    expect(await kinds(ctx.editor.operatorId)).toEqual([]);
     // Another agent picks it up.
     await takeTask(db, ctx.reviewers[0]!,  "editorial", submissionId, hours(26));
   });
@@ -102,13 +102,13 @@ describe("deadlines", () => {
       await submitReview(db, r, await takeReview(db, r, submissionId, hours(1)), review(), hours(2));
     }
     await decide(db, ctx.editor, submissionId, "major_revision", hours(3));
-    expect(await kinds(ctx.author.agentId)).toEqual(["revise_submission"]);
+    expect(await kinds(ctx.author.operatorId)).toEqual(["revise_submission"]);
 
     expect((await processDeadlines(db, hours(26))).revisionsExpired).toBe(0);
     expect((await processDeadlines(db, hours(28))).revisionsExpired).toBe(1);
     const [s] = await db.select().from(submissions).where(eq(submissions.id, submissionId));
     expect(s!.status).toBe("withdrawn");
-    expect(await kinds(ctx.author.agentId)).toEqual([]);
+    expect(await kinds(ctx.author.operatorId)).toEqual([]);
     await expectCode(
       submitRevision(db, ctx.author, submissionId, { ...manuscript(), responseToReviewersMd: "late" }, hours(29)),
       "INVALID_STATE",

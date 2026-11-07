@@ -4,10 +4,10 @@ import { revalidatePath } from "next/cache";
 import { signOut } from "@/auth";
 import { requireAdmin } from "@/lib/admin/session";
 import { getDb } from "@/lib/db";
-import { issueApiKey, revokeApiKey, setAgentStatus } from "@/lib/domain/agents";
+import { revokeApiKey, setOperatorStatus } from "@/lib/domain/operators";
 import { DomainError } from "@/lib/domain/errors";
 import { savePlatformSettings } from "@/lib/domain/settings";
-import { adjustPapercoins, operatorOfAgent } from "@/lib/domain/papercoins";
+import { adjustPapercoins } from "@/lib/domain/papercoins";
 import { resolveFlag } from "@/lib/domain/queries";
 import { adminOverride } from "@/lib/domain/submissions";
 import { SUBMISSION_STATUSES, type SubmissionStatus } from "@/lib/domain/workflow";
@@ -54,33 +54,19 @@ export async function logout(): Promise<void> {
 // Agents and keys
 // ---------------------------------------------------------------------------
 
-export async function issueKeyAction(_: ActionState, fd: FormData): Promise<ActionState> {
-  const { actor } = await requireAdmin();
-  const res = await attempt(async () => {
-    const key = await getDb().transaction((tx) =>
-      issueApiKey(tx, actor, str(fd, "agentId"), str(fd, "label") || "admin-issued", new Date()),
-    );
-    return { ok: true, message: "New key issued.", secret: key.apiKey };
-  });
-  revalidatePath("/admin", "layout");
-  return res;
-}
-
 export async function revokeKeyAction(_: ActionState, fd: FormData): Promise<ActionState> {
   const { actor } = await requireAdmin();
-  const res = await attempt(() => getDb().transaction((tx) => revokeApiKey(tx, actor, str(fd, "keyId"), new Date())));
+  const res = await attempt(() => getDb().transaction((tx) => revokeApiKey(tx, actor, str(fd, "operatorId"), new Date())));
   revalidatePath("/admin", "layout");
   return res.error ? res : { ok: true, message: "Key revoked." };
 }
 
-export async function setAgentStatusAction(_: ActionState, fd: FormData): Promise<ActionState> {
+export async function setOperatorStatusAction(_: ActionState, fd: FormData): Promise<ActionState> {
   const { actor } = await requireAdmin();
   const status = str(fd, "status") === "suspended" ? "suspended" : "active";
-  const res = await attempt(() =>
-    getDb().transaction((tx) => setAgentStatus(tx, actor, str(fd, "agentId"), status, new Date())),
-  );
+  const res = await attempt(() => setOperatorStatus(getDb(), actor, str(fd, "operatorId"), status, new Date()));
   revalidatePath("/admin", "layout");
-  return res.error ? res : { ok: true, message: `Agent ${status}.` };
+  return res.error ? res : { ok: true, message: `Operator ${status}.` };
 }
 
 // ---------------------------------------------------------------------------
@@ -122,8 +108,8 @@ export async function saveSettingsAction(_: ActionState, fd: FormData): Promise<
             .map((s) => s.trim())
             .filter(Boolean),
           max_attachment_mb: num(fd, "max_attachment_mb"),
-          max_submissions_per_agent_per_day: num(fd, "max_submissions_per_agent_per_day"),
-          max_open_submissions_per_agent: num(fd, "max_open_submissions_per_agent"),
+          max_submissions_per_operator_per_day: num(fd, "max_submissions_per_operator_per_day"),
+          max_open_submissions_per_operator: num(fd, "max_open_submissions_per_operator"),
           open_review: bool(fd, "open_review"),
           coi_coauthor_months: num(fd, "coi_coauthor_months"),
         },
@@ -145,11 +131,11 @@ export async function saveSettingsAction(_: ActionState, fd: FormData): Promise<
 export async function adjustPapercoinsAction(_: ActionState, fd: FormData): Promise<ActionState> {
   const { actor } = await requireAdmin();
   const res = await attempt(async () => {
-    const operatorId = await operatorOfAgent(getDb(), str(fd, "agentId"));
+    const operatorId = str(fd, "operatorId");
     const balance = await adjustPapercoins(getDb(), actor, operatorId, num(fd, "amount"), str(fd, "note"), new Date());
     return { ok: true, message: `The operator's wallet is now ${balance}.` };
   });
-  revalidatePath("/admin/agents");
+  revalidatePath("/admin/operators");
   return res;
 }
 

@@ -53,7 +53,7 @@ export default async function ArticlePage({ params }: Props) {
         {authors.map((a, i) => (
           <span key={a.position}>
             {a.display_name}
-            <span className="text-stone-500">{a.kind === "agent" ? " (AI agent)" : a.affiliation ? ` (${a.affiliation})` : " (human)"}</span>
+            <span className="text-stone-500">{a.kind === "operator" ? " (operator)" : a.affiliation ? ` (${a.affiliation})` : " (human contributor)"}</span>
             {i < authors.length - 1 ? ", " : ""}
           </span>
         ))}
