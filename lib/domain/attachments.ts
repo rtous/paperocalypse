@@ -1,12 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, lt, sql } from "drizzle-orm";
-import { attachments, journals, reviewAssignments, submissionAuthors, submissionVersions, submissions, type Attachment } from "@/lib/db/schema";
+import { attachments, reviewAssignments, submissionAuthors, submissionVersions, submissions, type Attachment } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "./actor";
-import { requireRole } from "./agents";
 import { DomainError, notFound, validationError } from "./errors";
 import { recordEvent } from "./events";
-import { parsePolicy } from "./policy";
+import { getPolicy } from "./settings";
 
 /** Storage operations the domain needs; implemented by lib/blob.ts (Vercel Blob) and fakes in tests. */
 export interface BlobGateway {
@@ -28,7 +27,7 @@ const MAGIC: Record<string, (b: Buffer) => boolean> = {
   "image/gif": (b) => b.subarray(0, 4).toString("latin1") === "GIF8",
   "image/webp": (b) => b.subarray(0, 4).toString("latin1") === "RIFF" && b.subarray(8, 12).toString("latin1") === "WEBP",
 };
-/** Never accepted, whatever the journal policy says (active content). */
+/** Never accepted, whatever the policy says (active content). */
 const FORBIDDEN = ["image/svg+xml", "text/html", "application/xhtml+xml", "application/javascript", "text/javascript"];
 
 function safeFilename(name: string): string {
@@ -40,22 +39,14 @@ function safeFilename(name: string): string {
   return cleaned || "file";
 }
 
-async function policyFor(db: Db, journalId: string) {
-  const [j] = await db.select().from(journals).where(eq(journals.id, journalId));
-  if (!j) throw notFound("Journal");
-  return parsePolicy(j.policy);
-}
-
 export async function createAttachmentUpload(
   db: Db,
   blob: BlobGateway,
   actor: Actor & { type: "agent" },
-  journalId: string,
   input: { filename: string; mime: string; sizeBytes: number },
   now: Date,
 ) {
-  await requireRole(db, journalId, actor.agentId, "author");
-  const policy = await policyFor(db, journalId);
+  const policy = await getPolicy(db);
   const mime = input.mime.toLowerCase();
   if (FORBIDDEN.includes(mime) || !policy.allowed_attachment_types.includes(mime)) {
     throw validationError(`Attachments of type ${mime} are not allowed. Allowed: ${policy.allowed_attachment_types.join(", ")}.`);
@@ -66,7 +57,7 @@ export async function createAttachmentUpload(
   }
   const id = randomUUID();
   const filename = safeFilename(input.filename);
-  const pathname = `journals/${journalId}/attachments/${id}/${filename}`;
+  const pathname = `attachments/${id}/${filename}`;
   const validUntil = now.getTime() + UPLOAD_TTL_MS;
   const uploadUrl = await blob.presignPut(pathname, { contentType: mime, maxBytes: input.sizeBytes, validUntil });
 
@@ -74,7 +65,6 @@ export async function createAttachmentUpload(
     await tx.insert(attachments).values({
       id,
       agentId: actor.agentId,
-      journalId,
       filename,
       mime,
       maxSizeBytes: input.sizeBytes,
@@ -83,7 +73,7 @@ export async function createAttachmentUpload(
       createdAt: now,
       updatedAt: now,
     });
-    await recordEvent(tx, actor, "attachment.upload_created", { journalId, payload: { attachment_id: id, mime, filename }, now });
+    await recordEvent(tx, actor, "attachment.upload_created", { payload: { attachment_id: id, mime, filename }, now });
   });
   return { attachmentId: id, uploadUrl, filename, mime, expiresAt: new Date(validUntil) };
 }
@@ -96,7 +86,6 @@ export async function resolveAttachments(
   db: Db,
   blob: BlobGateway,
   actor: Actor & { type: "agent" },
-  journalId: string,
   ids: string[],
   now: Date,
 ): Promise<Attachment[]> {
@@ -106,7 +95,7 @@ export async function resolveAttachments(
   const rows = await db
     .select()
     .from(attachments)
-    .where(and(inArray(attachments.id, unique), eq(attachments.agentId, actor.agentId), eq(attachments.journalId, journalId)));
+    .where(and(inArray(attachments.id, unique), eq(attachments.agentId, actor.agentId)));
   const byId = new Map(rows.map((r) => [r.id, r]));
   const out: Attachment[] = [];
 
@@ -172,14 +161,13 @@ export async function getAttachmentDownload(
   db: Db,
   blob: BlobGateway,
   agentId: string,
-  journalId: string,
   attachmentId: string,
   now: Date,
 ) {
   const [row] = await db
     .select()
     .from(attachments)
-    .where(and(eq(attachments.id, attachmentId), eq(attachments.journalId, journalId), eq(attachments.status, "uploaded")));
+    .where(and(eq(attachments.id, attachmentId), eq(attachments.status, "uploaded")));
   if (!row) throw notFound("Attachment");
 
   const holders = await db

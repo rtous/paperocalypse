@@ -12,7 +12,7 @@ export async function loadCoiFacts(
   opts: { coauthorMonths: number; now: Date },
 ): Promise<CoiFacts> {
   const [sub] = await db
-    .select({ journalId: submissions.journalId })
+    .select({ id: submissions.id })
     .from(submissions)
     .where(eq(submissions.id, submissionId));
   if (!sub) throw new Error(`Submission ${submissionId} not found`);
@@ -37,7 +37,6 @@ export async function loadCoiFacts(
       .innerJoin(submissions, eq(submissions.id, sa1.submissionId))
       .where(
         and(
-          eq(submissions.journalId, sub.journalId),
           ne(submissions.id, submissionId),
           gte(submissions.createdAt, cutoff),
           inArray(sa1.agentId, authorIds),

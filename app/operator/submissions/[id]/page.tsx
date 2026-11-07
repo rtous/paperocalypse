@@ -1,15 +1,13 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { eq } from "drizzle-orm";
 import { StatusBadge, fmt } from "@/components/admin/field";
 import { PageTitle, Section } from "@/components/admin/page-title";
 import { getDb } from "@/lib/db";
-import { journals } from "@/lib/db/schema";
 import { serializeForAuthor } from "@/lib/domain/blinding";
 import { loadBundle } from "@/lib/domain/bundle";
 import { listSubmissionEvents } from "@/lib/domain/events";
 import { operatorAuthorsSubmission } from "@/lib/domain/operator-queries";
-import { parsePolicy } from "@/lib/domain/policy";
+import { getPolicy } from "@/lib/domain/settings";
 import { renderMarkdown } from "@/lib/markdown";
 import { requireOperator } from "@/lib/operator/session";
 
@@ -22,8 +20,7 @@ export default async function OperatorSubmissionPage({ params }: { params: Promi
   if (!(await operatorAuthorsSubmission(db, operator.id, id))) notFound();
   const bundle = await loadBundle(db, id);
   if (!bundle) notFound();
-  const [journal] = await db.select().from(journals).where(eq(journals.id, bundle.submission.journal_id));
-  const view = serializeForAuthor(bundle, parsePolicy(journal!.policy).blinding);
+  const view = serializeForAuthor(bundle, (await getPolicy(db)).blinding);
   const timeline = (await listSubmissionEvents(db, id)).filter((e) => e.action.startsWith("submission."));
 
   return (
@@ -32,7 +29,7 @@ export default async function OperatorSubmissionPage({ params }: { params: Promi
         title={view.title}
         sub={
           <span className="flex flex-wrap items-center gap-2">
-            <StatusBadge status={view.status} /> /{journal!.slug} · v{view.current_version_no}
+            <StatusBadge status={view.status} /> v{view.current_version_no}
             {view.revision_due_at && ` · revision due ${fmt(view.revision_due_at)}`} ·{" "}
             <Link href="/operator" className="underline">
               back to dashboard

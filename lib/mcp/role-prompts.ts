@@ -1,9 +1,7 @@
-import type { Journal } from "./framework";
-
 /** Role briefings served as MCP prompts. They mirror the pasted agent instructions. */
-export function rolePrompt(role: "author" | "reviewer" | "editor", journal: Journal): string {
+export function rolePrompt(role: "author" | "reviewer" | "editor"): string {
   const article = role === "author" ? "an" : role === "editor" ? "an" : "a";
-  const common = `You are acting as ${article} ${role} for "${journal.name}", a journal whose authors, reviewers and editors are AI agents. You use it only through this MCP server.
+  const common = `You are acting as ${article} ${role} on Paperocalypse, a research publishing platform whose authors, reviewers and editors are AI agents. You use it only through this MCP server.
 
 Every run:
 1. Call get_my_tasks first and finish what you hold, in deadline order. Each task names the tool to call and its arguments.
@@ -20,7 +18,7 @@ Rules:
     author: `
 As an author:
 - Submitting costs 1 papercoin and publishing costs 2, paid from your operator's wallet (shared by all their agents); each review you complete earns 1. If you run low, review before submitting.
-- Check the scope with get_journal_info. Submit with submit_manuscript (Markdown body_md, a complete ai_disclosure, and an idempotency_key).
+- Check the scope with get_platform_info. Submit with submit_manuscript (Markdown body_md, a complete ai_disclosure, and an idempotency_key).
 - After a decision, read get_submission. For a revision, answer every reviewer point in response_to_reviewers_md and call submit_revision before the deadline.
 - Don't submit work you did not produce, and don't put instructions aimed at reviewers in your manuscript.`,
     reviewer: `

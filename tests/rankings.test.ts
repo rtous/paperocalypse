@@ -1,33 +1,29 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { articleCitations, journals } from "@/lib/db/schema";
+import { articleCitations } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "@/lib/domain/actor";
-import { grantRoles } from "@/lib/domain/agents";
 import { updateOperatorName } from "@/lib/domain/operators";
 import { citationStats, extractCitationRefs } from "@/lib/domain/citations";
 import { adjustPapercoins } from "@/lib/domain/papercoins";
 import { contributorRanking } from "@/lib/domain/rankings";
 import { submitManuscript, submitReview } from "@/lib/domain/submissions";
 import { createTestDb } from "./helpers/db";
-import { T0, agentFor, createAdmin, createJournal, decide, hours, manuscript, review, sendOut, takeReview } from "./helpers/fixtures";
+import { T0, agentFor, createAdmin, setPolicy, decide, hours, manuscript, review, sendOut, takeReview } from "./helpers/fixtures";
 
 describe("extractCitationRefs", () => {
   it("finds permanent ids and article URLs, deduplicated", () => {
     const refs = extractCitationRefs(
-      "See paperocalypse:demo.2026.3 and [this](https://paperocalypse.vercel.app/j/demo/articles/3), " +
-        "also paperocalypse:demo.2026.3 again, /j/other-journal/articles/12 and (paperocalypse:x1.2027.1).",
+      "See paperocalypse:2026.3 and [this](https://paperocalypse.vercel.app/articles/3), " +
+        "also paperocalypse:2026.3 again, http://localhost.paperocalypse.dev/articles/12 and (paperocalypse:2027.1).",
     );
-    expect(refs).toEqual([
-      { publicId: "paperocalypse:demo.2026.3" },
-      { publicId: "paperocalypse:x1.2027.1" },
-      { slug: "demo", articleNo: 3 },
-      { slug: "other-journal", articleNo: 12 },
-    ]);
+    expect(refs).toEqual([{ publicId: "paperocalypse:2026.3" }, { publicId: "paperocalypse:2027.1" }, { articleNo: 3 }, { articleNo: 12 }]);
   });
 
-  it("ignores look-alikes", () => {
-    expect(extractCitationRefs("paperocalypse:Demo.2026.1 /j/demo/articles/ /j/demo/article/3 paperocalypse:demo.26.1")).toEqual([]);
+  it("ignores look-alikes and other sites", () => {
+    expect(
+      extractCitationRefs("paperocalypse:26.1 paperocalypse:x.2026.1 https://www.nature.com/articles/12 https://paperocalypse.vercel.app/articles/ /articles/3"),
+    ).toEqual([]);
   });
 });
 
@@ -41,50 +37,49 @@ describe("contributor rankings", () => {
   });
   afterAll(async () => close());
 
-  async function agent(journalId: string, name: string, roles: ("author" | "reviewer")[], operator?: { name?: string; contact: string }) {
+  async function agent(name: string, operator?: { name?: string; contact: string }) {
     const a = await agentFor(db, admin, name, { email: operator?.contact, operatorName: operator?.name });
-    await grantRoles(db, admin, journalId, a.id, roles, T0);
     await adjustPapercoins(db, admin, a.operatorId, 100, "test balance", T0);
     return { type: "agent" as const, agentId: a.id, operatorId: a.operatorId };
   }
 
-  async function setupJournal() {
-    const j = await createJournal(db, { require_operator_contact: false, max_submissions_per_agent_per_day: 50, max_open_submissions_per_agent: 50 });
-    const editor = await agent(j.id, `Editor-${j.slug}`, ["reviewer"], { contact: `ed-${j.slug}@x.org` });
-    const r1 = await agent(j.id, `R1-${j.slug}`, ["reviewer"], { contact: `r1-${j.slug}@x.org` });
-    const r2 = await agent(j.id, `R2-${j.slug}`, ["reviewer"], { contact: `r2-${j.slug}@x.org` });
-    return { j, editor, r1, r2 };
+  async function setupTeam(t: string) {
+    await setPolicy(db, { max_submissions_per_agent_per_day: 50, max_open_submissions_per_agent: 50 });
+    const editor = await agent(`Editor-${t}`, { contact: `ed-${t}@x.org` });
+    const r1 = await agent(`R1-${t}`, { contact: `r1-${t}@x.org` });
+    const r2 = await agent(`R2-${t}`, { contact: `r2-${t}@x.org` });
+    return { editor, r1, r2 };
   }
 
   let clock = T0;
-  async function publish(ctx: Awaited<ReturnType<typeof setupJournal>>, author: Actor & { type: "agent" }, body: string, coAuthorAgentIds: string[] = []) {
+  async function publish(ctx: Awaited<ReturnType<typeof setupTeam>>, author: Actor & { type: "agent" }, body: string, coAuthorAgentIds: string[] = []) {
     clock = hours(1, clock);
-    const { submissionId } = await submitManuscript(db, author, ctx.j.id, manuscript({ bodyMd: body, coAuthorAgentIds }), clock);
-    await sendOut(db, ctx.editor, ctx.j.id, submissionId, clock);
-    for (const r of [ctx.r1, ctx.r2]) await submitReview(db, r, await takeReview(db, r, ctx.j.id, submissionId, clock), review(), clock);
-    return (await decide(db, ctx.editor, ctx.j.id, submissionId, "accept", clock)).article!;
+    const { submissionId } = await submitManuscript(db, author, manuscript({ bodyMd: body, coAuthorAgentIds }), clock);
+    await sendOut(db, ctx.editor, submissionId, clock);
+    for (const r of [ctx.r1, ctx.r2]) await submitReview(db, r, await takeReview(db, r, submissionId, clock), review(), clock);
+    return (await decide(db, ctx.editor, submissionId, "accept", clock)).article!;
   }
 
-  it("counts papers and internal citations per operator, across agents and journals", async () => {
-    const A = await setupJournal();
-    const B = await setupJournal();
+  it("counts papers and internal citations per operator, across agents", async () => {
+    // Two editorial teams, so that editors and reviewers vary between papers.
+    const A = await setupTeam("a");
+    const B = await setupTeam("b");
     // Alice runs two agents; Bob, Charlie and Quinn one each.
-    const alice1 = await agent(A.j.id, "Alice-Bot-1", ["author"], { name: "Alice", contact: "alice@lab.org" });
-    const alice2 = await agent(A.j.id, "Alice-Bot-2", ["author"], { contact: " ALICE@lab.org " });
+    const alice1 = await agent("Alice-Bot-1", { name: "Alice", contact: "alice@lab.org" });
+    const alice2 = await agent("Alice-Bot-2", { contact: " ALICE@lab.org " });
     // Alice renames herself: the ranking shows the operator's current name.
     await updateOperatorName(db, { type: "operator", operatorId: alice1.operatorId }, "Alice Smith", hours(1));
-    const bob = await agent(A.j.id, "Bob-Bot", ["author"], { name: "Bob", contact: "bob@lab.org" });
-    const charlie = await agent(A.j.id, "Charlie-Bot", ["author"], { name: "Charlie", contact: "charlie@lab.org" });
-    const quinn = await agent(B.j.id, "Quinn-Bot", ["author"], { name: "Quinn", contact: "quinn@lab.org" });
-    await grantRoles(db, admin, B.j.id, bob.agentId, ["author"], T0);
+    const bob = await agent("Bob-Bot", { name: "Bob", contact: "bob@lab.org" });
+    const charlie = await agent("Charlie-Bot", { name: "Charlie", contact: "charlie@lab.org" });
+    const quinn = await agent("Quinn-Bot", { name: "Quinn", contact: "quinn@lab.org" });
 
     const a1 = await publish(A, alice1, "First paper by Alice. ".repeat(20));
     const a2 = await publish(A, alice2, "Second Alice paper. ".repeat(20));
     // Bob cites both Alice papers (by id and by URL) and co-authors with Charlie-Bot.
-    const b1 = await publish(A, bob, `We build on ${a1.publicId} and https://example.org/j/${A.j.slug}/articles/${a2.articleNo}. `.repeat(5), [charlie.agentId]);
-    // In journal B: Bob cites a1 again and his own b1; Quinn cites a1.
+    const b1 = await publish(A, bob, `We build on ${a1.publicId} and https://paperocalypse.vercel.app/articles/${a2.articleNo}. `.repeat(5), [charlie.agentId]);
+    // Handled by team B: Bob cites a1 again and his own b1; Quinn cites a1.
     await publish(B, bob, `See ${a1.publicId} and ${b1.publicId}. `.repeat(10));
-    await publish(B, quinn, `Building on ${a1.publicId}, and citing a missing paperocalypse:nope.2026.99. `.repeat(5));
+    await publish(B, quinn, `Building on ${a1.publicId}, and citing a missing paperocalypse:2026.99. `.repeat(5));
 
     const cites = async (id: string) => (await citationStats(db, { id, publishedAt: T0 }, clock)).citations;
     expect(await cites(a1.articleId)).toBe(3);
@@ -112,19 +107,6 @@ describe("contributor rankings", () => {
     // By citations.
     const byCitations = await contributorRanking(db, { sort: "citations" });
     expect(byCitations[0]).toMatchObject({ rank: 1, name: "Alice Smith", citations: 4 });
-
-    // Journal B only: Bob 1 paper, Quinn 1 paper; citations count what B's papers received (none).
-    const inB = await contributorRanking(db, { journalId: B.j.id, sort: "papers" });
-    expect(inB.map((r) => [r.name, r.papers, r.citations]).sort()).toEqual([
-      ["Bob", 1, 0],
-      ["Quinn", 1, 0],
-    ]);
-
-    // Archived journals drop out of the global ranking.
-    await db.update(journals).set({ status: "archived" }).where(eq(journals.id, B.j.id));
-    const after = await contributorRanking(db, { sort: "papers" });
-    expect(after.find((r) => r.name === "Quinn")).toBeUndefined();
-    expect(after.find((r) => r.name === "Bob")!.papers).toBe(1);
 
     // Citations are idempotent per (citing, cited) pair.
     const rows = await db.select().from(articleCitations).where(eq(articleCitations.citedArticleId, a1.articleId));

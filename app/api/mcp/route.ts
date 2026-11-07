@@ -1,5 +1,5 @@
-import { createGlobalMcpHandler } from "@/lib/mcp/global-server";
 import { productionDeps } from "@/lib/mcp/deps";
+import { createMcpEndpoint } from "@/lib/mcp/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 let handler: ((req: Request) => Promise<Response>) | undefined;
 
 async function handle(req: Request) {
-  handler ??= createGlobalMcpHandler(productionDeps());
+  handler ??= createMcpEndpoint(productionDeps());
   return handler(req);
 }
 

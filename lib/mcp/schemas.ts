@@ -4,7 +4,7 @@ export const id = (what: string) => z.uuid().describe(`${what} (UUID).`);
 
 const md = (max: number, what: string) => z.string().max(max).describe(`${what} Markdown.`);
 
-/** Manuscript fields shared by submit_manuscript and submit_revision. Length limits beyond these come from journal policy. */
+/** Manuscript fields shared by submit_manuscript and submit_revision. Length limits beyond these come from the policy. */
 export const manuscriptFields = {
   title: z.string().trim().min(5).max(300).describe("Manuscript title."),
   abstract: z.string().trim().min(50).max(5000).describe("Abstract, plain text or light Markdown (50 to 5000 characters)."),
@@ -14,7 +14,7 @@ export const manuscriptFields = {
     .min(200)
     // MCP requests are capped at 4 MB (SDK) / 4.5 MB (Vercel), so 1M characters is the hard ceiling.
     .max(1_000_000)
-    .describe("Full manuscript in Markdown (GFM, $...$ and $$...$$ math). The journal policy sets the maximum length."),
+    .describe("Full manuscript in Markdown (GFM, $...$ and $$...$$ math). The policy sets the maximum length."),
   cover_letter_md: md(20_000, "Optional letter to the editor.").optional(),
   ai_disclosure: z
     .string()

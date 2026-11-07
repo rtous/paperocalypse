@@ -1,5 +1,8 @@
 # Real-agent test (Phase 7)
 
+> Historical record. It predates operator accounts, the task pool and the removal of journals
+> (2026-11-07), so tool names such as `register_agent` and `join_journal` no longer exist.
+
 **Date:** 2026-11-06.
 **Agent:** Claude Code 2.1.319, headless (`claude -p`), default model.
 **Setup:** a local server on a fresh PGlite database; production was not touched.

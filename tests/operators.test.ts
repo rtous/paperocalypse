@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { agents, operators } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "@/lib/domain/actor";
-import { grantRoles, verifyApiKey } from "@/lib/domain/agents";
+import { verifyApiKey } from "@/lib/domain/agents";
 import { DomainError } from "@/lib/domain/errors";
 import {
   operatorAgents,
@@ -28,12 +28,12 @@ import {
   submitManuscript,
   submitReview,
 } from "@/lib/domain/submissions";
-import { createTestDb } from "./helpers/db";
+import { createTestDb, resetDb } from "./helpers/db";
 import {
   LETTER,
   T0,
   createAdmin,
-  createJournal,
+  setPolicy,
   createMember,
   createOperator,
   decide,
@@ -100,10 +100,10 @@ describe("operator accounts", () => {
   });
 
   it("can't act on submissions directly", async () => {
-    const j = await createJournal(db);
-    await createMember(db, admin, j.id, ["reviewer"]);
-    const author = await createMember(db, admin, j.id, ["author"]);
-    const { submissionId } = await submitManuscript(db, author, j.id, manuscript(), T0);
+    await setPolicy(db);
+    await createMember(db, admin);
+    const author = await createMember(db, admin);
+    const { submissionId } = await submitManuscript(db, author, manuscript(), T0);
     const { actor } = await createOperator(db, "meddler@lab.org");
     expect(await code(deskReject(db, actor, submissionId, LETTER, T0))).toBe("NOT_AUTHORIZED");
   });
@@ -121,35 +121,36 @@ describe("operator accounts", () => {
 
 describe("operator dashboard data", () => {
   it("shows tasks, submissions, reviews, editorial work and coins of the operator's agents only", async () => {
-    const j = await createJournal(db, { max_submissions_per_agent_per_day: 50, max_open_submissions_per_agent: 50 });
-    const J = j.id;
+    // The task pool is platform-wide: start from an empty platform.
+    await resetDb(db);
+    admin = await createAdmin(db);
+    await setPolicy(db, { max_submissions_per_agent_per_day: 50, max_open_submissions_per_agent: 50 });
     const mine = await createOperator(db, "me@dash.org", "Me");
     const theirs = await createOperator(db, "them@dash.org", "Them");
     const neutral = await createOperator(db, "neutral@dash.org", "Neutral");
     const other = await createOperator(db, "other@dash.org", "Other");
-    const mk = async (o: typeof mine, name: string, roles: ("author" | "reviewer")[]) => {
+    const mk = async (o: typeof mine, name: string) => {
       const r = await createOperatorAgent(db, o.actor, { displayName: name, description: "" }, T0);
-      await grantRoles(db, admin, J, r.agent.id, roles, T0);
       await adjustPapercoins(db, admin, r.agent.operatorId, 50, "test", T0);
       return { type: "agent" as const, agentId: r.agent.id };
     };
-    const myEditor = await mk(mine, "My-Editor", ["reviewer"]);
-    const neutralEditor = await mk(neutral, "Neutral-Editor", ["reviewer"]);
-    const myAuthor = await mk(mine, "My-Author", ["author"]);
-    const myReviewer = await mk(mine, "My-Reviewer", ["reviewer"]);
-    const neutralReviewer = await mk(neutral, "Neutral-Reviewer", ["reviewer"]);
-    const otherReviewer = await mk(other, "Other-Reviewer", ["reviewer"]);
-    const theirAuthor = await mk(theirs, "Their-Author", ["author"]);
+    const myEditor = await mk(mine, "My-Editor");
+    const neutralEditor = await mk(neutral, "Neutral-Editor");
+    const myAuthor = await mk(mine, "My-Author");
+    const myReviewer = await mk(mine, "My-Reviewer");
+    const neutralReviewer = await mk(neutral, "Neutral-Reviewer");
+    const otherReviewer = await mk(other, "Other-Reviewer");
+    const theirAuthor = await mk(theirs, "Their-Author");
 
     // My editor screens their paper; the neutral editor screens mine and their second one.
-    const theirSub = await submitManuscript(db, theirAuthor, J, manuscript({ title: "Their paper" }), T0);
-    const mySub = await submitManuscript(db, myAuthor, J, manuscript({ title: "My paper" }), hours(0.5));
-    const theirB = await submitManuscript(db, theirAuthor, J, manuscript({ title: "Their B" }), hours(0.7));
-    await sendOut(db, myEditor, J, theirSub.submissionId, hours(1));
-    await sendOut(db, neutralEditor, J, mySub.submissionId, hours(1.1));
-    await sendOut(db, neutralEditor, J, theirB.submissionId, hours(1.2));
+    const theirSub = await submitManuscript(db, theirAuthor, manuscript({ title: "Their paper" }), T0);
+    const mySub = await submitManuscript(db, myAuthor, manuscript({ title: "My paper" }), hours(0.5));
+    const theirB = await submitManuscript(db, theirAuthor, manuscript({ title: "Their B" }), hours(0.7));
+    await sendOut(db, myEditor, theirSub.submissionId, hours(1));
+    await sendOut(db, neutralEditor, mySub.submissionId, hours(1.1));
+    await sendOut(db, neutralEditor, theirB.submissionId, hours(1.2));
     // My reviewer can't review my paper (conflict) or their paper (my editor screened it): it gets B.
-    const myAssignment = await takeReview(db, myReviewer, J, theirB.submissionId, hours(2));
+    const myAssignment = await takeReview(db, myReviewer, theirB.submissionId, hours(2));
 
     const tasks = await operatorTasks(db, mine.operator.id);
     expect(tasks.map((t) => [t.agentName, t.kind])).toEqual([["My-Reviewer", "write_review"]]);
@@ -172,20 +173,20 @@ describe("operator dashboard data", () => {
 
     // Each editorial task pays the editor 1 papercoin; reviews pay 1. All go to my shared wallet.
     const before = await getPapercoinBalance(db, myEditor.agentId);
-    const theirSub2 = await submitManuscript(db, theirAuthor, J, manuscript({ title: "Their second paper" }), hours(3));
-    await takeTask(db, myEditor, J, "editorial", theirSub2.submissionId, hours(3));
+    const theirSub2 = await submitManuscript(db, theirAuthor, manuscript({ title: "Their second paper" }), hours(3));
+    await takeTask(db, myEditor, "editorial", theirSub2.submissionId, hours(3));
     await deskReject(db, myEditor, theirSub2.submissionId, LETTER, hours(3));
     expect(await getPapercoinBalance(db, myEditor.agentId)).toBe(before + 1);
     await submitReview(db, myReviewer, myAssignment, review(), hours(4));
     for (const r of [neutralReviewer, otherReviewer]) {
-      await submitReview(db, r, await takeReview(db, r, J, theirSub.submissionId, hours(4)), review(), hours(4));
+      await submitReview(db, r, await takeReview(db, r, theirSub.submissionId, hours(4)), review(), hours(4));
     }
     // The neutral and other operators reviewed it, so the decision goes to my editor.
-    await decide(db, myEditor, J, theirSub.submissionId, "major_revision", hours(5));
+    await decide(db, myEditor, theirSub.submissionId, "major_revision", hours(5));
     expect(await getPapercoinBalance(db, myEditor.agentId)).toBe(before + 3);
     expect(await getPapercoinBalance(db, myReviewer.agentId)).toBe(before + 3);
     // Admin decisions pay nobody.
-    const theirSub3 = await submitManuscript(db, theirAuthor, J, manuscript({ title: "Third" }), hours(6));
+    const theirSub3 = await submitManuscript(db, theirAuthor, manuscript({ title: "Third" }), hours(6));
     await deskReject(db, admin, theirSub3.submissionId, LETTER, hours(6));
     expect(await getPapercoinBalance(db, myEditor.agentId)).toBe(before + 3);
 

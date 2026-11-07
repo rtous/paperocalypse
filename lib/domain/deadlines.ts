@@ -1,10 +1,10 @@
 import { and, asc, eq, lt } from "drizzle-orm";
-import { journals, submissions } from "@/lib/db/schema";
+import { submissions } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import { SYSTEM } from "./actor";
 import { recordEvent } from "./events";
 import { enqueueNotifications } from "./notify";
-import { parsePolicy } from "./policy";
+import { getPolicy } from "./settings";
 import { expireClaims } from "./pool";
 import { publishArticle } from "./submissions";
 import { resolveTransition } from "./workflow";
@@ -55,8 +55,7 @@ async function expireRevision(db: Db, submissionId: string, now: Date) {
     if (!sub || sub.status !== "revision_requested" || !sub.revisionDueAt || sub.revisionDueAt >= now) {
       return false;
     }
-    const [j] = await tx.select({ policy: journals.policy }).from(journals).where(eq(journals.id, sub.journalId));
-    const policy = parsePolicy(j?.policy);
+    const policy = await getPolicy(tx);
     const to = resolveTransition(sub.status, "revision_expired", "system", {
       currentVersionNo: sub.currentVersionNo,
       revisionCount: sub.revisionCount,
@@ -64,7 +63,6 @@ async function expireRevision(db: Db, submissionId: string, now: Date) {
     });
     await tx.update(submissions).set({ status: to, updatedAt: now }).where(eq(submissions.id, sub.id));
     await recordEvent(tx, SYSTEM, "submission.revision_expired", {
-      journalId: sub.journalId,
       submissionId: sub.id,
       payload: { from: sub.status, to },
       now,

@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import { asc, eq } from "drizzle-orm";
 import { overrideAction } from "@/app/admin/actions";
@@ -8,7 +7,7 @@ import { Field, StatusBadge, fmt, selectClass } from "@/components/admin/field";
 import { PageTitle, Section } from "@/components/admin/page-title";
 import { Textarea } from "@/components/ui/textarea";
 import { getDb } from "@/lib/db";
-import { agents, journals, poolTasks } from "@/lib/db/schema";
+import { agents, poolTasks } from "@/lib/db/schema";
 import { serializeForEditor } from "@/lib/domain/blinding";
 import { loadBundle } from "@/lib/domain/bundle";
 import { listSubmissionEvents } from "@/lib/domain/events";
@@ -22,7 +21,6 @@ export default async function SubmissionPage({ params }: { params: Promise<{ id:
   const bundle = await loadBundle(db, id);
   if (!bundle) notFound();
   const view = serializeForEditor(bundle);
-  const [journal] = await db.select().from(journals).where(eq(journals.id, bundle.submission.journal_id));
   const [history, pool] = await Promise.all([
     listSubmissionEvents(db, id),
     db
@@ -42,10 +40,7 @@ export default async function SubmissionPage({ params }: { params: Promise<{ id:
           <span className="flex flex-wrap items-center gap-2">
             <StatusBadge status={view.status} />
             <span>
-              <Link href={`/admin/journals/${journal!.id}`} className="underline">
-                /{journal!.slug}
-              </Link>{" "}
-              · v{view.current_version_no} · {view.revision_count} revision rounds · editor{" "}
+              v{view.current_version_no} · {view.revision_count} revision rounds · editor{" "}
               {view.handling_editor?.display_name ?? "none"}
               {view.revision_due_at && ` · revision due ${fmt(view.revision_due_at)}`}
             </span>

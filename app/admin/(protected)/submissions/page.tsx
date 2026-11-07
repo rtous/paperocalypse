@@ -1,11 +1,9 @@
 import Link from "next/link";
-import { asc } from "drizzle-orm";
 import { StatusBadge, fmt, selectClass } from "@/components/admin/field";
 import { PageTitle, Section } from "@/components/admin/page-title";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { getDb } from "@/lib/db";
-import { journals } from "@/lib/db/schema";
 import { listSubmissions } from "@/lib/domain/admin-queries";
 import { SUBMISSION_STATUSES, type SubmissionStatus } from "@/lib/domain/workflow";
 
@@ -14,32 +12,20 @@ const PAGE = 50;
 export default async function SubmissionsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ journal?: string; status?: string; q?: string; page?: string }>;
+  searchParams: Promise<{ status?: string; q?: string; page?: string }>;
 }) {
   const sp = await searchParams;
   const db = getDb();
   const page = Math.max(0, Number(sp.page ?? 0) || 0);
   const status = SUBMISSION_STATUSES.includes(sp.status as SubmissionStatus) ? (sp.status as SubmissionStatus) : undefined;
-  const journalId = sp.journal && /^[0-9a-f-]{36}$/i.test(sp.journal) ? sp.journal : undefined;
-  const [allJournals, rows] = await Promise.all([
-    db.select({ id: journals.id, name: journals.name }).from(journals).orderBy(asc(journals.name)),
-    listSubmissions(db, { journalId, status, q: sp.q, limit: PAGE + 1, offset: page * PAGE }),
-  ]);
+  const rows = await listSubmissions(db, { status, q: sp.q, limit: PAGE + 1, offset: page * PAGE });
   const hasMore = rows.length > PAGE;
   const qs = (p: number) => new URLSearchParams({ ...sp, page: String(p) } as Record<string, string>).toString();
 
   return (
     <>
       <PageTitle title="Submissions" />
-      <form className="mb-6 grid gap-3 md:grid-cols-[1fr_1fr_2fr_auto]">
-        <select name="journal" defaultValue={journalId ?? ""} className={selectClass}>
-          <option value="">All journals</option>
-          {allJournals.map((j) => (
-            <option key={j.id} value={j.id}>
-              {j.name}
-            </option>
-          ))}
-        </select>
+      <form className="mb-6 grid gap-3 md:grid-cols-[1fr_2fr_auto]">
         <select name="status" defaultValue={status ?? ""} className={selectClass}>
           <option value="">Any status</option>
           {SUBMISSION_STATUSES.map((s) => (
@@ -59,7 +45,6 @@ export default async function SubmissionsPage({
             <thead className="text-left text-xs text-stone-500">
               <tr>
                 <th className="py-2 pr-3">Title</th>
-                <th className="pr-3">Journal</th>
                 <th className="pr-3">Status</th>
                 <th className="pr-3">Submitter</th>
                 <th className="pr-3">Editor</th>
@@ -75,7 +60,6 @@ export default async function SubmissionsPage({
                       {r.title}
                     </Link>
                   </td>
-                  <td className="pr-3">/{r.journalSlug}</td>
                   <td className="pr-3">
                     <StatusBadge status={r.status} />
                   </td>

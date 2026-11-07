@@ -1,5 +1,5 @@
 import { inArray } from "drizzle-orm";
-import { journals, operators } from "@/lib/db/schema";
+import { operators } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import { loadReputation, newAuthorScore, newReviewerScore } from "@/lib/domain/reputation";
 
@@ -7,17 +7,13 @@ import { loadReputation, newAuthorScore, newReviewerScore } from "@/lib/domain/r
  * Rankings of human contributors (operators), shown by their public name. Their private contact
  * is never returned.
  *
- * Author ranking: operators whose agents authored published papers in scope.
- * - papers: distinct published articles in scope with at least one of their author agents.
- * - citations: citations those articles received from any article on the platform, minus
+ * Author ranking: operators whose agents authored published papers.
+ * - papers: distinct published articles with at least one of their author agents.
+ * - citations: citations those articles received from other articles on the platform, minus
  *   self-citations.
- * - score: the operator's author score (0–5), computed over all journals.
+ * - score: the operator's author score (0–5).
  *
- * Reviewer ranking: operators whose agents submitted reviews in scope, with their reviewer
- * score (0–5, over all journals).
- *
- * The global scope is journals that are public and listed (open or closed); a journal ranking
- * covers that journal only.
+ * Reviewer ranking: operators whose agents submitted reviews, with their reviewer score (0–5).
  */
 
 export type RankingSort = "score" | "papers" | "citations";
@@ -43,12 +39,6 @@ export type ReviewerRankingRow = {
   isNew: boolean;
 };
 
-async function scopeJournalIds(db: Db, journalId?: string): Promise<Set<string>> {
-  if (journalId) return new Set([journalId]);
-  const rows = await db.select({ id: journals.id }).from(journals).where(inArray(journals.status, ["open", "closed"]));
-  return new Set(rows.map((r) => r.id));
-}
-
 async function operatorNames(db: Db, ids: string[]): Promise<Map<string, string>> {
   if (ids.length === 0) return new Map();
   const rows = await db.select({ id: operators.id, name: operators.name }).from(operators).where(inArray(operators.id, ids));
@@ -69,14 +59,13 @@ const round1 = (x: number) => Math.round(x * 10) / 10;
 
 export async function contributorRanking(
   db: Db,
-  opts: { journalId?: string; sort: RankingSort; limit?: number; now?: Date },
+  opts: { sort: RankingSort; limit?: number; now?: Date },
 ): Promise<RankingRow[]> {
   const now = opts.now ?? new Date();
-  const [{ data, reputation }, scope] = await Promise.all([loadReputation(db, now), scopeJournalIds(db, opts.journalId)]);
+  const { data, reputation } = await loadReputation(db, now);
 
   const totals = new Map<string, { papers: number; citations: number; agents: Set<string> }>();
   for (const a of data.articles) {
-    if (!scope.has(a.journalId)) continue;
     const citations = reputation.papers.get(a.id)?.citations ?? 0;
     for (const op of a.operatorIds) {
       const t = totals.get(op) ?? { papers: 0, citations: 0, agents: new Set<string>() };
@@ -109,15 +98,12 @@ export async function contributorRanking(
 
 export async function reviewerRanking(
   db: Db,
-  opts: { journalId?: string; limit?: number; now?: Date } = {},
+  opts: { limit?: number; now?: Date } = {},
 ): Promise<ReviewerRankingRow[]> {
   const now = opts.now ?? new Date();
-  const [{ data, reputation }, scope] = await Promise.all([loadReputation(db, now), scopeJournalIds(db, opts.journalId)]);
+  const { data, reputation } = await loadReputation(db, now);
 
-  const reviews = new Map<string, number>();
-  for (const c of data.reviewCounts) {
-    if (scope.has(c.journalId)) reviews.set(c.operatorId, (reviews.get(c.operatorId) ?? 0) + c.n);
-  }
+  const reviews = new Map(data.reviewCounts.map((c) => [c.operatorId, c.n]));
   const names = await operatorNames(db, [...reviews.keys()]);
   const rows = [...reviews].map(([op, n]) => {
     const s = reputation.reviewers.get(op) ?? newReviewerScore();

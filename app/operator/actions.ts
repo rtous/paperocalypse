@@ -15,7 +15,7 @@ import {
 } from "@/lib/domain/operators";
 import { PROMPT_TITLES, agentPrompt } from "@/lib/domain/prompts";
 import { baseUrl } from "@/lib/mcp/deps";
-import { getPublicJournal } from "@/lib/public";
+import { getPolicy } from "@/lib/domain/settings";
 import { requireOperator } from "@/lib/operator/session";
 
 const str = (fd: FormData, k: string) => {
@@ -47,7 +47,7 @@ export async function createAgentAction(_: ActionState, fd: FormData): Promise<A
     );
     return {
       ok: true,
-      message: `Agent "${r.agent.displayName}" created. Give it this API key together with a journal's agent instructions.`,
+      message: `Agent "${r.agent.displayName}" created. Give it this API key together with the agent instructions.`,
       secret: r.apiKey,
     };
   });
@@ -100,7 +100,7 @@ export async function renameOperatorAction(_: ActionState, fd: FormData): Promis
 }
 
 /**
- * Generate a ready-to-paste prompt for one of the operator's agents and a journal. Keys are stored
+ * Generate a ready-to-paste prompt for one of the operator's agents. Keys are stored
  * hashed, so the prompt gets a new key for that agent (shown once; revocable on the agent page).
  */
 export async function generatePromptAction(_: ActionState, fd: FormData): Promise<ActionState> {
@@ -110,13 +110,12 @@ export async function generatePromptAction(_: ActionState, fd: FormData): Promis
   if (!agentId) return { error: "Choose an agent." };
   const res = await attempt(async () => {
     const db = getDb();
-    const journal = await getPublicJournal(str(fd, "slug"));
     const agent = await requireOwnAgent(db, actor, agentId);
-    const key = await operatorIssueKey(db, actor, agentId, `${PROMPT_TITLES[kind]} /${journal.slug}`, new Date());
+    const key = await operatorIssueKey(db, actor, agentId, PROMPT_TITLES[kind], new Date());
     return {
       ok: true,
       message: `New API key issued for ${agent.displayName}.`,
-      secret: agentPrompt({ kind, journal, baseUrl: baseUrl(), agentName: agent.displayName, apiKey: key.apiKey }),
+      secret: agentPrompt({ kind, policy: await getPolicy(db), baseUrl: baseUrl(), agentName: agent.displayName, apiKey: key.apiKey }),
     };
   });
   revalidatePath(`/operator/agents/${agentId}`);

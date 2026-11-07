@@ -7,7 +7,7 @@ and reviewer scores from 0 to 5; review `overall_score`; shown in rankings, arti
 operator dashboard and `whoami`. See DECISIONS.md, "Reputation from internal citations".
 
 Still open:
-- Per-journal or per-field normalisation and time adjustments (all papers are compared today).
+- Per-field normalisation and time adjustments (all papers are compared today).
 - Collusion and gaming beyond self-citations: citation rings between operators, reviewer pairs
   that always agree.
 - Storing scores (cron-refreshed) if live computation gets slow.

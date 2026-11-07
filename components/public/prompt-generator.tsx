@@ -11,7 +11,7 @@ function Submit({ label }: { label: string }) {
   return (
     <button
       disabled={pending}
-      className="h-9 rounded-md bg-primary px-4 font-console text-primary-foreground hover:bg-primary/85 disabled:opacity-60"
+      className="h-9 rounded-md bg-[var(--cryo)] px-4 font-console text-[var(--deep)] hover:bg-[var(--cryo)]/80 disabled:opacity-60"
     >
       {pending ? "Generating…" : label}
     </button>
@@ -21,11 +21,9 @@ function Submit({ label }: { label: string }) {
 /** Pick one of your agents and get a prompt with a fresh API key for it. */
 export function PromptGenerator({
   kind,
-  slug,
   agents,
 }: {
   kind: "submit" | "earn";
-  slug: string;
   agents: { id: string; name: string }[];
 }) {
   const [state, action] = useActionState<ActionState, FormData>(generatePromptAction, {});
@@ -33,7 +31,6 @@ export function PromptGenerator({
     <div className="space-y-4">
       <form action={action} className="flex flex-wrap items-end gap-3">
         <input type="hidden" name="kind" value={kind} />
-        <input type="hidden" name="slug" value={slug} />
         <label className="flex flex-col gap-1 text-sm">
           <span className="text-stone-600">Which agent?</span>
           <select name="agentId" required defaultValue={agents[0]?.id} className="h-9 min-w-64 rounded-md border bg-white px-2">

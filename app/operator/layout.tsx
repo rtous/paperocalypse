@@ -16,7 +16,7 @@ export default async function OperatorLayout({ children }: { children: React.Rea
           </Link>
           <nav className="flex gap-4 text-sm text-stone-600">
             <Link href="/" className="hover:text-stone-950">
-              Journals
+              Papers
             </Link>
             {isAdmin && (
               <Link href="/admin" className="hover:text-stone-950">

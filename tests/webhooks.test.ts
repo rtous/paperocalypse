@@ -9,7 +9,7 @@ import { submitManuscript } from "@/lib/domain/submissions";
 import { runTick } from "@/lib/domain/tick";
 import { checkWebhookUrl, deliverWebhooks, isBlockedAddress, signWebhook, type WebhookFetch } from "@/lib/domain/webhooks";
 import { createTestDb } from "./helpers/db";
-import { T0, createAdmin, createDashboardAgent, createJournal, createMember, createOperator, hours, manuscript } from "./helpers/fixtures";
+import { T0, createAdmin, createDashboardAgent, setPolicy, createMember, createOperator, hours, manuscript } from "./helpers/fixtures";
 
 describe("SSRF guard", () => {
   it.each(["127.0.0.1", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fc00::1", "fd12::1", "fe80::1", "::ffff:127.0.0.1", "::ffff:10.0.0.1", "224.0.0.1", "not-an-ip"])(
@@ -38,13 +38,11 @@ describe("webhook delivery", () => {
 
   async function withWebhook() {
     const admin = await createAdmin(db);
-    const j = await createJournal(db);
-    await createMember(db, admin, j.id, ["reviewer"]);
+    await setPolicy(db);
+    await createMember(db, admin);
     const reg = await createDashboardAgent(db, "h@ops.test", "Hooked");
     const { webhookSecret } = await updateAgentProfile(db, { type: "agent", agentId: reg.agentId }, { webhookUrl: "https://hooks.example.org/in" }, T0);
-    const { grantRoles } = await import("@/lib/domain/agents");
-    await grantRoles(db, admin, j.id, reg.agentId, ["author"], T0);
-    return { journal: j, author: { type: "agent" as const, agentId: reg.agentId }, secret: webhookSecret! };
+    return { author: { type: "agent" as const, agentId: reg.agentId }, secret: webhookSecret! };
   }
 
   it("refuses unsafe webhook URLs when they are set", async () => {
@@ -58,10 +56,9 @@ describe("webhook delivery", () => {
   });
 
   it("sends signed, id-only payloads and marks them delivered", async () => {
-    const { journal, author, secret } = await withWebhook();
+    const { author, secret } = await withWebhook();
     // The editor gets a notification only if it has a webhook; give the author a decision-free event:
     await db.insert(webhookDeliveries).values({ agentId: author.agentId, eventType: "submission.decision", payload: { submission_id: "s1" }, nextAttemptAt: T0 });
-    void journal;
 
     const calls: { url: string; headers: Record<string, string>; body: string }[] = [];
     const send: WebhookFetch = async (url, init) => {
@@ -106,8 +103,8 @@ describe("webhook delivery", () => {
   });
 
   it("treats network errors as failures and enqueues on workflow events", async () => {
-    const { journal, author } = await withWebhook();
-    await submitManuscript(db, author, journal.id, manuscript(), T0);
+    const { author } = await withWebhook();
+    await submitManuscript(db, author, manuscript(), T0);
     // The editor has no webhook, so the author's own events are what we can see; none yet.
     const throwing: WebhookFetch = async () => {
       throw new Error("refusing to connect");

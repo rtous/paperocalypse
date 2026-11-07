@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { admins, journals } from "@/lib/db/schema";
+import { admins, settings } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "@/lib/domain/actor";
-import { createAgent, grantRoles, type Role } from "@/lib/domain/agents";
+import { createAgent } from "@/lib/domain/agents";
 import { adjustPapercoins } from "@/lib/domain/papercoins";
-import { DEFAULT_POLICY, type JournalPolicy } from "@/lib/domain/policy";
+import { DEFAULT_POLICY, type Policy } from "@/lib/domain/policy";
+import { getPlatformSettings } from "@/lib/domain/settings";
 import type { ReviewInput, SubmitManuscriptInput } from "@/lib/domain/submissions";
 
 export const T0 = new Date("2026-03-01T12:00:00Z");
@@ -18,30 +19,22 @@ export async function createAdmin(db: Db): Promise<Actor & { type: "admin" }> {
   return { type: "admin", adminId: a!.id };
 }
 
-export async function createJournal(db: Db, policy: Partial<JournalPolicy> = {}) {
-  const slug = `j-${randomUUID().slice(0, 8)}`;
-  const [j] = await db
-    .insert(journals)
-    .values({
-      slug,
-      name: `Journal ${slug}`,
-      status: "open",
-      policy: { ...DEFAULT_POLICY, ...policy },
-      createdAt: new Date("2026-01-01T00:00:00Z"),
-    })
-    .returning();
-  return j!;
+/** Set the platform policy: defaults overridden by `policy`. */
+export async function setPolicy(db: Db, policy: Partial<Policy> = {}) {
+  const value = { ...(await getPlatformSettings(db)), policy: { ...DEFAULT_POLICY, ...policy } };
+  await db
+    .insert(settings)
+    .values({ key: "platform", value })
+    .onConflictDoUpdate({ target: settings.key, set: { value } });
 }
 
+/** An active agent (with its own operator) holding plenty of papercoins. */
 export async function createMember(
   db: Db,
   admin: Actor,
-  journalId: string,
-  roles: Role[],
   opts: { name?: string; operatorContact?: string } = {},
 ): Promise<Actor & { type: "agent" }> {
   const agent = await agentFor(db, admin, opts.name ?? `agent-${randomUUID().slice(0, 6)}`, { email: opts.operatorContact });
-  await grantRoles(db, admin, journalId, agent.id, roles, T0);
   // Plenty of papercoins so tests about other rules aren't limited by the economy.
   await adjustPapercoins(db, admin, agent.operatorId, 500, "test fixture balance", T0);
   return { type: "agent", agentId: agent.id };
@@ -105,9 +98,9 @@ export const LETTER = "Thank you for your submission. Please see the reviews bel
 type AgentActor = Actor & { type: "agent" };
 
 /** Ask the pool for a task; fails unless it is of `kind` on `submissionId`. */
-export async function takeTask(db: Db, agent: AgentActor, journalId: string, kind: "review" | "editorial", submissionId: string, now: Date) {
+export async function takeTask(db: Db, agent: AgentActor, kind: "review" | "editorial", submissionId: string, now: Date) {
   const { requestTask } = await import("@/lib/domain/pool");
-  const r = await requestTask(db, agent, journalId, now);
+  const r = await requestTask(db, agent, now);
   if (!r.task) throw new Error(`No task for ${agent.agentId}: ${r.reasons.join(" ")}`);
   if (r.task.kind !== kind || r.task.submissionId !== submissionId) {
     throw new Error(`Expected a ${kind} task on ${submissionId}, got a ${r.task.kind} task on ${r.task.submissionId}`);
@@ -116,14 +109,14 @@ export async function takeTask(db: Db, agent: AgentActor, journalId: string, kin
 }
 
 /** Take a review task and return its assignment id. */
-export async function takeReview(db: Db, reviewer: AgentActor, journalId: string, submissionId: string, now: Date) {
-  return (await takeTask(db, reviewer, journalId, "review", submissionId, now)).assignmentId!;
+export async function takeReview(db: Db, reviewer: AgentActor, submissionId: string, now: Date) {
+  return (await takeTask(db, reviewer, "review", submissionId, now)).assignmentId!;
 }
 
 /** Take the editorial task on the submission and send it to review. */
-export async function sendOut(db: Db, editor: AgentActor, journalId: string, submissionId: string, now: Date) {
+export async function sendOut(db: Db, editor: AgentActor, submissionId: string, now: Date) {
   const { sendToReview } = await import("@/lib/domain/submissions");
-  await takeTask(db, editor, journalId, "editorial", submissionId, now);
+  await takeTask(db, editor, "editorial", submissionId, now);
   return sendToReview(db, editor, submissionId, now);
 }
 
@@ -131,12 +124,11 @@ export async function sendOut(db: Db, editor: AgentActor, journalId: string, sub
 export async function decide(
   db: Db,
   editor: AgentActor,
-  journalId: string,
   submissionId: string,
   decision: "accept" | "reject" | "minor_revision" | "major_revision",
   now: Date,
 ) {
   const { makeDecision } = await import("@/lib/domain/submissions");
-  await takeTask(db, editor, journalId, "editorial", submissionId, now);
+  await takeTask(db, editor, "editorial", submissionId, now);
   return makeDecision(db, editor, submissionId, decision, LETTER, now);
 }

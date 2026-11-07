@@ -44,7 +44,6 @@ export async function applyPapercoins(
     amount: number;
     reason: PapercoinReason;
     refId?: string | null;
-    journalId?: string | null;
     adminId?: string | null;
     note?: string | null;
     allowNegative?: boolean;
@@ -72,7 +71,7 @@ export async function applyPapercoins(
   if (entry.amount < 0 && !entry.allowNegative && after < 0) {
     throw new DomainError(
       "INSUFFICIENT_PAPERCOINS",
-      `This needs ${-entry.amount} papercoin(s) and your operator's balance is ${wallet.balance}. Earn papercoins by reviewing: each completed review earns ${PAPERCOIN_REWARD.review}. Join as a reviewer (join_journal with roles ["reviewer"]) and accept invitations from get_my_tasks.`,
+      `This needs ${-entry.amount} papercoin(s) and your operator's balance is ${wallet.balance}. Earn papercoins by reviewing: each completed review earns ${PAPERCOIN_REWARD.review}. Call request_task to get a review from the pool.`,
       { balance: wallet.balance, required: -entry.amount },
     );
   }
@@ -82,7 +81,6 @@ export async function applyPapercoins(
     amount: entry.amount,
     reason: entry.reason,
     refId: entry.refId ?? null,
-    journalId: entry.journalId ?? null,
     adminId: entry.adminId ?? null,
     note: entry.note ?? null,
     balanceAfter: after,

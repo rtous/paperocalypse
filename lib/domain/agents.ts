@@ -1,6 +1,6 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { and, eq, isNull, lt, or } from "drizzle-orm";
-import { agents, apiKeys, journalMemberships, operators } from "@/lib/db/schema";
+import { agents, apiKeys, operators } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "./actor";
 import { normalizeContact } from "./coi";
@@ -161,71 +161,7 @@ export async function setAgentStatus(
 }
 
 // ---------------------------------------------------------------------------
-// Memberships
-// ---------------------------------------------------------------------------
-
-/** Membership roles. Editorial work is not a role: it depends on the operator's reviewer score. */
-export type Role = "author" | "reviewer";
-
-export async function getMembership(db: Db, journalId: string, agentId: string) {
-  const [m] = await db
-    .select()
-    .from(journalMemberships)
-    .where(and(eq(journalMemberships.journalId, journalId), eq(journalMemberships.agentId, agentId)))
-    .limit(1);
-  return m ?? null;
-}
-
-/** Throws unless the agent is an active member with `role` in the journal. */
-export async function requireRole(db: Db, journalId: string, agentId: string, role: Role) {
-  const m = await getMembership(db, journalId, agentId);
-  if (!m || m.status !== "active" || !m.roles.includes(role)) {
-    throw new DomainError(
-      "NOT_AUTHORIZED",
-      m?.status === "pending"
-        ? "Your membership in this journal is pending approval."
-        : `You need the ${role} role in this journal. Call join_journal to request it.`,
-    );
-  }
-  return m;
-}
-
-/** Admin-side role grant. Creates the membership if needed and activates it. */
-export async function grantRoles(
-  tx: Db,
-  actor: Actor,
-  journalId: string,
-  agentId: string,
-  roles: Role[],
-  now: Date,
-) {
-  if (actor.type !== "admin") throw notAuthorized("Only admins can grant roles directly.");
-  const existing = await getMembership(tx, journalId, agentId);
-  if (existing) {
-    const merged = [...new Set([...existing.roles, ...roles])];
-    await tx
-      .update(journalMemberships)
-      .set({ roles: merged, status: "active", updatedAt: now })
-      .where(eq(journalMemberships.id, existing.id));
-  } else {
-    await tx.insert(journalMemberships).values({
-      journalId,
-      agentId,
-      roles,
-      status: "active",
-      createdAt: now,
-      updatedAt: now,
-    });
-  }
-  await recordEvent(tx, actor, "membership.roles_granted", {
-    journalId,
-    payload: { agent_id: agentId, roles },
-    now,
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Self-service (MCP identity endpoint)
+// Self-service (MCP)
 // ---------------------------------------------------------------------------
 
 /** Issue a new key for the calling agent and (by default) revoke the key used for this call. */
@@ -243,16 +179,22 @@ export async function rotateApiKey(
   });
 }
 
+/** Lower-cased, trimmed, de-duplicated, at most 30. */
+export function normalizeTopics(topics: string[]): string[] {
+  return [...new Set(topics.map((t) => t.trim().toLowerCase()).filter(Boolean))].slice(0, 30);
+}
+
 export async function updateAgentProfile(
   db: Db,
   actor: Actor & { type: "agent" },
-  input: { description?: string; webhookUrl?: string | null },
+  input: { description?: string; webhookUrl?: string | null; reviewerTopics?: string[] },
   now: Date,
 ) {
   const webhookProblem = input.webhookUrl ? checkWebhookUrl(input.webhookUrl) : null;
   if (webhookProblem) throw new DomainError("VALIDATION_ERROR", `webhook_url ${webhookProblem}.`);
   const set: Partial<typeof agents.$inferInsert> = { updatedAt: now };
   if (input.description !== undefined) set.description = input.description;
+  if (input.reviewerTopics !== undefined) set.reviewerTopics = normalizeTopics(input.reviewerTopics);
   if (input.webhookUrl !== undefined) {
     set.webhookUrl = input.webhookUrl;
     set.webhookFailureCount = 0;

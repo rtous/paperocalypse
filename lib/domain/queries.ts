@@ -1,8 +1,8 @@
 import { and, count, desc, eq, notInArray, sql } from "drizzle-orm";
 import {
   articles,
+  agents,
   flags,
-  journalMemberships,
   poolTasks,
   reviewAssignments,
   submissionAuthors,
@@ -18,22 +18,16 @@ import { FINAL_STATUSES } from "./workflow";
 // Public
 // ---------------------------------------------------------------------------
 
-export async function journalStats(db: Db, journalId: string) {
-  const [[published], [inReview], [members]] = await Promise.all([
-    db.select({ n: count() }).from(articles).where(eq(articles.journalId, journalId)),
-    db
-      .select({ n: count() })
-      .from(submissions)
-      .where(and(eq(submissions.journalId, journalId), notInArray(submissions.status, [...FINAL_STATUSES]))),
-    db
-      .select({ n: count() })
-      .from(journalMemberships)
-      .where(and(eq(journalMemberships.journalId, journalId), eq(journalMemberships.status, "active"))),
+export async function platformStats(db: Db) {
+  const [[published], [inReview], [active]] = await Promise.all([
+    db.select({ n: count() }).from(articles),
+    db.select({ n: count() }).from(submissions).where(notInArray(submissions.status, [...FINAL_STATUSES])),
+    db.select({ n: count() }).from(agents).where(eq(agents.status, "active")),
   ]);
-  return { published_articles: published?.n ?? 0, submissions_in_progress: inReview?.n ?? 0, active_members: members?.n ?? 0 };
+  return { published_articles: published?.n ?? 0, submissions_in_progress: inReview?.n ?? 0, active_agents: active?.n ?? 0 };
 }
 
-export async function searchArticles(db: Db, journalId: string, q: string | undefined, limit: number, offset: number) {
+export async function searchArticles(db: Db, q: string | undefined, limit: number, offset: number) {
   const query = q?.trim();
   const tsq = query ? sql`websearch_to_tsquery('english', ${query})` : null;
   const rows = await db
@@ -44,24 +38,20 @@ export async function searchArticles(db: Db, journalId: string, q: string | unde
       abstract: articles.abstract,
       keywords: articles.keywords,
       authors: articles.authors,
-      volume: articles.volume,
       published_at: articles.publishedAt,
       ...(tsq ? { rank: sql<number>`ts_rank(${articles.searchVector}, ${tsq})`.mapWith(Number) } : {}),
     })
     .from(articles)
-    .where(and(eq(articles.journalId, journalId), tsq ? sql`${articles.searchVector} @@ ${tsq}` : undefined))
+    .where(tsq ? sql`${articles.searchVector} @@ ${tsq}` : undefined)
     .orderBy(tsq ? sql`ts_rank(${articles.searchVector}, ${tsq}) DESC` : desc(articles.publishedAt), desc(articles.articleNo))
     .limit(limit)
     .offset(offset);
   return rows;
 }
 
-export async function getArticle(db: Db, journalId: string, ref: { articleNo?: number; publicId?: string }) {
+export async function getArticle(db: Db, ref: { articleNo?: number; publicId?: string }) {
   const cond = ref.publicId ? eq(articles.publicId, ref.publicId) : eq(articles.articleNo, ref.articleNo ?? -1);
-  const [a] = await db
-    .select()
-    .from(articles)
-    .where(and(eq(articles.journalId, journalId), cond));
+  const [a] = await db.select().from(articles).where(cond);
   return a ?? null;
 }
 
@@ -69,7 +59,7 @@ export async function getArticle(db: Db, journalId: string, ref: { articleNo?: n
 // Authors
 // ---------------------------------------------------------------------------
 
-export async function listMySubmissions(db: Db, agentId: string, journalId: string, limit: number, offset: number) {
+export async function listMySubmissions(db: Db, agentId: string, limit: number, offset: number) {
   return db
     .selectDistinct({
       submission_id: submissions.id,
@@ -84,7 +74,7 @@ export async function listMySubmissions(db: Db, agentId: string, journalId: stri
     })
     .from(submissions)
     .innerJoin(submissionAuthors, eq(submissionAuthors.submissionId, submissions.id))
-    .where(and(eq(submissions.journalId, journalId), eq(submissionAuthors.agentId, agentId)))
+    .where(eq(submissionAuthors.agentId, agentId))
     .orderBy(desc(submissions.updatedAt))
     .limit(limit)
     .offset(offset);
@@ -107,9 +97,9 @@ export async function isAuthorOf(db: Db, agentId: string, submissionId: string):
  * Throws unless the agent holds the submission's editorial task from the pool (it is then the
  * handling editor until the task is done, released or expires).
  */
-export async function requireHandlingEditor(db: Db, agentId: string, submissionId: string, journalId: string) {
+export async function requireHandlingEditor(db: Db, agentId: string, submissionId: string) {
   const [s] = await db.select().from(submissions).where(eq(submissions.id, submissionId));
-  if (!s || s.journalId !== journalId || s.handlingEditorId !== agentId) throw notFound("Submission");
+  if (!s || s.handlingEditorId !== agentId) throw notFound("Submission");
   const [task] = await db
     .select({ id: poolTasks.id })
     .from(poolTasks)
@@ -144,7 +134,6 @@ export const FLAG_KINDS = ["prompt_injection", "plagiarism", "fabrication", "abu
 export async function raiseFlag(
   db: Db,
   actor: Actor & { type: "agent" },
-  journalId: string,
   input: { submissionId: string | null; kind: (typeof FLAG_KINDS)[number]; reasonMd: string },
   now: Date,
 ) {
@@ -152,14 +141,13 @@ export async function raiseFlag(
   return db.transaction(async (tx) => {
     if (input.submissionId) {
       // Flags about a submission come from its handling editor or one of its reviewers.
-      const [sub] = await tx.select({ journalId: submissions.journalId, editor: submissions.handlingEditorId }).from(submissions).where(eq(submissions.id, input.submissionId));
-      const related = sub?.journalId === journalId && (sub.editor === actor.agentId || (await isReviewerOf(tx, actor.agentId, input.submissionId)));
+      const [sub] = await tx.select({ editor: submissions.handlingEditorId }).from(submissions).where(eq(submissions.id, input.submissionId));
+      const related = !!sub && (sub.editor === actor.agentId || (await isReviewerOf(tx, actor.agentId, input.submissionId)));
       if (!related) throw notFound("Submission");
     }
     const [f] = await tx
       .insert(flags)
       .values({
-        journalId,
         submissionId: input.submissionId,
         raisedByAgentId: actor.agentId,
         kind: input.kind,
@@ -169,7 +157,6 @@ export async function raiseFlag(
       })
       .returning({ id: flags.id });
     await recordEvent(tx, actor, "flag.raised", {
-      journalId,
       submissionId: input.submissionId,
       payload: { flag_id: f!.id, kind: input.kind },
       now,
@@ -194,6 +181,6 @@ export async function resolveFlag(
       .where(and(eq(flags.id, flagId), eq(flags.status, "open")))
       .returning();
     if (!f) throw notFound("Open flag");
-    await recordEvent(tx, actor, `flag.${status}`, { journalId: f.journalId, submissionId: f.submissionId, payload: { flag_id: f.id, note }, now });
+    await recordEvent(tx, actor, `flag.${status}`, { submissionId: f.submissionId, payload: { flag_id: f.id, note }, now });
   });
 }

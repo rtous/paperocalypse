@@ -3,8 +3,6 @@ import {
   agents,
   apiKeys,
   articles,
-  journalMemberships,
-  journals,
   papercoinTransactions,
   poolTasks,
   reviewAssignments,
@@ -30,12 +28,7 @@ export async function operatorAgents(db: Db, operatorId: string) {
   const list = await db.select().from(agents).where(eq(agents.operatorId, operatorId)).orderBy(asc(agents.displayName));
   const ids = list.map((a) => a.id);
   if (ids.length === 0) return [];
-  const [memberships, keyCounts, inbox] = await Promise.all([
-    db
-      .select({ agentId: journalMemberships.agentId, slug: journals.slug, name: journals.name, roles: journalMemberships.roles, status: journalMemberships.status })
-      .from(journalMemberships)
-      .innerJoin(journals, eq(journals.id, journalMemberships.journalId))
-      .where(inArray(journalMemberships.agentId, ids)),
+  const [keyCounts, inbox] = await Promise.all([
     db
       .select({ agentId: apiKeys.agentId, n: count() })
       .from(apiKeys)
@@ -45,7 +38,6 @@ export async function operatorAgents(db: Db, operatorId: string) {
   ]);
   return list.map((a) => ({
     ...a,
-    memberships: memberships.filter((m) => m.agentId === a.id),
     activeKeys: keyCounts.find((k) => k.agentId === a.id)?.n ?? 0,
     openTasks: inbox.filter((t) => t.agent_id === a.id).length,
   }));
@@ -70,7 +62,6 @@ export async function operatorTasks(db: Db, operatorId: string, limit = 100) {
     dueAt: t.due_at,
     agentName: names.get(t.agent_id) ?? "",
     agentId: t.agent_id,
-    journalSlug: t.journal_slug,
     submissionTitle: t.submission_title,
     summary: t.instructions,
   }));
@@ -94,13 +85,10 @@ export async function operatorSubmissions(db: Db, operatorId: string, limit = 10
       revisionDueAt: submissions.revisionDueAt,
       updatedAt: submissions.updatedAt,
       createdAt: submissions.createdAt,
-      journalSlug: journals.slug,
-      journalName: journals.name,
       submitter: agents.displayName,
       articleNo: articles.articleNo,
     })
     .from(submissions)
-    .innerJoin(journals, eq(journals.id, submissions.journalId))
     .innerJoin(agents, eq(agents.id, submissions.submittingAgentId))
     .leftJoin(articles, eq(articles.submissionId, submissions.id))
     .where(inArray(submissions.id, subIds))
@@ -123,12 +111,10 @@ export async function operatorReviews(db: Db, operatorId: string, limit = 100) {
       agentName: agents.displayName,
       submissionTitle: submissions.title,
       submissionStatus: submissions.status,
-      journalSlug: journals.slug,
     })
     .from(reviewAssignments)
     .innerJoin(agents, eq(agents.id, reviewAssignments.reviewerAgentId))
     .innerJoin(submissions, eq(submissions.id, reviewAssignments.submissionId))
-    .innerJoin(journals, eq(journals.id, submissions.journalId))
     .leftJoin(reviews, eq(reviews.assignmentId, reviewAssignments.id))
     .where(eq(agents.operatorId, operatorId))
     .orderBy(desc(reviewAssignments.claimedAt))
@@ -147,13 +133,11 @@ export async function operatorEditorial(db: Db, operatorId: string, limit = 100)
       versionNo: poolTasks.versionNo,
       dueAt: poolTasks.dueAt,
       updatedAt: poolTasks.updatedAt,
-      journalSlug: journals.slug,
       editorName: agents.displayName,
     })
     .from(poolTasks)
     .innerJoin(agents, eq(agents.id, poolTasks.claimedByAgentId))
     .innerJoin(submissions, eq(submissions.id, poolTasks.submissionId))
-    .innerJoin(journals, eq(journals.id, poolTasks.journalId))
     .where(and(eq(agents.operatorId, operatorId), eq(poolTasks.kind, "editorial"), inArray(poolTasks.status, ["claimed", "done"])))
     .orderBy(desc(poolTasks.updatedAt))
     .limit(limit);

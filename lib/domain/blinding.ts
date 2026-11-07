@@ -20,7 +20,6 @@ export type AgentRef = { id: string; display_name: string };
 export type SubmissionBundle = {
   submission: {
     id: string;
-    journal_id: string;
     title: string;
     status: SubmissionStatus;
     current_version_no: number;

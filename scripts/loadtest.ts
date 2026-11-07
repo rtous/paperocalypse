@@ -3,17 +3,17 @@
  * pool (request + release of an editorial task, which scans the open tasks).
  *
  *   npm run loadtest                                  # in-process, fresh PGlite, 300 submissions
- *   npm run loadtest -- --base https://<preview>      # over HTTP (seeds a small journal via DATABASE_URL,
- *                                                     # stays within the per-key rate limits)
+ *   npm run loadtest -- --base https://<preview>      # over HTTP (seeds 30 submissions via DATABASE_URL,
+ *                                                     # stays within the per-key rate limits; use a
+ *                                                     # preview: the seeded work stays in its pool)
  *
  * Reports latency percentiles, response sizes and (in-process) SQL statements per call, which
- * catches N+1 query patterns. The load-test journal is archived at the end.
+ * catches N+1 query patterns.
  */
-import { and, eq } from "drizzle-orm";
-import { admins, journalMemberships, settings } from "@/lib/db/schema";
+import { eq, inArray } from "drizzle-orm";
+import { admins, agents, settings } from "@/lib/db/schema";
 import { requestTask } from "@/lib/domain/pool";
-import { createAgent, grantRoles, issueApiKey } from "@/lib/domain/agents";
-import { createJournal, setJournalStatus } from "@/lib/domain/journals";
+import { createAgent, issueApiKey } from "@/lib/domain/agents";
 import { upsertOperatorFromLogin } from "@/lib/domain/operators";
 import { adjustPapercoins } from "@/lib/domain/papercoins";
 import { DEFAULT_POLICY } from "@/lib/domain/policy";
@@ -57,7 +57,10 @@ async function main() {
     // Our own throwaway database: lift the rate limits so they don't dominate the measurement.
     await db.insert(settings).values({
       key: "platform",
-      value: { rate_limits: { read_per_minute: 10000, write_per_minute: 10000, ip_read_per_minute: 10000, ip_write_per_minute: 10000, register_per_ip_per_hour: 1000 } },
+      value: {
+        rate_limits: { read_per_minute: 10000, write_per_minute: 10000, ip_read_per_minute: 10000, ip_write_per_minute: 10000 },
+        policy: { ...DEFAULT_POLICY, max_submissions_per_agent_per_day: 100, max_open_submissions_per_agent: 100, reviewers_per_submission: 3 },
+      },
     });
   }
   const email = big ? "load-admin@example.org" : (process.env.ADMIN_EMAILS ?? "").split(",")[0]!.trim().toLowerCase();
@@ -65,47 +68,27 @@ async function main() {
   const [adminRow] = await db.select().from(admins).where(eq(admins.email, email));
   const admin = { type: "admin" as const, adminId: adminRow!.id };
   const now = () => new Date();
-  const slug = `load-${new Date().toISOString().replace(/[^0-9]/g, "").slice(2, 14)}`;
-  const journal = await createJournal(
-    db,
-    admin,
-    {
-      slug,
-      name: `Load test ${slug}`,
-      policy: {
-        ...DEFAULT_POLICY,
-        require_operator_contact: false,
-        max_submissions_per_agent_per_day: 100,
-        max_open_submissions_per_agent: 100,
-        reviewers_per_submission: 3,
-      },
-    },
-    now(),
-  );
-  await setJournalStatus(db, admin, journal.id, "open", now());
-
-  const mk = async (name: string, roles: ("author" | "reviewer")[]) => {
-    const op = (await upsertOperatorFromLogin(db, { email: `${name}-${slug}@load.test`, name: `Operator of ${name}` }, now()))!;
+  const run = new Date().toISOString().replace(/[^0-9]/g, "").slice(2, 14);
+  const mk = async (name: string) => {
+    const op = (await upsertOperatorFromLogin(db, { email: `${name}-${run}@load.test`, name: `Operator of ${name}` }, now()))!;
     const a = await createAgent(db, admin, { displayName: name, operatorId: op.id }, now());
-    await grantRoles(db, admin, journal.id, a.id, roles, now());
     await adjustPapercoins(db, admin, op.id, 1000, "load test balance", now());
     const key = (await db.transaction((tx) => issueApiKey(tx, admin, a.id, "load", now()))).apiKey;
     return { type: "agent" as const, agentId: a.id, key };
   };
-  const editor = await mk("LoadEditor", ["reviewer"]);
-  const authors = await Promise.all(Array.from({ length: big ? 5 : 2 }, (_, i) => mk(`LoadAuthor${i}`, ["author"])));
-  const hot = await mk("HotReviewer", ["reviewer"]);
+  const editor = await mk("LoadEditor");
+  const authors = await Promise.all(Array.from({ length: big ? 5 : 2 }, (_, i) => mk(`LoadAuthor${i}`)));
+  const hot = await mk("HotReviewer");
   await db
-    .update(journalMemberships)
+    .update(agents)
     .set({ reviewerTopics: ["load", "testing"] })
-    .where(and(eq(journalMemberships.journalId, journal.id)));
+    .where(inArray(agents.id, [editor.agentId, hot.agentId]));
 
   const body = "# Introduction\n\n" + "A sentence of a long manuscript, with $x^2$ math and **bold** text. ".repeat(2200); // ~150k chars
   const submit = (i: number) =>
     submitManuscript(
       db,
       authors[i % authors.length]!,
-      journal.id,
       {
         title: `Load manuscript ${i}`,
         abstract: "An abstract long enough for the validators, describing the load test manuscript.",
@@ -121,10 +104,10 @@ async function main() {
   const SENT = Math.min(20, SUBMISSIONS);
   for (let i = 0; i < SENT; i++) {
     await submit(i);
-    const r = await requestTask(db, editor, journal.id, now());
+    const r = await requestTask(db, editor, now());
     if (r.task) await sendToReview(db, editor, r.task.submissionId, now());
   }
-  const hotTask = await requestTask(db, hot, journal.id, now());
+  const hotTask = await requestTask(db, hot, now());
   const assignments = hotTask.task && hotTask.assignmentId ? [hotTask.assignmentId] : [];
   for (let i = SENT; i < SUBMISSIONS; i++) {
     await submit(i);
@@ -133,7 +116,7 @@ async function main() {
   console.log(`  seeded in ${((Date.now() - t0) / 1000).toFixed(1)} s; ${SUBMISSIONS - SENT} editorial tasks in the pool`);
 
   // ---------------------------------------------------------------- load
-  const J = `/api/j/${slug}/mcp`;
+  const J = "/api/mcp";
   const ed = new Agent(h, "editor", (m) => console.log(`  ${m}`));
   await ed.useKey(editor.key);
   const rv = new Agent(h, "reviewer", (m) => console.log(`  ${m}`));
@@ -178,8 +161,6 @@ async function main() {
   for (const r of rows) console.log(r);
   console.log(`\nrate-limit waits: editor ${ed.rateLimitWaits}, reviewer ${rv.rateLimitWaits}`);
 
-  await setJournalStatus(db, admin, journal.id, "closed", now());
-  await setJournalStatus(db, admin, journal.id, "archived", now());
   await ed.close();
   await rv.close();
   await h.close();

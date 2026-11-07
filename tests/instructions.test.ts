@@ -1,74 +1,47 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { journals } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import { DomainError } from "@/lib/domain/errors";
-import { DEFAULT_INSTRUCTIONS_TEMPLATE, renderInstructions, renderTemplate, scopeSummary } from "@/lib/domain/instructions";
+import { INSTRUCTIONS_TEMPLATE, renderInstructions, renderTemplate, scopeSummary } from "@/lib/domain/instructions";
 import { DEFAULT_POLICY } from "@/lib/domain/policy";
 import { getPlatformSettings, platformSettingsSchema, savePlatformSettings } from "@/lib/domain/settings";
 import { createTestDb } from "./helpers/db";
 import { T0, createAdmin } from "./helpers/fixtures";
 
-const journal = (policy = {}, extra: Partial<typeof journals.$inferSelect> = {}) =>
-  ({
-    id: "j1",
-    slug: "synth",
-    name: "Journal of Synthetic Inquiry",
-    tagline: "",
-    scopeMd: "Short **research notes** on [anything](https://x.org).\n\nSecond paragraph.",
-    authorGuidelinesMd: "",
-    reviewerGuidelinesMd: "",
-    editorGuidelinesMd: "",
-    agentInstructionsTemplateMd: null,
-    status: "open",
-    policy: { ...DEFAULT_POLICY, ...policy },
-    lastArticleNo: 0,
-    createdAt: T0,
-    updatedAt: T0,
-    ...extra,
-  }) as typeof journals.$inferSelect;
-
 const defaults = platformSettingsSchema.parse({});
 const BASE = "https://p.example";
 
 describe("agent instructions", () => {
-  it("fills every placeholder in the default template", () => {
-    const text = renderInstructions(journal(), defaults, BASE);
+  it("fills every placeholder in the template", () => {
+    const text = renderInstructions(defaults, BASE);
     expect(text).not.toMatch(/\{\{/);
-    expect(text).toContain("Contributing to Journal of Synthetic Inquiry with your AI agent");
-    expect(text).toContain("Scope: Short research notes on anything.");
-    expect(text).toContain(`MCP endpoint (Streamable HTTP): ${BASE}/api/j/synth/mcp`);
-    expect(text).toContain(`claude mcp add --transport http synth ${BASE}/api/j/synth/mcp --header "Authorization: Bearer <YOUR_API_KEY>"`);
+    expect(text).toContain("Contributing to Paperocalypse with your AI agent");
+    expect(text).toContain("Scope: Paperocalypse publishes original research");
+    expect(text).toContain(`MCP endpoint (Streamable HTTP): ${BASE}/api/mcp`);
+    expect(text).toContain(`claude mcp add --transport http paperocalypse ${BASE}/api/mcp --header "Authorization: Bearer <YOUR_API_KEY>"`);
     expect(text).toContain(`Sign in at ${BASE}/operator with GitHub, click "Create agent"`);
-    expect(text).not.toContain("register_agent");
+    expect(text).not.toMatch(/journal/i);
     expect(text).toContain("Deadlines: 168h for reviews, 48h for editorial tasks, 336h for revisions.");
     expect(text).toContain("call request_task");
     expect(text).toContain("Limits: 3 submissions/day, manuscripts up to 200,000 characters.");
     expect(text).toContain("Papercoins belong to your human operator and are shared by all of their agents: submitting costs 1, publishing costs 2, and each review or editorial task you complete earns 1. New operators start with 3;");
-    expect(text).toContain(`Reviewer: ${BASE}/j/synth/guidelines/reviewer`);
+    expect(text).toContain(`Reviewer: ${BASE}/guidelines/reviewer`);
   });
 
-  it("adapts to registration mode and operator requirement", () => {
-    expect(renderInstructions(journal({ registration_mode: "invite_code" }), defaults, BASE)).toContain(
-      "(author and/or reviewer) and the invite_code you received",
-    );
-    expect(renderInstructions(journal({ registration_mode: "admin_approval" }), defaults, BASE)).toContain("approved by the journal admins");
+  it("follows the platform policy", () => {
+    const text = renderInstructions({ ...defaults, policy: { ...DEFAULT_POLICY, review_deadline_hours: 24 } }, BASE);
+    expect(text).toContain("Deadlines: 24h for reviews");
   });
 
-  it("uses a custom template and leaves unknown placeholders visible", () => {
-    const text = renderInstructions(journal({}, { agentInstructionsTemplateMd: "Hi {{journal_name}} {{ slug }} {{typo}}" }), defaults, BASE);
-    expect(text).toBe("Hi Journal of Synthetic Inquiry synth {{typo}}");
-    expect(renderTemplate("{{a}}{{b}}", { a: "1" })).toBe("1{{b}}");
+  it("leaves unknown placeholders visible", () => {
+    expect(renderTemplate("{{a}}{{ b }}{{typo}}", { a: "1", b: "2" })).toBe("12{{typo}}");
   });
 
   it("summarises the scope", () => {
-    expect(scopeSummary("")).toBe("See the journal page.");
+    expect(scopeSummary("")).toBe("See the home page.");
     expect(scopeSummary("# Title\n\nbody")).toBe("Title");
+    expect(scopeSummary("Short **research notes** on [anything](https://x.org).\n\nSecond.")).toBe("Short research notes on anything.");
     expect(scopeSummary("x".repeat(400)).length).toBe(300);
-    expect(DEFAULT_INSTRUCTIONS_TEMPLATE).toContain("{{base_url}}/operator");
-    // Old custom templates that still use {{identity_step}} get a sensible sentence.
-    expect(renderInstructions(journal({}, { agentInstructionsTemplateMd: "{{identity_step}}" }), defaults, BASE)).toBe(
-      `Your human operator creates your identity at ${BASE}/operator and gives you an API key.`,
-    );
+    expect(INSTRUCTIONS_TEMPLATE).toContain("{{base_url}}/operator");
   });
 });
 

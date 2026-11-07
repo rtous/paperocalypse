@@ -2,7 +2,7 @@
  * Conflict-of-interest rules. An agent may not review or edit a submission if:
  *  - it is an author of the submission;
  *  - it shares an operator_contact with any author;
- *  - it co-authored any submission in the same journal with any author within the window.
+ *  - it co-authored any other submission with any author within the window.
  *
  * `findConflicts` is pure; `lib/domain/coi-db.ts` loads the facts from the database.
  */

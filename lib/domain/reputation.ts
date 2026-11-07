@@ -14,14 +14,14 @@ import { eligibleCitationsSql, firstYearEndsAt, rowsOf } from "@/lib/domain/cita
  *   earned: its 1YP compared with the average 1YP of all mature papers.
  *
  * A value equal to the average maps to 2.5; twice the average or more maps to 5; no citations
- * map to 0. All journals count, with no adjustment for field or year.
+ * map to 0. All papers count, with no adjustment for field or year.
  */
 
 export const SCORE_MAX = 5;
 /** Score of authors and reviewers whose work has no complete first year yet. */
 export const NEW_SCORE = 5;
 
-export type RepArticle = { id: string; journalId: string; publishedAt: Date; operatorIds: string[] };
+export type RepArticle = { id: string; publishedAt: Date; operatorIds: string[] };
 /** An eligible citation (self-citations already removed). */
 export type RepCitation = { citingId: string; citedId: string; withinFirstYear: boolean };
 /** A reviewer agent's latest review of a published paper. */
@@ -150,14 +150,14 @@ export type ReputationData = {
   articles: (RepArticle & { authorAgents: { agentId: string; operatorId: string; displayName: string }[] })[];
   citations: RepCitation[];
   reviews: RepReview[];
-  /** Submitted reviews per reviewer operator and journal (published or not), for rankings. */
-  reviewCounts: { operatorId: string; journalId: string; n: number }[];
+  /** Submitted reviews per reviewer operator (published or not), for rankings. */
+  reviewCounts: { operatorId: string; n: number }[];
 };
 
 export async function loadReputationData(db: Db): Promise<ReputationData> {
   const [articleRows, citationRows, reviewRows, countRows] = await Promise.all([
     db.execute(sql`
-      SELECT a.id, a.journal_id, a.published_at, ag.id AS agent_id, ag.operator_id, ag.display_name
+      SELECT a.id, a.published_at, ag.id AS agent_id, ag.operator_id, ag.display_name
       FROM articles a
       LEFT JOIN LATERAL jsonb_array_elements(a.authors) au ON true
       LEFT JOIN agents ag ON ag.id::text = au->>'agent_id'
@@ -174,13 +174,12 @@ export async function loadReputationData(db: Db): Promise<ReputationData> {
       ORDER BY ra.reviewer_agent_id, art.id, ra.version_no DESC
     `),
     db.execute(sql`
-      SELECT ag.operator_id, s.journal_id, count(*) AS n
+      SELECT ag.operator_id, count(*) AS n
       FROM reviews r
       JOIN review_assignments ra ON ra.id = r.assignment_id
-      JOIN submissions s ON s.id = ra.submission_id
       JOIN agents ag ON ag.id = ra.reviewer_agent_id
       WHERE ra.status = 'submitted'
-      GROUP BY ag.operator_id, s.journal_id
+      GROUP BY ag.operator_id
     `),
   ]);
 
@@ -189,7 +188,7 @@ export async function loadReputationData(db: Db): Promise<ReputationData> {
     const id = String(r.id);
     let a = articles.get(id);
     if (!a) {
-      a = { id, journalId: String(r.journal_id), publishedAt: new Date(r.published_at as string), operatorIds: [], authorAgents: [] };
+      a = { id, publishedAt: new Date(r.published_at as string), operatorIds: [], authorAgents: [] };
       articles.set(id, a);
     }
     if (r.agent_id && r.operator_id) {
@@ -213,7 +212,6 @@ export async function loadReputationData(db: Db): Promise<ReputationData> {
     })),
     reviewCounts: rowsOf<Record<string, unknown>>(countRows).map((r) => ({
       operatorId: String(r.operator_id),
-      journalId: String(r.journal_id),
       n: Number(r.n),
     })),
   };

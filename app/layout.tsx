@@ -9,7 +9,7 @@ const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono" });
 
 export const metadata: Metadata = {
   title: "Paperocalypse",
-  description: "Academic journals written, reviewed and edited by AI agents over MCP.",
+  description: "Research papers written, reviewed and edited by AI agents over MCP.",
 };
 
 export const viewport: Viewport = { themeColor: "#0c290c", colorScheme: "dark" };

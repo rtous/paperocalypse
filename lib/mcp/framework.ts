@@ -1,10 +1,8 @@
 import { createHmac } from "node:crypto";
 import type { CallToolResult, McpServer, ServerContext, ToolAnnotations } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import type { journals } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "@/lib/domain/actor";
-import { getMembership, type Role } from "@/lib/domain/agents";
 import type { BlobGateway } from "@/lib/domain/attachments";
 import { DomainError, type ErrorCode } from "@/lib/domain/errors";
 import { findIdempotent, requestHash, storeIdempotent } from "@/lib/domain/idempotency";
@@ -23,9 +21,7 @@ export type Deps = {
   baseUrl: string;
 };
 
-export type Journal = typeof journals.$inferSelect;
 export type Caller = { agentId: string; keyId: string };
-export type Membership = NonNullable<Awaited<ReturnType<typeof getMembership>>>;
 
 export type ToolContext = {
   deps: Deps;
@@ -33,15 +29,13 @@ export type ToolContext = {
   now: Date;
   ipHash: string | null;
   caller: Caller | null;
-  journal: Journal | null;
 };
 export type AgentContext = ToolContext & { caller: Caller; actor: Actor & { type: "agent" } };
-export type MemberContext = AgentContext & { journal: Journal; membership: Membership };
 
 export type ToolOutput = Record<string, unknown> & { next_actions: string[] };
 
-type Access = "public" | "agent" | "member";
-type CtxFor<A extends Access> = A extends "public" ? ToolContext : A extends "agent" ? AgentContext : MemberContext;
+type Access = "public" | "agent";
+type CtxFor<A extends Access> = A extends "public" ? ToolContext : AgentContext;
 
 // ---------------------------------------------------------------------------
 // Untrusted content and pagination helpers
@@ -86,14 +80,14 @@ export function okResult(data: ToolOutput): CallToolResult {
 }
 
 const ERROR_HINTS: Record<ErrorCode | "INTERNAL_ERROR", string> = {
-  NOT_AUTHORIZED: "Call whoami to check your roles and membership. Call join_journal to request author or reviewer roles.",
+  NOT_AUTHORIZED: "Check that you send a valid API key (Authorization: Bearer <api_key>) and call whoami.",
   INVALID_STATE: "Call get_my_tasks or fetch the item again to see its current state before retrying.",
   RATE_LIMITED: "Wait retry_after_seconds before retrying. Do not retry in a tight loop.",
   VALIDATION_ERROR: "Fix the arguments as described in the message and call the tool again.",
-  NOT_FOUND: "Check the id. Ids come from get_my_tasks, list_my_submissions or list_editor_queue.",
-  CONFLICT_OF_INTEREST: "Choose a different agent. suggest_reviewers only returns eligible candidates.",
+  NOT_FOUND: "Check the id. Ids come from get_my_tasks, request_task or list_my_submissions.",
+  CONFLICT_OF_INTEREST: "Release the task with release_task; request_task never hands out conflicted tasks.",
   INSUFFICIENT_PAPERCOINS:
-    "Earn papercoins by reviewing: join_journal with roles [\"reviewer\"], then call request_task to get a review and submit it with submit_review. Check your balance with get_papercoins on the identity endpoint.",
+    "Earn papercoins by reviewing: call request_task to get a review and submit it with submit_review. Check your balance with get_papercoins.",
   INTERNAL_ERROR: "This is a platform error. Retry later; if it persists, the platform admins have been notified in the logs.",
 };
 
@@ -149,8 +143,6 @@ export type ToolDef<S extends AnyObject, A extends Access> = {
   description: string;
   input: S;
   access: A;
-  /** For member tools: role required in this journal. */
-  role?: Role;
   kind: "read" | "write";
   /** Accept an optional idempotency_key; repeated calls return the original result. */
   idempotent?: boolean;
@@ -175,7 +167,6 @@ const IDEMPOTENCY = z
 export function defineTool<S extends AnyObject, A extends Access>(
   server: McpServer,
   deps: Deps,
-  journal: Journal | null,
   def: ToolDef<S, A>,
 ): void {
   const schema = def.idempotent ? def.input.extend({ idempotency_key: IDEMPOTENCY }) : def.input;
@@ -199,7 +190,6 @@ export function defineTool<S extends AnyObject, A extends Access>(
       // Who may call the tool; used by docs/MCP_REFERENCE.md and visible to clients.
       _meta: {
         "paperocalypse/access": def.access,
-        ...(def.role ? { "paperocalypse/role": def.role } : {}),
         "paperocalypse/idempotent": !!def.idempotent,
       },
     },
@@ -207,7 +197,7 @@ export function defineTool<S extends AnyObject, A extends Access>(
       const now = deps.now();
       const caller = callerFrom(ctx);
       const ipHash = hashIp(ctx.http?.req);
-      const base: ToolContext = { deps, db: deps.db, now, ipHash, caller, journal };
+      const base: ToolContext = { deps, db: deps.db, now, ipHash, caller };
       try {
         const settings = await cachedSettings(deps.db);
         await enforceRateLimits(deps.db, limitsFor(settings, def.kind, caller, ipHash), now);
@@ -222,27 +212,6 @@ export function defineTool<S extends AnyObject, A extends Access>(
           }
           const actor = { type: "agent" as const, agentId: caller.agentId, ipHash };
           full = { ...base, caller, actor } as AgentContext;
-          if (def.access === "member") {
-            if (!journal) throw new Error("member tool without a journal");
-            const membership = await getMembership(deps.db, journal.id, caller.agentId);
-            if (!membership || membership.status !== "active") {
-              throw new DomainError(
-                "NOT_AUTHORIZED",
-                membership?.status === "pending"
-                  ? "Your membership is pending approval by the journal admins. Try again later."
-                  : membership?.status === "suspended"
-                    ? "Your membership in this journal is suspended."
-                    : "You are not a member of this journal. Call join_journal first.",
-              );
-            }
-            if (def.role && !membership.roles.includes(def.role)) {
-              throw new DomainError(
-                "NOT_AUTHORIZED",
-                `This tool needs the ${def.role} role. Call join_journal with roles ["${def.role}"].`,
-              );
-            }
-            full = { ...full, membership } as MemberContext;
-          }
         }
 
         const parsed = schema.safeParse(rawArgs ?? {});
@@ -251,7 +220,7 @@ export function defineTool<S extends AnyObject, A extends Access>(
           throw new DomainError("VALIDATION_ERROR", `Invalid arguments for ${def.name}: ${issues.join("; ")}`, { issues });
         }
         const { idempotency_key: idemKey, ...args } = parsed.data as Record<string, unknown> & { idempotency_key?: string };
-        const scope = `${journal?.slug ?? "global"}:${def.name}`;
+        const scope = def.name;
         if (def.idempotent && idemKey && caller) {
           const hash = requestHash(args);
           const prior = await findIdempotent(deps.db, caller.agentId, scope, idemKey, hash, now);

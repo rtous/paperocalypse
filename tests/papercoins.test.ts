@@ -4,7 +4,6 @@ import { eq, sql } from "drizzle-orm";
 import { operators, papercoinTransactions, settings, submissions } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "@/lib/domain/actor";
-import { grantRoles } from "@/lib/domain/agents";
 import { DomainError } from "@/lib/domain/errors";
 import { adjustPapercoins, applyPapercoins, getPapercoinBalance, operatorOfAgent } from "@/lib/domain/papercoins";
 import { submitManuscript, submitReview } from "@/lib/domain/submissions";
@@ -15,7 +14,7 @@ import {
   agentFor,
   createAdmin,
   createDashboardAgent,
-  createJournal,
+  setPolicy,
   createMember,
   decide,
   hours,
@@ -37,10 +36,9 @@ afterAll(async () => close());
 
 const code = (p: Promise<unknown>) => p.then(() => null, (e) => (e instanceof DomainError ? e.code : String(e)));
 
-/** A journal member created without the fixture's generous balance. */
-async function plainMember(journalId: string, roles: ("author" | "reviewer")[], name: string) {
+/** An agent created without the fixture's generous balance. */
+async function plainMember(name: string) {
   const a = await agentFor(db, admin, name, { email: `${name}@coins.test` });
-  await grantRoles(db, admin, journalId, a.id, roles, T0);
   return { type: "agent" as const, agentId: a.id };
 }
 
@@ -70,23 +68,23 @@ describe("papercoins", () => {
   });
 
   it("charges submissions and publications, rewards reviews, and blocks authors in debt", async () => {
-    const j = await createJournal(db, { max_submissions_per_agent_per_day: 50, max_open_submissions_per_agent: 50 });
-    const editor = await createMember(db, admin, j.id, ["reviewer"]);
-    const author = await plainMember(j.id, ["author", "reviewer"], "Author");
-    const r1 = await plainMember(j.id, ["reviewer"], "R1");
-    const r2 = await plainMember(j.id, ["reviewer"], "R2");
+    await setPolicy(db, { max_submissions_per_agent_per_day: 50, max_open_submissions_per_agent: 50 });
+    const editor = await createMember(db, admin);
+    const author = await plainMember("Author");
+    const r1 = await plainMember("R1");
+    const r2 = await plainMember("R2");
 
     // Submit (3 → 2). A failed submission (validation) charges nothing.
-    expect(await code(submitManuscript(db, author, j.id, manuscript({ aiDisclosure: " " }), T0))).toBe("VALIDATION_ERROR");
+    expect(await code(submitManuscript(db, author, manuscript({ aiDisclosure: " " }), T0))).toBe("VALIDATION_ERROR");
     expect(await getPapercoinBalance(db, author.agentId)).toBe(3);
-    const { submissionId } = await submitManuscript(db, author, j.id, manuscript(), T0);
+    const { submissionId } = await submitManuscript(db, author, manuscript(), T0);
     expect(await getPapercoinBalance(db, author.agentId)).toBe(2);
 
     // Two reviews: each reviewer earns 1; editing doesn't pay twice.
-    await sendOut(db, editor, j.id, submissionId, T0);
+    await sendOut(db, editor, submissionId, T0);
     const assignments: string[] = [];
     for (const r of [r1, r2]) {
-      assignments.push(await takeReview(db, r, j.id, submissionId, T0));
+      assignments.push(await takeReview(db, r, submissionId, T0));
       await submitReview(db, r, assignments.at(-1)!, review(), T0);
     }
     await submitReview(db, r1, assignments[0]!, review({ summaryMd: "Edited summary." }), T0);
@@ -94,11 +92,11 @@ describe("papercoins", () => {
     expect(await getPapercoinBalance(db, r2.agentId)).toBe(4);
 
     // Two more submissions take the author to 0; the next is refused, nothing is created.
-    await submitManuscript(db, author, j.id, manuscript(), hours(1));
-    await submitManuscript(db, author, j.id, manuscript(), hours(2));
+    await submitManuscript(db, author, manuscript(), hours(1));
+    await submitManuscript(db, author, manuscript(), hours(2));
     expect(await getPapercoinBalance(db, author.agentId)).toBe(0);
     const before = (await db.select().from(submissions).where(eq(submissions.submittingAgentId, author.agentId))).length;
-    const err = await submitManuscript(db, author, j.id, manuscript(), hours(3)).catch((e) => e);
+    const err = await submitManuscript(db, author, manuscript(), hours(3)).catch((e) => e);
     expect(err).toBeInstanceOf(DomainError);
     expect(err.code).toBe("INSUFFICIENT_PAPERCOINS");
     expect(err.details).toMatchObject({ balance: 0, required: 1 });
@@ -108,24 +106,24 @@ describe("papercoins", () => {
     // Publication charges 2 even at 0 (the editor is never blocked): balance goes to -2.
     // Accepting publishes at once (the decision was the oldest open editorial task).
     const editorBefore = await getPapercoinBalance(db, editor.agentId);
-    await decide(db, editor, j.id, submissionId, "accept", hours(4));
+    await decide(db, editor, submissionId, "accept", hours(4));
     expect(await getPapercoinBalance(db, author.agentId)).toBe(-2);
     // Each editorial task (screening, decision) pays the editorial agent 1.
     expect(await getPapercoinBalance(db, editor.agentId)).toBe(editorBefore + 1);
 
     // The author's two pending submissions go to review (the author can't review them: conflict).
     for (const s of await db.select({ id: submissions.id }).from(submissions).where(eq(submissions.status, "with_editor"))) {
-      await sendOut(db, editor, j.id, s.id, hours(5));
+      await sendOut(db, editor, s.id, hours(5));
     }
     // Earning back by reviewing: three reviews → 1, enough to submit again.
-    const other = await createMember(db, admin, j.id, ["author"]);
+    const other = await createMember(db, admin);
     for (let i = 0; i < 3; i++) {
-      const s = await submitManuscript(db, other, j.id, manuscript(), hours(6 + i));
-      await sendOut(db, editor, j.id, s.submissionId, hours(6 + i));
-      await submitReview(db, author, await takeReview(db, author, j.id, s.submissionId, hours(6 + i)), review(), hours(6 + i));
+      const s = await submitManuscript(db, other, manuscript(), hours(6 + i));
+      await sendOut(db, editor, s.submissionId, hours(6 + i));
+      await submitReview(db, author, await takeReview(db, author, s.submissionId, hours(6 + i)), review(), hours(6 + i));
     }
     expect(await getPapercoinBalance(db, author.agentId)).toBe(1);
-    await submitManuscript(db, author, j.id, manuscript(), hours(10));
+    await submitManuscript(db, author, manuscript(), hours(10));
     expect(await getPapercoinBalance(db, author.agentId)).toBe(0);
 
     for (const a of [author, r1, r2]) expect(await ledgerIsConsistent(a.agentId)).toBe(true);
@@ -161,13 +159,12 @@ describe("papercoins over MCP", () => {
     clearSettingsCache();
     const clock = { now: T0 };
     const handle = router(makeDeps(db, fakeBlob().gateway, clock));
-    const j = await createJournal(db);
-    await createMember(db, admin, j.id, ["reviewer"]);
+    await setPolicy(db);
+    await createMember(db, admin);
 
     const reg = await createDashboardAgent(db, "coin@ops.test", "Coin Bot");
     const g = await connect(handle, "/api/mcp", reg.key);
-    const c = await connect(handle, `/api/j/${j.slug}/mcp`, reg.key);
-    await c.must("join_journal", { roles: ["author"] });
+    const c = await connect(handle, "/api/mcp", reg.key);
     expect((await c.must("get_my_tasks")).papercoins).toBe(3);
 
     const body = { title: "A paper about coins", abstract: "An abstract that is long enough to pass validation for sure.", keywords: ["coins"], body_md: "x ".repeat(200), ai_disclosure: "Written by a test script, no humans." };

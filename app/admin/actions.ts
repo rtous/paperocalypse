@@ -1,19 +1,12 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { redirect } from "next/navigation";
 import { signOut } from "@/auth";
 import { requireAdmin } from "@/lib/admin/session";
 import { getDb } from "@/lib/db";
-import { grantRoles, issueApiKey, revokeApiKey, setAgentStatus, type Role } from "@/lib/domain/agents";
+import { issueApiKey, revokeApiKey, setAgentStatus } from "@/lib/domain/agents";
 import { DomainError } from "@/lib/domain/errors";
-import { eq } from "drizzle-orm";
-import { journals } from "@/lib/db/schema";
-import { renderInstructions } from "@/lib/domain/instructions";
-import { createJournal, setInstructionsTemplate, setJournalStatus, updateJournal } from "@/lib/domain/journals";
-import { getPlatformSettings, savePlatformSettings } from "@/lib/domain/settings";
-import { baseUrl } from "@/lib/mcp/deps";
-import { createInviteCode, removeRole, revokeInviteCode, setMembershipStatus } from "@/lib/domain/memberships";
+import { savePlatformSettings } from "@/lib/domain/settings";
 import { adjustPapercoins, operatorOfAgent } from "@/lib/domain/papercoins";
 import { resolveFlag } from "@/lib/domain/queries";
 import { adminOverride } from "@/lib/domain/submissions";
@@ -24,7 +17,7 @@ export type ActionState = {
   ok?: boolean;
   error?: string;
   message?: string;
-  /** A one-time secret (API key or invite code) to show the admin exactly once. */
+  /** A one-time secret (an API key) to show the admin exactly once. */
   secret?: string;
 };
 
@@ -58,79 +51,8 @@ export async function logout(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Journals
-// ---------------------------------------------------------------------------
-
-function journalFromForm(fd: FormData) {
-  return {
-    slug: str(fd, "slug"),
-    name: str(fd, "name"),
-    tagline: str(fd, "tagline"),
-    scopeMd: str(fd, "scopeMd"),
-    authorGuidelinesMd: str(fd, "authorGuidelinesMd"),
-    reviewerGuidelinesMd: str(fd, "reviewerGuidelinesMd"),
-    editorGuidelinesMd: str(fd, "editorGuidelinesMd"),
-    policy: {
-      registration_mode: str(fd, "registration_mode"),
-      reviewers_per_submission: num(fd, "reviewers_per_submission"),
-      min_reviews_for_decision: num(fd, "min_reviews_for_decision"),
-      blinding: str(fd, "blinding"),
-      review_deadline_hours: num(fd, "review_deadline_hours"),
-      editorial_deadline_hours: num(fd, "editorial_deadline_hours"),
-      revision_deadline_hours: num(fd, "revision_deadline_hours"),
-      max_revisions: num(fd, "max_revisions"),
-      max_manuscript_chars: num(fd, "max_manuscript_chars"),
-      allowed_attachment_types: str(fd, "allowed_attachment_types")
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean),
-      max_attachment_mb: num(fd, "max_attachment_mb"),
-      max_submissions_per_agent_per_day: num(fd, "max_submissions_per_agent_per_day"),
-      max_open_submissions_per_agent: num(fd, "max_open_submissions_per_agent"),
-      require_operator_contact: bool(fd, "require_operator_contact"),
-      open_review: bool(fd, "open_review"),
-      coi_coauthor_months: num(fd, "coi_coauthor_months"),
-    },
-  };
-}
-
-export async function saveJournal(_: ActionState, fd: FormData): Promise<ActionState> {
-  const { actor } = await requireAdmin();
-  const id = str(fd, "id");
-  let createdId: string | null = null;
-  const res = await attempt(async () => {
-    if (id) {
-      await updateJournal(getDb(), actor, id, journalFromForm(fd), new Date());
-      return { ok: true, message: "Saved." };
-    }
-    createdId = (await createJournal(getDb(), actor, journalFromForm(fd), new Date())).id;
-  });
-  if (createdId) redirect(`/admin/journals/${createdId}`);
-  revalidatePath("/admin", "layout");
-  return res;
-}
-
-export async function changeJournalStatus(_: ActionState, fd: FormData): Promise<ActionState> {
-  const { actor } = await requireAdmin();
-  const status = str(fd, "status") as "draft" | "open" | "closed" | "archived";
-  const res = await attempt(() => setJournalStatus(getDb(), actor, str(fd, "journalId"), status, new Date()));
-  revalidatePath("/admin", "layout");
-  return res.error ? res : { ok: true, message: `Journal is now ${status}.` };
-}
-
-// ---------------------------------------------------------------------------
 // Agents and keys
 // ---------------------------------------------------------------------------
-
-export async function grantRolesAction(_: ActionState, fd: FormData): Promise<ActionState> {
-  const { actor } = await requireAdmin();
-  const journalId = str(fd, "journalId");
-  const roles = fd.getAll("roles").filter((r): r is Role => r === "author" || r === "reviewer");
-  if (!roles.length) return { error: "Choose at least one role." };
-  const res = await attempt(() => grantRoles(getDb(), actor, journalId, str(fd, "agentId").trim(), roles, new Date()));
-  revalidatePath(`/admin/journals/${journalId}/members`);
-  return res.error ? res : { ok: true, message: `Granted ${roles.join(", ")}.` };
-}
 
 export async function issueKeyAction(_: ActionState, fd: FormData): Promise<ActionState> {
   const { actor } = await requireAdmin();
@@ -162,57 +84,6 @@ export async function setAgentStatusAction(_: ActionState, fd: FormData): Promis
 }
 
 // ---------------------------------------------------------------------------
-// Memberships and invite codes
-// ---------------------------------------------------------------------------
-
-export async function setMembershipStatusAction(_: ActionState, fd: FormData): Promise<ActionState> {
-  const { actor } = await requireAdmin();
-  const status = str(fd, "status") === "suspended" ? "suspended" : "active";
-  const res = await attempt(() => setMembershipStatus(getDb(), actor, str(fd, "membershipId"), status, new Date()));
-  revalidatePath("/admin", "layout");
-  return res.error ? res : { ok: true, message: status === "active" ? "Approved." : "Suspended." };
-}
-
-export async function removeRoleAction(_: ActionState, fd: FormData): Promise<ActionState> {
-  const { actor } = await requireAdmin();
-  const role = str(fd, "role") as Role;
-  const res = await attempt(() => removeRole(getDb(), actor, str(fd, "membershipId"), role, new Date()));
-  revalidatePath("/admin", "layout");
-  return res.error ? res : { ok: true, message: `Removed ${role}.` };
-}
-
-export async function createInviteAction(_: ActionState, fd: FormData): Promise<ActionState> {
-  const { actor } = await requireAdmin();
-  const journalId = str(fd, "journalId");
-  const days = num(fd, "expiresInDays");
-  const roles = fd.getAll("roles").filter((r): r is Role => r === "author" || r === "reviewer");
-  const res = await attempt(async () => {
-    const { code } = await createInviteCode(
-      getDb(),
-      actor,
-      journalId,
-      {
-        roles,
-        maxUses: num(fd, "maxUses") || 1,
-        expiresAt: days > 0 ? new Date(Date.now() + days * 86_400_000) : null,
-        label: str(fd, "label"),
-      },
-      new Date(),
-    );
-    return { ok: true, message: "Invite code created.", secret: code };
-  });
-  revalidatePath(`/admin/journals/${journalId}/members`);
-  return res;
-}
-
-export async function revokeInviteAction(_: ActionState, fd: FormData): Promise<ActionState> {
-  const { actor } = await requireAdmin();
-  const res = await attempt(() => revokeInviteCode(getDb(), actor, str(fd, "inviteCodeId"), new Date()));
-  revalidatePath("/admin", "layout");
-  return res.error ? res : { ok: true, message: "Invite code revoked." };
-}
-
-// ---------------------------------------------------------------------------
 // Submissions
 // ---------------------------------------------------------------------------
 
@@ -227,26 +98,8 @@ export async function overrideAction(_: ActionState, fd: FormData): Promise<Acti
 }
 
 // ---------------------------------------------------------------------------
-// Agent instructions and platform settings
+// Platform settings
 // ---------------------------------------------------------------------------
-
-export async function previewInstructions(journalId: string, template: string): Promise<string> {
-  await requireAdmin();
-  const db = getDb();
-  const [journal] = await db.select().from(journals).where(eq(journals.id, journalId));
-  if (!journal) return "Journal not found.";
-  return renderInstructions(journal, await getPlatformSettings(db), baseUrl(), template.slice(0, 50_000) || null);
-}
-
-export async function saveInstructionsTemplate(_: ActionState, fd: FormData): Promise<ActionState> {
-  const { actor } = await requireAdmin();
-  const journalId = str(fd, "journalId");
-  const reset = str(fd, "reset") === "1";
-  const template = reset ? null : str(fd, "template");
-  const res = await attempt(() => setInstructionsTemplate(getDb(), actor, journalId, template, new Date()));
-  revalidatePath(`/admin/journals/${journalId}/instructions`);
-  return res.error ? res : { ok: true, message: reset || !template?.trim() ? "Using the default template." : "Template saved." };
-}
 
 export async function saveSettingsAction(_: ActionState, fd: FormData): Promise<ActionState> {
   const { actor } = await requireAdmin();
@@ -255,6 +108,25 @@ export async function saveSettingsAction(_: ActionState, fd: FormData): Promise<
       getDb(),
       actor,
       {
+        policy: {
+          reviewers_per_submission: num(fd, "reviewers_per_submission"),
+          min_reviews_for_decision: num(fd, "min_reviews_for_decision"),
+          blinding: str(fd, "blinding"),
+          review_deadline_hours: num(fd, "review_deadline_hours"),
+          editorial_deadline_hours: num(fd, "editorial_deadline_hours"),
+          revision_deadline_hours: num(fd, "revision_deadline_hours"),
+          max_revisions: num(fd, "max_revisions"),
+          max_manuscript_chars: num(fd, "max_manuscript_chars"),
+          allowed_attachment_types: str(fd, "allowed_attachment_types")
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean),
+          max_attachment_mb: num(fd, "max_attachment_mb"),
+          max_submissions_per_agent_per_day: num(fd, "max_submissions_per_agent_per_day"),
+          max_open_submissions_per_agent: num(fd, "max_open_submissions_per_agent"),
+          open_review: bool(fd, "open_review"),
+          coi_coauthor_months: num(fd, "coi_coauthor_months"),
+        },
         papercoin_signup_grant: num(fd, "papercoin_signup_grant"),
         rate_limits: {
           read_per_minute: num(fd, "read_per_minute"),
@@ -266,8 +138,8 @@ export async function saveSettingsAction(_: ActionState, fd: FormData): Promise<
       new Date(),
     ),
   );
-  revalidatePath("/admin/settings");
-  return res.error ? res : { ok: true, message: "Settings saved. MCP servers pick them up within a minute." };
+  revalidatePath("/", "layout");
+  return res.error ? res : { ok: true, message: "Settings saved. Rate limits reach the MCP server within a minute." };
 }
 
 export async function adjustPapercoinsAction(_: ActionState, fd: FormData): Promise<ActionState> {

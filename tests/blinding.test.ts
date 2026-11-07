@@ -53,7 +53,6 @@ const version = (n: number) => ({
 const BUNDLE: SubmissionBundle = {
   submission: {
     id: "sub-1",
-    journal_id: "j-1",
     title: "Title v2",
     status: "under_review",
     current_version_no: 2,

@@ -1,11 +1,9 @@
 import { createHash } from "node:crypto";
-import { and, asc, count, eq, gte, inArray, isNotNull, notInArray } from "drizzle-orm";
+import { and, asc, count, eq, gte, inArray, isNotNull, max, notInArray, sql } from "drizzle-orm";
 import {
   agents,
   articles,
   decisions,
-  journalMemberships,
-  journals,
   reviewAssignments,
   reviews,
   submissionAuthors,
@@ -18,7 +16,6 @@ import {
 } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import { SYSTEM, type Actor } from "./actor";
-import { requireRole } from "./agents";
 import { buildPublicReviewFile } from "./blinding";
 import { loadBundle } from "./bundle";
 import { recordCitations } from "./citations";
@@ -27,7 +24,8 @@ import { DomainError, invalidState, notAuthorized, notFound, validationError } f
 import { recordEvent } from "./events";
 import { isSevere, scanField, scanFields } from "./integrity";
 import { enqueueNotifications } from "./notify";
-import { parsePolicy, type JournalPolicy } from "./policy";
+import type { Policy } from "./policy";
+import { getPolicy } from "./settings";
 import {
   cancelPoolTasks,
   completeEditorialTask,
@@ -61,11 +59,6 @@ async function lockSubmission(tx: Db, submissionId: string): Promise<SubmissionR
   return s;
 }
 
-async function loadJournal(tx: Db, journalId: string) {
-  const [j] = await tx.select().from(journals).where(eq(journals.id, journalId));
-  if (!j) throw notFound("Journal");
-  return { ...j, policy: parsePolicy(j.policy) };
-}
 
 function roleFor(actor: Actor, sub: SubmissionRow): ActorRole {
   if (actor.type === "system") return "system";
@@ -95,7 +88,7 @@ async function applyTransition(
   sub: SubmissionRow,
   action: WorkflowAction,
   actor: Actor,
-  policy: JournalPolicy,
+  policy: Policy,
   now: Date,
   extra: Partial<typeof submissions.$inferInsert> = {},
   payload: Record<string, unknown> = {},
@@ -115,7 +108,6 @@ async function applyTransition(
     throw invalidState("The submission changed while you were acting on it. Fetch it again and retry.");
   }
   await recordEvent(tx, actor, `submission.${action}`, {
-    journalId: sub.journalId,
     submissionId: sub.id,
     payload: { from: sub.status, to, ...payload },
     now,
@@ -173,7 +165,7 @@ export type ManuscriptContent = {
   attachments?: Attachment[];
 };
 
-function validateContent(policy: JournalPolicy, c: ManuscriptContent): void {
+function validateContent(policy: Policy, c: ManuscriptContent): void {
   if (!c.title.trim()) throw validationError("title must not be empty.");
   if (!c.abstract.trim()) throw validationError("abstract must not be empty.");
   if (!c.bodyMd.trim()) throw validationError("body_md must not be empty.");
@@ -182,7 +174,7 @@ function validateContent(policy: JournalPolicy, c: ManuscriptContent): void {
   }
   if (c.bodyMd.length > policy.max_manuscript_chars) {
     throw validationError(
-      `body_md is ${c.bodyMd.length} characters; this journal allows at most ${policy.max_manuscript_chars}. Shorten the manuscript.`,
+      `body_md is ${c.bodyMd.length} characters; the platform allows at most ${policy.max_manuscript_chars}. Shorten the manuscript.`,
       { max_manuscript_chars: policy.max_manuscript_chars },
     );
   }
@@ -238,11 +230,10 @@ function scanManuscript<T extends ManuscriptContent & { responseToReviewersMd?: 
 }
 
 /** Raise an admin flag automatically when the scanner finds something serious. */
-async function flagIfSevere(tx: Db, journalId: string, submissionId: string, where: string, found: IntegrityFlag[], now: Date) {
+async function flagIfSevere(tx: Db, submissionId: string, where: string, found: IntegrityFlag[], now: Date) {
   const severe = found.filter(isSevere);
   if (severe.length === 0) return;
   await tx.insert(flags).values({
-    journalId,
     submissionId,
     raisedByAgentId: null,
     kind: "integrity_scan",
@@ -250,7 +241,7 @@ async function flagIfSevere(tx: Db, journalId: string, submissionId: string, whe
     createdAt: now,
     updatedAt: now,
   });
-  await recordEvent(tx, SYSTEM, "integrity.flagged", { journalId, submissionId, payload: { where, codes: severe.map((f) => f.code) }, now });
+  await recordEvent(tx, SYSTEM, "integrity.flagged", { submissionId, payload: { where, codes: severe.map((f) => f.code) }, now });
 }
 
 // ---------------------------------------------------------------------------
@@ -265,24 +256,11 @@ export type SubmitManuscriptInput = ManuscriptContent & {
 export async function submitManuscript(
   db: Db,
   actor: Actor & { type: "agent" },
-  journalId: string,
   input: SubmitManuscriptInput,
   now: Date,
 ) {
   return db.transaction(async (tx) => {
-    const journal = await loadJournal(tx, journalId);
-    if (journal.status !== "open") {
-      throw invalidState(`${journal.name} is not accepting submissions (status: ${journal.status}).`);
-    }
-    const policy = journal.policy;
-    await requireRole(tx, journalId, actor.agentId, "author");
-
-    const [me] = await tx.select().from(agents).where(eq(agents.id, actor.agentId));
-    if (policy.require_operator_contact && !me?.operatorContact) {
-      throw validationError(
-        "This journal requires a responsible human operator contact on your agent profile before submitting.",
-      );
-    }
+    const policy = await getPolicy(tx);
     const scanned = scanManuscript(input);
     input = scanned.input;
     validateContent(policy, input);
@@ -293,7 +271,7 @@ export async function submitManuscript(
     if (balance < PAPERCOIN_COST.submission) {
       throw new DomainError(
         "INSUFFICIENT_PAPERCOINS",
-        `Submitting costs ${PAPERCOIN_COST.submission} papercoin and your${me?.operatorId ? " operator's" : ""} balance is ${balance}. Earn papercoins by reviewing: each completed review earns ${PAPERCOIN_REWARD.review}. Join as a reviewer (join_journal with roles ["reviewer"]) and accept invitations from get_my_tasks.`,
+        `Submitting costs ${PAPERCOIN_COST.submission} papercoin and your operator's balance is ${balance}. Earn papercoins by reviewing: each completed review earns ${PAPERCOIN_REWARD.review}. Call request_task to get a review from the pool.`,
         { balance, required: PAPERCOIN_COST.submission },
       );
     }
@@ -304,7 +282,6 @@ export async function submitManuscript(
       .from(submissions)
       .where(
         and(
-          eq(submissions.journalId, journalId),
           eq(submissions.submittingAgentId, actor.agentId),
           notInArray(submissions.status, [...FINAL_STATUSES]),
         ),
@@ -321,7 +298,6 @@ export async function submitManuscript(
       .from(submissions)
       .where(
         and(
-          eq(submissions.journalId, journalId),
           eq(submissions.submittingAgentId, actor.agentId),
           gte(submissions.createdAt, dayAgo),
         ),
@@ -337,26 +313,18 @@ export async function submitManuscript(
       );
     }
 
-    // Co-authors must be distinct, active members of this journal.
+    // Co-authors must be distinct, active agents.
     const coAuthors = [...new Set(input.coAuthorAgentIds ?? [])].filter((id) => id !== actor.agentId);
     if (coAuthors.length > 0) {
-      const members = await tx
-        .select({ agentId: journalMemberships.agentId })
-        .from(journalMemberships)
-        .innerJoin(agents, eq(agents.id, journalMemberships.agentId))
-        .where(
-          and(
-            eq(journalMemberships.journalId, journalId),
-            inArray(journalMemberships.agentId, coAuthors),
-            eq(journalMemberships.status, "active"),
-            eq(agents.status, "active"),
-          ),
-        );
-      const ok = new Set(members.map((m) => m.agentId));
+      const found = await tx
+        .select({ agentId: agents.id })
+        .from(agents)
+        .where(and(inArray(agents.id, coAuthors), eq(agents.status, "active")));
+      const ok = new Set(found.map((m) => m.agentId));
       const missing = coAuthors.filter((id) => !ok.has(id));
       if (missing.length) {
         throw validationError(
-          `Co-authors must be active members of this journal: ${missing.join(", ")}. Ask them to join_journal first.`,
+          `Co-authors must be active agents on the platform: ${missing.join(", ")}.`,
           { invalid_co_author_ids: missing },
         );
       }
@@ -365,7 +333,6 @@ export async function submitManuscript(
     const [sub] = await tx
       .insert(submissions)
       .values({
-        journalId,
         submittingAgentId: actor.agentId,
         title: input.title,
         status: "with_editor",
@@ -379,7 +346,6 @@ export async function submitManuscript(
       amount: -PAPERCOIN_COST.submission,
       reason: "submission",
       refId: sub!.id,
-      journalId,
       now,
     });
 
@@ -410,9 +376,8 @@ export async function submitManuscript(
       createdAt: now,
       updatedAt: now,
     });
-    await flagIfSevere(tx, journalId, sub!.id, "version 1", scanned.flags, now);
+    await flagIfSevere(tx, sub!.id, "version 1", scanned.flags, now);
     await recordEvent(tx, actor, "submission.submitted", {
-      journalId,
       submissionId: sub!.id,
       payload: { title: input.title, version_no: 1 },
       now,
@@ -463,8 +428,8 @@ export async function deskReject(db: Db, actor: Actor, submissionId: string, let
   ensureEditorActor(actor);
   return db.transaction(async (tx) => {
     const sub = await lockSubmission(tx, submissionId);
-    const journal = await loadJournal(tx, sub.journalId);
-    await applyTransition(tx, sub, "desk_reject", actor, journal.policy, now, { decision: "desk_reject" });
+    const policy = await getPolicy(tx);
+    await applyTransition(tx, sub, "desk_reject", actor, policy, now, { decision: "desk_reject" });
     await insertDecision(tx, actor, sub, "desk_reject", letterMd, now);
     await completeEditorialTask(tx, actor, sub, now);
     await enqueueNotifications(tx, await agentAuthorIds(tx, submissionId), "submission.decision", {
@@ -480,8 +445,7 @@ export async function sendToReview(db: Db, actor: Actor, submissionId: string, n
   ensureEditorActor(actor);
   return db.transaction(async (tx) => {
     const sub = await lockSubmission(tx, submissionId);
-    const journal = await loadJournal(tx, sub.journalId);
-    const policy = journal.policy;
+    const policy = await getPolicy(tx);
     await applyTransition(tx, sub, "send_to_review", actor, policy, now, {}, { version_no: sub.currentVersionNo });
     await openReviewTasks(tx, sub, policy.reviewers_per_submission, now);
     await completeEditorialTask(tx, actor, sub, now);
@@ -508,8 +472,7 @@ export async function makeDecision(
   ensureEditorActor(actor);
   return db.transaction(async (tx) => {
     const sub = await lockSubmission(tx, submissionId);
-    const journal = await loadJournal(tx, sub.journalId);
-    const policy = journal.policy;
+    const policy = await getPolicy(tx);
 
     if (sub.status === "awaiting_decision") {
       const n = await submittedReviewCount(tx, submissionId, sub.currentVersionNo);
@@ -555,24 +518,27 @@ export async function publishArticle(
   actor: Actor,
   submissionId: string,
   now: Date,
-  opts: { issue?: number | null } = {},
 ) {
   if (actor.type !== "admin" && actor.type !== "system") throw notAuthorized("Accepted papers are published automatically.");
-  return db.transaction((tx) => publishLocked(tx, actor, submissionId, now, opts));
+  return db.transaction((tx) => publishLocked(tx, actor, submissionId, now));
 }
 
-async function publishLocked(tx: Db, actor: Actor, submissionId: string, now: Date, opts: { issue?: number | null } = {}) {
+/** Advisory lock key for assigning article numbers. */
+const ARTICLE_NO_LOCK = 7_001;
+
+async function publishLocked(tx: Db, actor: Actor, submissionId: string, now: Date) {
   {
     const sub = await lockSubmission(tx, submissionId);
-    const [journalRow] = await tx.select().from(journals).where(eq(journals.id, sub.journalId)).for("update");
-    const policy = parsePolicy(journalRow!.policy);
+    const policy = await getPolicy(tx);
     await applyTransition(tx, sub, "publish", actor, policy, now);
 
     const bundle = (await loadBundle(tx, submissionId))!;
     const version = bundle.versions.find((v) => v.version_no === sub.currentVersionNo)!;
-    const articleNo = journalRow!.lastArticleNo + 1;
+    // Article numbers are platform-wide; the advisory lock serialises concurrent publications.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(${ARTICLE_NO_LOCK})`);
+    const [last] = await tx.select({ n: max(articles.articleNo) }).from(articles);
+    const articleNo = (last?.n ?? 0) + 1;
     const year = now.getUTCFullYear();
-    const volume = year - journalRow!.createdAt.getUTCFullYear() + 1;
     const authors: FrozenAuthor[] = bundle.authors.map((a) => ({
       position: a.position,
       agent_id: a.agent?.id ?? null,
@@ -584,12 +550,9 @@ async function publishLocked(tx: Db, actor: Actor, submissionId: string, now: Da
     const [article] = await tx
       .insert(articles)
       .values({
-        journalId: sub.journalId,
         submissionId,
-        volume,
-        issue: opts.issue ?? null,
         articleNo,
-        publicId: `paperocalypse:${journalRow!.slug}.${year}.${articleNo}`,
+        publicId: `paperocalypse:${year}.${articleNo}`,
         publishedAt: now,
         versionNo: version.version_no,
         title: version.title,
@@ -614,14 +577,11 @@ async function publishLocked(tx: Db, actor: Actor, submissionId: string, now: Da
       amount: -PAPERCOIN_COST.publication,
       reason: "publication",
       refId: article!.id,
-      journalId: sub.journalId,
       allowNegative: true,
       now,
     });
-    await tx.update(journals).set({ lastArticleNo: articleNo, updatedAt: now }).where(eq(journals.id, sub.journalId));
     await tx.update(submissions).set({ publishedArticleId: article!.id }).where(eq(submissions.id, submissionId));
     await recordEvent(tx, actor, "article.published", {
-      journalId: sub.journalId,
       submissionId,
       payload: { article_id: article!.id, public_id: article!.publicId, article_no: articleNo, internal_citations: citations },
       now,
@@ -680,7 +640,7 @@ export async function submitReview(
   return db.transaction(async (tx) => {
     const a = await lockOwnAssignment(tx, actor, assignmentId);
     const sub = await lockSubmission(tx, a.submissionId);
-    const journal = await loadJournal(tx, sub.journalId);
+    const policy = await getPolicy(tx);
 
     const isEdit = a.status === "submitted";
     if (a.status === "accepted") {
@@ -722,7 +682,6 @@ export async function submitReview(
     // Only fields authors can see count as severe (confidential notes often quote injections).
     await flagIfSevere(
       tx,
-      sub.journalId,
       sub.id,
       `a review of version ${a.versionNo}`,
       scan.flags.filter((f) => f.field !== "confidential_to_editor_md"),
@@ -742,12 +701,10 @@ export async function submitReview(
         amount: PAPERCOIN_REWARD.review,
         reason: "review",
         refId: a.id,
-        journalId: sub.journalId,
         now,
       });
     }
     await recordEvent(tx, actor, isEdit ? "review.updated" : "review.submitted", {
-      journalId: sub.journalId,
       submissionId: sub.id,
       payload: { assignment_id: a.id, recommendation: input.recommendation },
       now,
@@ -755,8 +712,8 @@ export async function submitReview(
 
     if (!isEdit && sub.status === "under_review") {
       const n = await submittedReviewCount(tx, sub.id, sub.currentVersionNo);
-      if (n >= journal.policy.min_reviews_for_decision) {
-        await applyTransition(tx, sub, "reviews_complete", SYSTEM, journal.policy, now, {}, { reviews: n });
+      if (n >= policy.min_reviews_for_decision) {
+        await applyTransition(tx, sub, "reviews_complete", SYSTEM, policy, now, {}, { reviews: n });
         // The decision is the next editorial task; review slots nobody took are no longer needed.
         await cancelPoolTasks(tx, sub.id, now, { onlyUnclaimedReviews: true });
         await openEditorialTask(tx, sub, now);
@@ -781,7 +738,7 @@ export async function submitRevision(
 ) {
   return db.transaction(async (tx) => {
     const sub = await lockSubmission(tx, submissionId);
-    const journal = await loadJournal(tx, sub.journalId);
+    const policy = await getPolicy(tx);
     if (sub.status === "revision_requested" && sub.revisionDueAt && sub.revisionDueAt <= now) {
       throw invalidState("The revision deadline has passed.");
     }
@@ -790,19 +747,18 @@ export async function submitRevision(
     }
     const scanned = scanManuscript(input);
     input = scanned.input;
-    validateContent(journal.policy, input);
+    validateContent(policy, input);
     const versionNo = sub.currentVersionNo + 1;
     await applyTransition(
       tx,
       sub,
       "submit_revision",
       actor,
-      journal.policy,
+      policy,
       now,
       { currentVersionNo: versionNo, title: input.title, revisionDueAt: null },
       { version_no: versionNo },
     );
-    await requireRole(tx, sub.journalId, actor.agentId, "author");
     await tx.insert(submissionVersions).values({
       submissionId,
       versionNo,
@@ -819,7 +775,7 @@ export async function submitRevision(
       createdAt: now,
       updatedAt: now,
     });
-    await flagIfSevere(tx, sub.journalId, submissionId, `version ${versionNo}`, scanned.flags, now);
+    await flagIfSevere(tx, submissionId, `version ${versionNo}`, scanned.flags, now);
     await openEditorialTask(tx, sub, now);
     return { status: sub.status, versionNo };
   });
@@ -834,11 +790,11 @@ export async function withdrawSubmission(
 ) {
   return db.transaction(async (tx) => {
     const sub = await lockSubmission(tx, submissionId);
-    const journal = await loadJournal(tx, sub.journalId);
-    await applyTransition(tx, sub, "withdraw", actor, journal.policy, now, {}, { reason });
+    const policy = await getPolicy(tx);
+    await applyTransition(tx, sub, "withdraw", actor, policy, now, {}, { reason });
     const cancelled = await cancelOpenAssignments(tx, submissionId, now);
     const editor = sub.handlingEditorId;
-    await syncPool(tx, sub, journal.policy, now);
+    await syncPool(tx, sub, policy, now);
     await enqueueNotifications(
       tx,
       [editor, ...cancelled.map((c) => c.reviewerAgentId)],
@@ -868,7 +824,6 @@ export async function adminOverride(
     resolveAdminOverride(sub.status, to, reason);
     await tx.update(submissions).set({ status: to, updatedAt: now }).where(eq(submissions.id, submissionId));
     await recordEvent(tx, actor, "submission.admin_override", {
-      journalId: sub.journalId,
       submissionId,
       payload: { from: sub.status, to, reason },
       now,
@@ -876,7 +831,7 @@ export async function adminOverride(
     // Pending pool work is cancelled and what the new status needs is published.
     if (isFinal(to)) await cancelOpenAssignments(tx, submissionId, now);
     sub.status = to;
-    await syncPool(tx, sub, (await loadJournal(tx, sub.journalId)).policy, now);
+    await syncPool(tx, sub, await getPolicy(tx), now);
     return { status: to };
   });
 }

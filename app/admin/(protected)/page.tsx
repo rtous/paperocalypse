@@ -2,15 +2,15 @@ import Link from "next/link";
 import { resolveFlagAction } from "@/app/admin/actions";
 import { ActionForm } from "@/components/admin/action-form";
 import { PageTitle, Section } from "@/components/admin/page-title";
-import { StatusBadge, fmt } from "@/components/admin/field";
+import { fmt } from "@/components/admin/field";
 import { getDb } from "@/lib/db";
-import { journalOverview, stuckItems } from "@/lib/domain/admin-queries";
+import { stuckItems, submissionCounts } from "@/lib/domain/admin-queries";
 import { SUBMISSION_STATUSES } from "@/lib/domain/workflow";
 
 export default async function Dashboard() {
   const db = getDb();
   const now = new Date();
-  const [journals, stuck] = await Promise.all([journalOverview(db), stuckItems(db, now)]);
+  const [counts, stuck] = await Promise.all([submissionCounts(db), stuckItems(db, now)]);
   const lists = [
     { title: "Editorial tasks nobody has taken (48h+)", rows: stuck.unclaimedEditorial, when: "in pool since" },
     { title: "Review tasks nobody has taken (48h+)", rows: stuck.unclaimedReviews, when: "in pool since" },
@@ -22,61 +22,15 @@ export default async function Dashboard() {
     <>
       <PageTitle title="Dashboard" sub="Overdue items are expired automatically by the cron tick every 15 minutes." />
 
-      <Section title="Journals" actions={<Link className="text-sm underline" href="/admin/journals/new">New journal</Link>}>
-        {journals.length === 0 ? (
-          <p className="text-sm text-stone-500">No journals yet.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead className="text-left text-xs text-stone-500">
-                <tr>
-                  <th className="py-2 pr-4">Journal</th>
-                  <th className="pr-4">Status</th>
-                  <th className="pr-4">Members</th>
-                  {SUBMISSION_STATUSES.map((s) => (
-                    <th key={s} className="pr-3 font-normal">
-                      {s.replaceAll("_", " ")}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {journals.map((j) => (
-                  <tr key={j.id} className="border-t">
-                    <td className="py-2 pr-4">
-                      <Link href={`/admin/journals/${j.id}`} className="font-medium hover:underline">
-                        {j.name}
-                      </Link>
-                      <div className="text-xs text-stone-500">/{j.slug}</div>
-                    </td>
-                    <td className="pr-4">
-                      <StatusBadge status={j.status} />
-                    </td>
-                    <td className="pr-4">
-                      {j.activeMembers}
-                      {j.pendingMembers > 0 && (
-                        <Link href={`/admin/journals/${j.id}/members`} className="ml-1 text-amber-700">
-                          (+{j.pendingMembers} pending)
-                        </Link>
-                      )}
-                    </td>
-                    {SUBMISSION_STATUSES.map((s) => (
-                      <td key={s} className="pr-3 tabular-nums">
-                        {j.counts[s] ? (
-                          <Link href={`/admin/submissions?journal=${j.id}&status=${s}`} className="hover:underline">
-                            {j.counts[s]}
-                          </Link>
-                        ) : (
-                          <span className="text-stone-300">0</span>
-                        )}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+      <Section title="Submissions by status">
+        <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm">
+          {SUBMISSION_STATUSES.map((s) => (
+            <Link key={s} href={`/admin/submissions?status=${s}`} className="hover:underline">
+              <span className="text-stone-500">{s.replaceAll("_", " ")}</span>{" "}
+              <span className={`tabular-nums ${counts[s] ? "font-semibold" : "text-stone-300"}`}>{counts[s] ?? 0}</span>
+            </Link>
+          ))}
+        </div>
       </Section>
 
       <div className="grid gap-6 md:grid-cols-2">
@@ -92,7 +46,7 @@ export default async function Dashboard() {
                       {r.title}
                     </Link>
                     <div className="text-xs text-stone-500">
-                      /{r.journalSlug} · {l.when} {fmt(r.since)}
+                      {l.when} {fmt(r.since)}
                       {"reviewer" in r && r.reviewer ? ` · ${r.reviewer}` : ""}
                     </div>
                   </li>
@@ -110,7 +64,7 @@ export default async function Dashboard() {
           <ul className="space-y-2 text-sm">
             {stuck.openFlags.map((f) => (
               <li key={f.id}>
-                <span className="font-medium">{f.kind}</span> in /{f.journalSlug} · {fmt(f.createdAt)}
+                <span className="font-medium">{f.kind}</span> · {fmt(f.createdAt)}
                 {f.submissionId && (
                   <Link href={`/admin/submissions/${f.submissionId}`} className="ml-2 underline">
                     submission

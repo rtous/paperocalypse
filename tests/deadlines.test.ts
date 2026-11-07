@@ -6,13 +6,13 @@ import type { Actor } from "@/lib/domain/actor";
 import { processDeadlines } from "@/lib/domain/deadlines";
 import { DomainError } from "@/lib/domain/errors";
 import { listInbox } from "@/lib/domain/pool";
-import type { JournalPolicy } from "@/lib/domain/policy";
+import type { Policy } from "@/lib/domain/policy";
 import { adminOverride, submitManuscript, submitReview, submitRevision } from "@/lib/domain/submissions";
 import { createTestDb } from "./helpers/db";
 import {
   T0,
   createAdmin,
-  createJournal,
+  setPolicy,
   createMember,
   decide,
   hours,
@@ -34,13 +34,13 @@ beforeEach(async () => {
 });
 afterEach(async () => close());
 
-async function setup(policy: Partial<JournalPolicy>) {
-  const journal = await createJournal(db, policy);
-  const editor = await createMember(db, admin, journal.id, ["reviewer"]);
-  const author = await createMember(db, admin, journal.id, ["author"]);
+async function setup(policy: Partial<Policy>) {
+  await setPolicy(db, policy);
+  const editor = await createMember(db, admin);
+  const author = await createMember(db, admin);
   const reviewers = [];
-  for (let i = 0; i < 3; i++) reviewers.push(await createMember(db, admin, journal.id, ["reviewer"]));
-  return { journal, editor, author, reviewers };
+  for (let i = 0; i < 3; i++) reviewers.push(await createMember(db, admin));
+  return { editor, author, reviewers };
 }
 
 const kinds = async (agentId: string) => (await listInbox(db, [agentId])).map((t) => t.kind);
@@ -52,10 +52,9 @@ async function expectCode(p: Promise<unknown>, code: DomainError["code"]) {
 describe("deadlines", () => {
   it("returns late reviews to the pool, where someone else takes them", async () => {
     const ctx = await setup({ review_deadline_hours: 72 });
-    const J = ctx.journal.id;
-    const { submissionId } = await submitManuscript(db, ctx.author, J, manuscript(), T0);
-    await sendOut(db, ctx.editor, J, submissionId, T0);
-    const late = await takeReview(db, ctx.reviewers[0]!, J, submissionId, hours(1));
+    const { submissionId } = await submitManuscript(db, ctx.author, manuscript(), T0);
+    await sendOut(db, ctx.editor, submissionId, T0);
+    const late = await takeReview(db, ctx.reviewers[0]!,  submissionId, hours(1));
 
     expect(await processDeadlines(db, hours(72))).toMatchObject({ claimsExpired: 0 });
     // Due at 1h + 72h.
@@ -71,39 +70,38 @@ describe("deadlines", () => {
     // The slot is open again; the reviewer who let it expire doesn't get it back, another one does.
     const open = await db.select().from(poolTasks).where(and(eq(poolTasks.submissionId, submissionId), eq(poolTasks.status, "open")));
     expect(open.map((t) => t.kind)).toEqual(["review", "review"]);
-    await takeReview(db, ctx.reviewers[1]!, J, submissionId, hours(76));
-    await takeReview(db, ctx.reviewers[2]!, J, submissionId, hours(76));
+    await takeReview(db, ctx.reviewers[1]!,  submissionId, hours(76));
+    await takeReview(db, ctx.reviewers[2]!,  submissionId, hours(76));
   });
 
   it("returns late editorial tasks to the pool", async () => {
     const ctx = await setup({ editorial_deadline_hours: 24 });
-    const { submissionId } = await submitManuscript(db, ctx.author, ctx.journal.id, manuscript(), T0);
-    await takeTask(db, ctx.editor, ctx.journal.id, "editorial", submissionId, T0);
+    const { submissionId } = await submitManuscript(db, ctx.author, manuscript(), T0);
+    await takeTask(db, ctx.editor, "editorial", submissionId, T0);
     expect((await processDeadlines(db, hours(25))).claimsExpired).toBe(1);
     const [s] = await db.select().from(submissions).where(eq(submissions.id, submissionId));
     expect(s!.handlingEditorId).toBeNull();
     expect(await kinds(ctx.editor.agentId)).toEqual([]);
     // Another agent picks it up.
-    await takeTask(db, ctx.reviewers[0]!, ctx.journal.id, "editorial", submissionId, hours(26));
+    await takeTask(db, ctx.reviewers[0]!,  "editorial", submissionId, hours(26));
   });
 
   it("refuses late reviews even before the tick runs", async () => {
     const ctx = await setup({ review_deadline_hours: 10 });
-    const { submissionId } = await submitManuscript(db, ctx.author, ctx.journal.id, manuscript(), T0);
-    await sendOut(db, ctx.editor, ctx.journal.id, submissionId, T0);
-    const id = await takeReview(db, ctx.reviewers[0]!, ctx.journal.id, submissionId, T0);
+    const { submissionId } = await submitManuscript(db, ctx.author, manuscript(), T0);
+    await sendOut(db, ctx.editor, submissionId, T0);
+    const id = await takeReview(db, ctx.reviewers[0]!,  submissionId, T0);
     await expectCode(submitReview(db, ctx.reviewers[0]!, id, review(), hours(11)), "INVALID_STATE");
   });
 
   it("withdraws submissions whose revision deadline passed", async () => {
     const ctx = await setup({ revision_deadline_hours: 24 });
-    const J = ctx.journal.id;
-    const { submissionId } = await submitManuscript(db, ctx.author, J, manuscript(), T0);
-    await sendOut(db, ctx.editor, J, submissionId, T0);
+    const { submissionId } = await submitManuscript(db, ctx.author, manuscript(), T0);
+    await sendOut(db, ctx.editor, submissionId, T0);
     for (const r of ctx.reviewers.slice(0, 2)) {
-      await submitReview(db, r, await takeReview(db, r, J, submissionId, hours(1)), review(), hours(2));
+      await submitReview(db, r, await takeReview(db, r, submissionId, hours(1)), review(), hours(2));
     }
-    await decide(db, ctx.editor, J, submissionId, "major_revision", hours(3));
+    await decide(db, ctx.editor, submissionId, "major_revision", hours(3));
     expect(await kinds(ctx.author.agentId)).toEqual(["revise_submission"]);
 
     expect((await processDeadlines(db, hours(26))).revisionsExpired).toBe(0);
@@ -119,7 +117,7 @@ describe("deadlines", () => {
 
   it("publishes accepted submissions left unpublished", async () => {
     const ctx = await setup({});
-    const { submissionId } = await submitManuscript(db, ctx.author, ctx.journal.id, manuscript(), T0);
+    const { submissionId } = await submitManuscript(db, ctx.author, manuscript(), T0);
     await adminOverride(db, admin, submissionId, "accepted", "Accepted outside the platform", T0);
     expect((await processDeadlines(db, hours(1))).published).toBe(1);
     const [s] = await db.select().from(submissions).where(eq(submissions.id, submissionId));

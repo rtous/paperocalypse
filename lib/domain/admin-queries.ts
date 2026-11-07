@@ -1,44 +1,12 @@
 import { and, asc, count, desc, eq, ilike, inArray, lt, or, sql, type SQL } from "drizzle-orm";
-import {
-  agents,
-  apiKeys,
-  decisions,
-  events,
-  flags,
-  inviteCodes,
-  journalMemberships,
-  journals,
-  poolTasks,
-  reviewAssignments,
-  submissions,
-} from "@/lib/db/schema";
+import { agents, apiKeys, events, flags, poolTasks, reviewAssignments, submissions } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { SubmissionStatus } from "./workflow";
 
-export async function journalOverview(db: Db) {
-  const rows = await db.select().from(journals).orderBy(asc(journals.name));
-  const counts = await db
-    .select({ journalId: submissions.journalId, status: submissions.status, n: count() })
-    .from(submissions)
-    .groupBy(submissions.journalId, submissions.status);
-  const members = await db
-    .select({ journalId: journalMemberships.journalId, n: count() })
-    .from(journalMemberships)
-    .where(eq(journalMemberships.status, "active"))
-    .groupBy(journalMemberships.journalId);
-  const pending = await db
-    .select({ journalId: journalMemberships.journalId, n: count() })
-    .from(journalMemberships)
-    .where(eq(journalMemberships.status, "pending"))
-    .groupBy(journalMemberships.journalId);
-  return rows.map((j) => ({
-    ...j,
-    counts: Object.fromEntries(counts.filter((c) => c.journalId === j.id).map((c) => [c.status, c.n])) as Partial<
-      Record<SubmissionStatus, number>
-    >,
-    activeMembers: members.find((m) => m.journalId === j.id)?.n ?? 0,
-    pendingMembers: pending.find((m) => m.journalId === j.id)?.n ?? 0,
-  }));
+/** Submissions per status, for the dashboard. */
+export async function submissionCounts(db: Db): Promise<Partial<Record<SubmissionStatus, number>>> {
+  const rows = await db.select({ status: submissions.status, n: count() }).from(submissions).groupBy(submissions.status);
+  return Object.fromEntries(rows.map((r) => [r.status, r.n]));
 }
 
 /** Pool tasks nobody has taken for this long show up as stuck. */
@@ -49,7 +17,6 @@ export async function stuckItems(db: Db, now: Date, limit = 50) {
   const base = {
     submissionId: submissions.id,
     title: submissions.title,
-    journalSlug: journals.slug,
     status: submissions.status,
   };
   const staleBefore = new Date(now.getTime() - POOL_STALE_HOURS * 3_600_000);
@@ -58,7 +25,6 @@ export async function stuckItems(db: Db, now: Date, limit = 50) {
       .select({ ...base, since: poolTasks.createdAt })
       .from(poolTasks)
       .innerJoin(submissions, eq(submissions.id, poolTasks.submissionId))
-      .innerJoin(journals, eq(journals.id, submissions.journalId))
       .where(and(eq(poolTasks.kind, kind), eq(poolTasks.status, "open"), lt(poolTasks.createdAt, staleBefore)))
       .orderBy(asc(poolTasks.createdAt))
       .limit(limit);
@@ -69,7 +35,6 @@ export async function stuckItems(db: Db, now: Date, limit = 50) {
       .select({ ...base, since: reviewAssignments.dueAt, reviewer: agents.displayName })
       .from(reviewAssignments)
       .innerJoin(submissions, eq(submissions.id, reviewAssignments.submissionId))
-      .innerJoin(journals, eq(journals.id, submissions.journalId))
       .innerJoin(agents, eq(agents.id, reviewAssignments.reviewerAgentId))
       .where(and(eq(reviewAssignments.status, "accepted"), lt(reviewAssignments.dueAt, now)))
       .orderBy(asc(reviewAssignments.dueAt))
@@ -77,7 +42,6 @@ export async function stuckItems(db: Db, now: Date, limit = 50) {
     db
       .select({ ...base, since: submissions.revisionDueAt })
       .from(submissions)
-      .innerJoin(journals, eq(journals.id, submissions.journalId))
       .where(and(eq(submissions.status, "revision_requested"), lt(submissions.revisionDueAt, now)))
       .limit(limit),
     db
@@ -87,10 +51,8 @@ export async function stuckItems(db: Db, now: Date, limit = 50) {
         reasonMd: flags.reasonMd,
         createdAt: flags.createdAt,
         submissionId: flags.submissionId,
-        journalSlug: journals.slug,
       })
       .from(flags)
-      .innerJoin(journals, eq(journals.id, flags.journalId))
       .where(eq(flags.status, "open"))
       .orderBy(desc(flags.createdAt))
       .limit(limit),
@@ -100,10 +62,9 @@ export async function stuckItems(db: Db, now: Date, limit = 50) {
 
 export async function listSubmissions(
   db: Db,
-  filter: { journalId?: string; status?: SubmissionStatus; q?: string; limit?: number; offset?: number },
+  filter: { status?: SubmissionStatus; q?: string; limit?: number; offset?: number },
 ) {
   const conds: SQL[] = [];
-  if (filter.journalId) conds.push(eq(submissions.journalId, filter.journalId));
   if (filter.status) conds.push(eq(submissions.status, filter.status));
   if (filter.q) {
     const q = filter.q.trim();
@@ -116,7 +77,6 @@ export async function listSubmissions(
       id: submissions.id,
       title: submissions.title,
       status: submissions.status,
-      journalSlug: journals.slug,
       submitter: agents.displayName,
       editor,
       versionNo: submissions.currentVersionNo,
@@ -124,7 +84,6 @@ export async function listSubmissions(
       updatedAt: submissions.updatedAt,
     })
     .from(submissions)
-    .innerJoin(journals, eq(journals.id, submissions.journalId))
     .innerJoin(agents, eq(agents.id, submissions.submittingAgentId))
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(submissions.updatedAt))
@@ -136,7 +95,6 @@ export async function searchEvents(
   db: Db,
   filter: {
     action?: string;
-    journalId?: string;
     submissionId?: string;
     actorId?: string;
     limit?: number;
@@ -145,7 +103,6 @@ export async function searchEvents(
 ) {
   const conds: SQL[] = [];
   if (filter.action) conds.push(ilike(events.action, `${filter.action.replace(/[%_\\]/g, "\\$&")}%`));
-  if (filter.journalId) conds.push(eq(events.journalId, filter.journalId));
   if (filter.submissionId) conds.push(eq(events.submissionId, filter.submissionId));
   if (filter.actorId) conds.push(eq(events.actorId, filter.actorId));
   if (filter.before) conds.push(lt(events.createdAt, filter.before));
@@ -155,77 +112,6 @@ export async function searchEvents(
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(events.createdAt), desc(events.id))
     .limit(filter.limit ?? 100);
-}
-
-export async function listMembers(db: Db, journalId: string) {
-  const rows = await db
-    .select({
-      membershipId: journalMemberships.id,
-      agentId: agents.id,
-      displayName: agents.displayName,
-      description: agents.description,
-      operatorName: agents.operatorName,
-      operatorContact: agents.operatorContact,
-      agentStatus: agents.status,
-      lastSeenAt: agents.lastSeenAt,
-      roles: journalMemberships.roles,
-      status: journalMemberships.status,
-      reviewerTopics: journalMemberships.reviewerTopics,
-      joinedAt: journalMemberships.createdAt,
-    })
-    .from(journalMemberships)
-    .innerJoin(agents, eq(agents.id, journalMemberships.agentId))
-    .where(eq(journalMemberships.journalId, journalId))
-    .orderBy(asc(journalMemberships.status), asc(agents.displayName));
-
-  const ids = rows.map((r) => r.agentId);
-  if (ids.length === 0) return [];
-
-  const [handled, decided, reviewLoad] = await Promise.all([
-    db
-      .select({
-        agentId: poolTasks.claimedByAgentId,
-        open: sql<number>`count(*) filter (where ${poolTasks.status} = 'claimed')`.mapWith(Number),
-        total: sql<number>`count(*) filter (where ${poolTasks.status} = 'done')`.mapWith(Number),
-      })
-      .from(poolTasks)
-      .where(and(eq(poolTasks.journalId, journalId), eq(poolTasks.kind, "editorial"), inArray(poolTasks.claimedByAgentId, ids)))
-      .groupBy(poolTasks.claimedByAgentId),
-    db
-      .select({
-        agentId: decisions.editorAgentId,
-        n: count(),
-        avgHours: sql<number | null>`avg(extract(epoch from (${decisions.createdAt} - ${submissions.createdAt})) / 3600)`.mapWith(
-          (v) => (v === null ? null : Number(v)),
-        ),
-      })
-      .from(decisions)
-      .innerJoin(submissions, eq(submissions.id, decisions.submissionId))
-      .where(and(eq(submissions.journalId, journalId), inArray(decisions.editorAgentId, ids)))
-      .groupBy(decisions.editorAgentId),
-    db
-      .select({
-        agentId: reviewAssignments.reviewerAgentId,
-        open: sql<number>`count(*) filter (where ${reviewAssignments.status} = 'accepted')`.mapWith(Number),
-        submitted: sql<number>`count(*) filter (where ${reviewAssignments.status} = 'submitted')`.mapWith(Number),
-        expired: sql<number>`count(*) filter (where ${reviewAssignments.status} = 'expired')`.mapWith(Number),
-      })
-      .from(reviewAssignments)
-      .innerJoin(submissions, eq(submissions.id, reviewAssignments.submissionId))
-      .where(and(eq(submissions.journalId, journalId), inArray(reviewAssignments.reviewerAgentId, ids)))
-      .groupBy(reviewAssignments.reviewerAgentId),
-  ]);
-
-  return rows.map((r) => ({
-    ...r,
-    editorialOpen: handled.find((h) => h.agentId === r.agentId)?.open ?? 0,
-    editorialDone: handled.find((h) => h.agentId === r.agentId)?.total ?? 0,
-    decisions: decided.find((d) => d.agentId === r.agentId)?.n ?? 0,
-    avgHoursToDecision: decided.find((d) => d.agentId === r.agentId)?.avgHours ?? null,
-    reviewsOpen: reviewLoad.find((l) => l.agentId === r.agentId)?.open ?? 0,
-    reviewsSubmitted: reviewLoad.find((l) => l.agentId === r.agentId)?.submitted ?? 0,
-    reviewsExpired: reviewLoad.find((l) => l.agentId === r.agentId)?.expired ?? 0,
-  }));
 }
 
 export async function listApiKeys(db: Db, agentIds: string[]) {
@@ -243,23 +129,6 @@ export async function listApiKeys(db: Db, agentIds: string[]) {
     .from(apiKeys)
     .where(inArray(apiKeys.agentId, agentIds))
     .orderBy(desc(apiKeys.createdAt));
-}
-
-export async function listInviteCodes(db: Db, journalId: string) {
-  return db
-    .select({
-      id: inviteCodes.id,
-      label: inviteCodes.label,
-      roles: inviteCodes.rolesGranted,
-      maxUses: inviteCodes.maxUses,
-      uses: inviteCodes.uses,
-      expiresAt: inviteCodes.expiresAt,
-      revokedAt: inviteCodes.revokedAt,
-      createdAt: inviteCodes.createdAt,
-    })
-    .from(inviteCodes)
-    .where(eq(inviteCodes.journalId, journalId))
-    .orderBy(desc(inviteCodes.createdAt));
 }
 
 /** Agents by name or id (admin search). */

@@ -1,8 +1,6 @@
 import { and, asc, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import {
   agents,
-  journalMemberships,
-  journals,
   operators,
   poolTasks,
   reviewAssignments,
@@ -15,14 +13,15 @@ import { conflictsFor, loadCoiFacts } from "./coi-db";
 import { invalidState, notFound, validationError } from "./errors";
 import { recordEvent } from "./events";
 import { PAPERCOIN_REWARD, applyPapercoins } from "./papercoins";
-import { parsePolicy, type JournalPolicy } from "./policy";
+import type { Policy } from "./policy";
+import { getPolicy } from "./settings";
 import { operatorReputation } from "./reputation";
 
 /**
  * The task pool. Review slots and editorial steps are published here instead of being assigned.
  * An agent asks for work with request_task; the platform picks one task it may take:
  *
- * - The agent needs an active reviewer membership in the journal and holds one pool task at a time.
+ * - The agent must be active and holds one pool task at a time.
  * - Reviews: its operator may take at most reviewQuota(reviewer score) reviews per rolling 30 days
  *   (counting reviews released or missed, not ones the platform cancelled).
  * - Editorial tasks: its operator's reviewer score must be at least EDITORIAL_MIN_REVIEWER_SCORE.
@@ -56,7 +55,6 @@ export async function openEditorialTask(tx: Db, sub: SubmissionRow, now: Date): 
   await tx
     .insert(poolTasks)
     .values({
-      journalId: sub.journalId,
       submissionId: sub.id,
       kind: "editorial",
       versionNo: sub.currentVersionNo,
@@ -72,7 +70,6 @@ export async function openReviewTasks(tx: Db, sub: SubmissionRow, n: number, now
   if (n <= 0) return;
   await tx.insert(poolTasks).values(
     Array.from({ length: n }, () => ({
-      journalId: sub.journalId,
       submissionId: sub.id,
       kind: "review" as const,
       versionNo: sub.currentVersionNo,
@@ -131,7 +128,6 @@ export async function completeEditorialTask(tx: Db, actor: Actor, sub: Submissio
       amount: PAPERCOIN_REWARD.editorial_task,
       reason: "editorial_decision",
       refId: task.id,
-      journalId: sub.journalId,
       now,
     });
   }
@@ -141,7 +137,7 @@ export async function completeEditorialTask(tx: Db, actor: Actor, sub: Submissio
  * Bring the pool in line with the submission's status (after an admin override): cancel what is
  * pending and publish what the status needs.
  */
-export async function syncPool(tx: Db, sub: SubmissionRow, policy: JournalPolicy, now: Date): Promise<void> {
+export async function syncPool(tx: Db, sub: SubmissionRow, policy: Policy, now: Date): Promise<void> {
   await cancelPoolTasks(tx, sub.id, now);
   await tx
     .update(reviewAssignments)
@@ -257,10 +253,10 @@ export type RequestTaskResult =
 /** How many open tasks to consider per request (oldest first). */
 const CANDIDATE_LIMIT = 200;
 
-export async function requestTask(db: Db, actor: Actor & { type: "agent" }, journalId: string, now: Date): Promise<RequestTaskResult> {
+export async function requestTask(db: Db, actor: Actor & { type: "agent" }, now: Date): Promise<RequestTaskResult> {
   return db.transaction(async (tx) => {
     const [me] = await tx
-      .select({ id: agents.id, operatorId: agents.operatorId, status: agents.status })
+      .select({ id: agents.id, operatorId: agents.operatorId, status: agents.status, reviewerTopics: agents.reviewerTopics })
       .from(agents)
       .where(eq(agents.id, actor.agentId));
     if (!me) throw notFound("Agent");
@@ -276,13 +272,7 @@ export async function requestTask(db: Db, actor: Actor & { type: "agent" }, jour
       return { task: held, assignmentId: await assignmentFor(tx, held), alreadyHeld: true, standing };
     }
 
-    const [membership] = await tx
-      .select()
-      .from(journalMemberships)
-      .where(and(eq(journalMemberships.journalId, journalId), eq(journalMemberships.agentId, actor.agentId)));
-    if (me.status !== "active" || !membership || membership.status !== "active" || !membership.roles.includes("reviewer")) {
-      throw validationError('Pool tasks need an active reviewer membership in this journal. Call join_journal with roles ["reviewer"].');
-    }
+    if (me.status !== "active") throw validationError("Your agent is suspended and cannot take pool tasks.");
 
     const reviewsAllowed = standing.reviewsInWindow < standing.reviewQuota;
     const kinds = [...(reviewsAllowed ? (["review"] as const) : []), ...(standing.editorialAllowed ? (["editorial"] as const) : [])];
@@ -299,19 +289,18 @@ export async function requestTask(db: Db, actor: Actor & { type: "agent" }, jour
     }
     if (kinds.length === 0) return { task: null, reasons, standing };
 
-    const [journal] = await tx.select().from(journals).where(eq(journals.id, journalId));
-    const policy = parsePolicy(journal!.policy);
+    const policy = await getPolicy(tx);
     const open = await tx
       .select({ task: poolTasks, sub: submissions })
       .from(poolTasks)
       .innerJoin(submissions, eq(submissions.id, poolTasks.submissionId))
-      .where(and(eq(poolTasks.journalId, journalId), eq(poolTasks.status, "open"), inArray(poolTasks.kind, [...kinds])))
+      .where(and(eq(poolTasks.status, "open"), inArray(poolTasks.kind, [...kinds])))
       .orderBy(asc(poolTasks.createdAt), asc(poolTasks.id))
       .limit(CANDIDATE_LIMIT);
 
     const subIds = [...new Set(open.map((o) => o.sub.id))];
     const [{ reviewers, editors }, keywords] = await Promise.all([involvement(tx, subIds), currentKeywords(tx, subIds)]);
-    const topics = membership.reviewerTopics.map((t) => t.toLowerCase());
+    const topics = me.reviewerTopics.map((t) => t.toLowerCase());
 
     // One capacity per operator and submission: reviewers don't edit it, editors don't review it,
     // and each version is reviewed once per operator.
@@ -370,7 +359,6 @@ export async function requestTask(db: Db, actor: Actor & { type: "agent" }, jour
         await tx.update(submissions).set({ handlingEditorId: actor.agentId, updatedAt: now }).where(eq(submissions.id, sub.id));
       }
       await recordEvent(tx, actor, "pool.task_claimed", {
-        journalId,
         submissionId: sub.id,
         payload: { pool_task_id: task.id, kind: task.kind, version_no: task.versionNo, due_at: dueAt.toISOString(), assignment_id: assignmentId },
         now,
@@ -378,7 +366,7 @@ export async function requestTask(db: Db, actor: Actor & { type: "agent" }, jour
       return { task: claimed, assignmentId, alreadyHeld: false, standing };
     }
 
-    if (open.length === 0) reasons.unshift("There are no open tasks of the kinds you may take in this journal right now.");
+    if (open.length === 0) reasons.unshift("There are no open tasks of the kinds you may take right now.");
     else reasons.unshift("The open tasks right now are all ones you may not take (conflicts of interest, or your operator already works on those submissions).");
     return { task: null, reasons, standing };
   });
@@ -418,7 +406,6 @@ export async function releaseTask(db: Db, actor: Actor & { type: "agent" }, pool
     if (task.status !== "claimed") throw invalidState(`This task is ${task.status}; only a task you hold can be released.`);
     await returnToPool(tx, task, "declined", now, reason);
     await recordEvent(tx, actor, "pool.task_released", {
-      journalId: task.journalId,
       submissionId: task.submissionId,
       payload: { pool_task_id: task.id, kind: task.kind, reason },
       now,
@@ -464,7 +451,6 @@ export async function expireClaims(db: Db, now: Date, batchSize = 100): Promise<
       if (!task || task.status !== "claimed" || !task.dueAt || task.dueAt >= now) return false;
       await returnToPool(tx, task, "expired", now);
       await recordEvent(tx, { type: "system" }, task.kind === "review" ? "review.expired" : "pool.editorial_expired", {
-        journalId: task.journalId,
         submissionId: task.submissionId,
         payload: { pool_task_id: task.id, agent_id: task.claimedByAgentId },
         now,
@@ -487,7 +473,6 @@ export type InboxTask = {
   tool: string;
   arguments: Record<string, string>;
   agent_id: string;
-  journal_slug: string;
   submission_id: string;
   submission_title: string;
   submission_status: string;
@@ -508,34 +493,26 @@ function editorialInstructions(status: string, versionNo: number): string {
  * What the given agents must do now: the pool tasks they hold and the revisions they owe as
  * submitting authors. Earliest deadline first.
  */
-export async function listInbox(db: Db, agentIds: string[], opts: { journalId?: string } = {}): Promise<InboxTask[]> {
+export async function listInbox(db: Db, agentIds: string[]): Promise<InboxTask[]> {
   if (agentIds.length === 0) return [];
-  const claimedConds = [inArray(poolTasks.claimedByAgentId, agentIds), eq(poolTasks.status, "claimed")];
-  if (opts.journalId) claimedConds.push(eq(poolTasks.journalId, opts.journalId));
-  const reviseConds = [inArray(submissions.submittingAgentId, agentIds), eq(submissions.status, "revision_requested")];
-  if (opts.journalId) reviseConds.push(eq(submissions.journalId, opts.journalId));
-
   const [claimed, revise] = await Promise.all([
     db
-      .select({ task: poolTasks, sub: submissions, slug: journals.slug, assignmentId: reviewAssignments.id })
+      .select({ task: poolTasks, sub: submissions, assignmentId: reviewAssignments.id })
       .from(poolTasks)
       .innerJoin(submissions, eq(submissions.id, poolTasks.submissionId))
-      .innerJoin(journals, eq(journals.id, poolTasks.journalId))
       .leftJoin(reviewAssignments, and(eq(reviewAssignments.poolTaskId, poolTasks.id), eq(reviewAssignments.status, "accepted")))
-      .where(and(...claimedConds)),
+      .where(and(inArray(poolTasks.claimedByAgentId, agentIds), eq(poolTasks.status, "claimed"))),
     db
-      .select({ sub: submissions, slug: journals.slug })
+      .select({ sub: submissions })
       .from(submissions)
-      .innerJoin(journals, eq(journals.id, submissions.journalId))
-      .where(and(...reviseConds)),
+      .where(and(inArray(submissions.submittingAgentId, agentIds), eq(submissions.status, "revision_requested"))),
   ]);
 
   const out: InboxTask[] = [
-    ...claimed.map(({ task, sub, slug, assignmentId }): InboxTask => {
+    ...claimed.map(({ task, sub, assignmentId }): InboxTask => {
       const common = {
         task_id: task.id,
         agent_id: task.claimedByAgentId!,
-        journal_slug: slug,
         submission_id: sub.id,
         submission_title: sub.title,
         submission_status: sub.status,
@@ -560,14 +537,13 @@ export async function listInbox(db: Db, agentIds: string[], opts: { journalId?: 
           };
     }),
     ...revise.map(
-      ({ sub, slug }): InboxTask => ({
+      ({ sub }): InboxTask => ({
         task_id: sub.id,
         kind: "revise_submission",
         role: "author",
         tool: "submit_revision",
         arguments: { submission_id: sub.id },
         agent_id: sub.submittingAgentId,
-        journal_slug: slug,
         submission_id: sub.id,
         submission_title: sub.title,
         submission_status: sub.status,
@@ -579,12 +555,11 @@ export async function listInbox(db: Db, agentIds: string[], opts: { journalId?: 
   return out.sort((a, b) => (a.due_at?.getTime() ?? Infinity) - (b.due_at?.getTime() ?? Infinity) || a.task_id.localeCompare(b.task_id));
 }
 
-/** Open pool tasks per journal and kind (for dashboards and agent hints). */
-export async function openPoolCounts(db: Db, journalId?: string) {
-  const rows = await db
-    .select({ journalId: poolTasks.journalId, kind: poolTasks.kind, status: poolTasks.status, n: sql<number>`count(*)`.mapWith(Number) })
+/** Open and claimed pool tasks per kind (for dashboards and agent hints). */
+export async function openPoolCounts(db: Db) {
+  return db
+    .select({ kind: poolTasks.kind, status: poolTasks.status, n: sql<number>`count(*)`.mapWith(Number) })
     .from(poolTasks)
-    .where(and(inArray(poolTasks.status, ["open", "claimed"]), ...(journalId ? [eq(poolTasks.journalId, journalId)] : [])))
-    .groupBy(poolTasks.journalId, poolTasks.kind, poolTasks.status);
-  return rows;
+    .where(inArray(poolTasks.status, ["open", "claimed"]))
+    .groupBy(poolTasks.kind, poolTasks.status);
 }

@@ -12,13 +12,12 @@ const uuid = (v?: string) => (v && /^[0-9a-f-]{36}$/i.test(v.trim()) ? v.trim() 
 export default async function AuditPage({
   searchParams,
 }: {
-  searchParams: Promise<{ action?: string; journal?: string; submission?: string; actor?: string; before?: string }>;
+  searchParams: Promise<{ action?: string; submission?: string; actor?: string; before?: string }>;
 }) {
   const sp = await searchParams;
   const before = sp.before && !Number.isNaN(Date.parse(sp.before)) ? new Date(sp.before) : undefined;
   const rows = await searchEvents(getDb(), {
     action: sp.action?.trim() || undefined,
-    journalId: uuid(sp.journal),
     submissionId: uuid(sp.submission),
     actorId: sp.actor?.trim() || undefined,
     before,
@@ -30,9 +29,8 @@ export default async function AuditPage({
   return (
     <>
       <PageTitle title="Audit log" sub="Append-only record of every state change and mutation." />
-      <form className="mb-6 grid gap-3 md:grid-cols-5">
+      <form className="mb-6 grid gap-3 md:grid-cols-4">
         <Input name="action" defaultValue={sp.action} placeholder="Action prefix (e.g. submission.)" />
-        <Input name="journal" defaultValue={sp.journal} placeholder="Journal id" />
         <Input name="submission" defaultValue={sp.submission} placeholder="Submission id" />
         <Input name="actor" defaultValue={sp.actor} placeholder="Actor id" />
         <Button type="submit" variant="outline">

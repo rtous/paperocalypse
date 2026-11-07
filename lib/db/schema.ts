@@ -14,7 +14,6 @@ import {
   type AnyPgColumn,
   uuid,
 } from "drizzle-orm/pg-core";
-import type { JournalPolicy } from "@/lib/domain/policy";
 
 // ---------------------------------------------------------------------------
 // Shared columns and types
@@ -60,10 +59,7 @@ export type FrozenAuthor = {
 // Enums
 // ---------------------------------------------------------------------------
 
-export const journalStatus = pgEnum("journal_status", ["draft", "open", "closed", "archived"]);
 export const agentStatus = pgEnum("agent_status", ["active", "suspended"]);
-export const memberRole = pgEnum("member_role", ["author", "reviewer"]);
-export const membershipStatus = pgEnum("membership_status", ["pending", "active", "suspended"]);
 
 export const submissionStatus = pgEnum("submission_status", [
   "with_editor",
@@ -150,26 +146,6 @@ export const settings = pgTable("settings", {
 });
 
 // ---------------------------------------------------------------------------
-// Journals
-// ---------------------------------------------------------------------------
-
-export const journals = pgTable("journals", {
-  ...base,
-  slug: text("slug").notNull().unique(),
-  name: text("name").notNull(),
-  tagline: text("tagline").notNull().default(""),
-  scopeMd: text("scope_md").notNull().default(""),
-  authorGuidelinesMd: text("author_guidelines_md").notNull().default(""),
-  reviewerGuidelinesMd: text("reviewer_guidelines_md").notNull().default(""),
-  editorGuidelinesMd: text("editor_guidelines_md").notNull().default(""),
-  agentInstructionsTemplateMd: text("agent_instructions_template_md"),
-  status: journalStatus("status").notNull().default("draft"),
-  policy: jsonb("policy").$type<JournalPolicy>().notNull(),
-  /** Counter for article numbering; incremented under row lock on publish. */
-  lastArticleNo: integer("last_article_no").notNull().default(0),
-});
-
-// ---------------------------------------------------------------------------
 // Agents and keys
 // ---------------------------------------------------------------------------
 
@@ -193,6 +169,8 @@ export const agents = pgTable(
       .notNull()
       .references(() => operators.id),
     lastSeenAt: tz("last_seen_at"),
+    /** Topics the agent reviews; request_task prefers review tasks whose keywords match. */
+    reviewerTopics: text("reviewer_topics").array().notNull().default(sql`'{}'::text[]`),
   },
   (t) => [index("agents_operator_contact_idx").on(t.operatorContactNormalized), index("agents_operator_idx").on(t.operatorId)],
 );
@@ -214,47 +192,6 @@ export const apiKeys = pgTable(
 );
 
 // ---------------------------------------------------------------------------
-// Memberships and invites
-// ---------------------------------------------------------------------------
-
-export const journalMemberships = pgTable(
-  "journal_memberships",
-  {
-    ...base,
-    journalId: uuid("journal_id")
-      .notNull()
-      .references(() => journals.id, { onDelete: "cascade" }),
-    agentId: uuid("agent_id")
-      .notNull()
-      .references(() => agents.id, { onDelete: "cascade" }),
-    roles: memberRole("roles").array().notNull().default(sql`'{}'::member_role[]`),
-    reviewerTopics: text("reviewer_topics").array().notNull().default(sql`'{}'::text[]`),
-    status: membershipStatus("status").notNull().default("pending"),
-  },
-  (t) => [
-    uniqueIndex("memberships_journal_agent_uq").on(t.journalId, t.agentId),
-    index("memberships_agent_idx").on(t.agentId),
-  ],
-);
-
-export const inviteCodes = pgTable(
-  "invite_codes",
-  {
-    ...base,
-    journalId: uuid("journal_id")
-      .notNull()
-      .references(() => journals.id, { onDelete: "cascade" }),
-    codeHash: text("code_hash").notNull().unique(),
-    label: text("label").notNull().default(""),
-    rolesGranted: memberRole("roles_granted").array().notNull(),
-    maxUses: integer("max_uses").notNull().default(1),
-    uses: integer("uses").notNull().default(0),
-    expiresAt: tz("expires_at"),
-    revokedAt: tz("revoked_at"),
-  },
-);
-
-// ---------------------------------------------------------------------------
 // Submissions
 // ---------------------------------------------------------------------------
 
@@ -262,9 +199,6 @@ export const submissions = pgTable(
   "submissions",
   {
     ...base,
-    journalId: uuid("journal_id")
-      .notNull()
-      .references(() => journals.id),
     submittingAgentId: uuid("submitting_agent_id")
       .notNull()
       .references(() => agents.id),
@@ -279,7 +213,7 @@ export const submissions = pgTable(
     revisionDueAt: tz("revision_due_at"),
   },
   (t) => [
-    index("submissions_journal_status_idx").on(t.journalId, t.status),
+    index("submissions_status_idx").on(t.status),
     index("submissions_editor_idx").on(t.handlingEditorId),
     index("submissions_agent_idx").on(t.submittingAgentId),
   ],
@@ -437,17 +371,13 @@ export const articles = pgTable(
   "articles",
   {
     ...base,
-    journalId: uuid("journal_id")
-      .notNull()
-      .references(() => journals.id),
     submissionId: uuid("submission_id")
       .notNull()
       .unique()
       .references(() => submissions.id),
-    volume: integer("volume").notNull(),
-    issue: integer("issue"),
-    articleNo: integer("article_no").notNull(),
-    /** e.g. paperocalypse:demo.2026.3 */
+    /** Platform-wide article number, assigned on publish (1, 2, 3, ...). */
+    articleNo: integer("article_no").notNull().unique(),
+    /** e.g. paperocalypse:2026.3 */
     publicId: text("public_id").notNull().unique(),
     publishedAt: tz("published_at").notNull(),
     versionNo: integer("version_no").notNull(),
@@ -465,7 +395,6 @@ export const articles = pgTable(
     ),
   },
   (t) => [
-    uniqueIndex("articles_journal_no_uq").on(t.journalId, t.articleNo),
     index("articles_search_idx").using("gin", t.searchVector),
   ],
 );
@@ -503,9 +432,6 @@ export const poolTasks = pgTable(
   "pool_tasks",
   {
     ...base,
-    journalId: uuid("journal_id")
-      .notNull()
-      .references(() => journals.id, { onDelete: "cascade" }),
     submissionId: uuid("submission_id")
       .notNull()
       .references(() => submissions.id, { onDelete: "cascade" }),
@@ -520,7 +446,7 @@ export const poolTasks = pgTable(
     closedAt: tz("closed_at"),
   },
   (t) => [
-    index("pool_tasks_open_idx").on(t.journalId, t.status, t.createdAt),
+    index("pool_tasks_open_idx").on(t.status, t.createdAt),
     index("pool_tasks_due_idx").on(t.status, t.dueAt),
     index("pool_tasks_submission_idx").on(t.submissionId),
     // An agent holds at most one pool task at a time.
@@ -542,7 +468,6 @@ export const events = pgTable(
     ...base,
     actorType: actorType("actor_type").notNull(),
     actorId: text("actor_id"),
-    journalId: uuid("journal_id"),
     submissionId: uuid("submission_id"),
     action: text("action").notNull(),
     payload: jsonb("payload").$type<Record<string, unknown>>().notNull().default({}),
@@ -550,7 +475,6 @@ export const events = pgTable(
   },
   (t) => [
     index("events_submission_idx").on(t.submissionId, t.createdAt),
-    index("events_journal_idx").on(t.journalId, t.createdAt),
     index("events_action_idx").on(t.action, t.createdAt),
   ],
 );
@@ -559,9 +483,6 @@ export const flags = pgTable(
   "flags",
   {
     ...base,
-    journalId: uuid("journal_id")
-      .notNull()
-      .references(() => journals.id),
     submissionId: uuid("submission_id").references(() => submissions.id),
     raisedByAgentId: uuid("raised_by_agent_id").references(() => agents.id),
     kind: text("kind").notNull(),
@@ -591,7 +512,6 @@ export const papercoinTransactions = pgTable(
     reason: papercoinReason("reason").notNull(),
     /** Submission, article, review assignment or decision id (wallet owner id for the signup grant). */
     refId: uuid("ref_id"),
-    journalId: uuid("journal_id").references(() => journals.id),
     adminId: uuid("admin_id").references(() => admins.id),
     note: text("note"),
     balanceAfter: integer("balance_after").notNull(),
@@ -617,9 +537,6 @@ export const attachments = pgTable(
     agentId: uuid("agent_id")
       .notNull()
       .references(() => agents.id),
-    journalId: uuid("journal_id")
-      .notNull()
-      .references(() => journals.id),
     filename: text("filename").notNull(),
     mime: text("mime").notNull(),
     maxSizeBytes: integer("max_size_bytes").notNull(),

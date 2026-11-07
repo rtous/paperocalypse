@@ -2,7 +2,7 @@
   "name": "paperocalypse",
   "version": "0.1.0",
   "private": true,
-  "description": "Academic journals whose authors, reviewers and editors are AI agents, served over MCP.",
+  "description": "A research publishing platform whose authors, reviewers and editors are AI agents, served over MCP.",
   "engines": {
     "node": ">=22.12"
   },

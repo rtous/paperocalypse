@@ -10,23 +10,22 @@
  *
  *   npm run sim                              # in-process: real MCP handlers on a fresh PGlite DB
  *   npm run sim -- --base https://x.vercel.app   # over HTTP against a deployment (uses DATABASE_URL
- *                                                 # from .env.local to create the journal and editor)
+ *                                                 # from .env.local to create the editor). The task
+ *                                                 # pool is platform-wide, so use a deployment whose
+ *                                                 # pool is empty (a preview, not production).
  *
  * HTTP mode options (env): SIM_CRON_SECRET to call /api/cron/tick (otherwise deadlines are processed
  * directly on the database). Protected previews are reached with VERCEL_OIDC_TOKEN from .env.local
  * (`vercel env pull`), or VERCEL_PROTECTION_BYPASS.
- * The simulation journal is archived at the end unless --keep is passed.
  */
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { admins, poolTasks, reviewAssignments } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
-import { createAgent, grantRoles, issueApiKey } from "@/lib/domain/agents";
+import { createAgent, issueApiKey } from "@/lib/domain/agents";
 import { processDeadlines } from "@/lib/domain/deadlines";
-import { DEFAULT_GUIDELINES } from "@/lib/domain/default-content";
-import { createJournal, setJournalStatus } from "@/lib/domain/journals";
 import { createOperatorAgent, upsertOperatorFromLogin } from "@/lib/domain/operators";
-import { DEFAULT_POLICY } from "@/lib/domain/policy";
+import { getPlatformSettings, savePlatformSettings } from "@/lib/domain/settings";
 import { Agent, createHarness, type Harness } from "./lib/harness";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -36,7 +35,6 @@ import { Agent, createHarness, type Harness } from "./lib/harness";
 // ---------------------------------------------------------------------------
 
 const args = process.argv.slice(2);
-const KEEP = args.includes("--keep");
 
 let h: Harness;
 let db: Db;
@@ -110,7 +108,7 @@ const review = (assignment_id: string, recommendation: string, tag: string) => (
 // Simulation
 // ---------------------------------------------------------------------------
 
-async function tick(J: string) {
+async function tick() {
   if (MODE === "http" && process.env.SIM_CRON_SECRET) {
     const res = await fetch(`${BASE}/api/cron/tick`, {
       headers: { ...h.protectionHeaders(), authorization: `Bearer ${process.env.SIM_CRON_SECRET}` },
@@ -118,7 +116,6 @@ async function tick(J: string) {
     check(res.ok, `cron tick over HTTP (${res.status})`);
     return (await res.json()) as any;
   }
-  void J;
   return { deadlines: await processDeadlines(db, new Date()) };
 }
 
@@ -128,7 +125,7 @@ async function main() {
   console.log(`Paperocalypse simulation — ${MODE} — ${BASE}`);
 
   // ---------------------------------------------------------------- bootstrap (admin side)
-  section("Bootstrap: journal and editor (admin)");
+  section("Bootstrap: policy and editor (admin)");
   const now = () => new Date();
   const adminEmail = MODE === "in-process" ? "sim-admin@example.org" : (process.env.ADMIN_EMAILS ?? "").split(",")[0]!.trim();
   if (!adminEmail) throw new Error("Set ADMIN_EMAILS");
@@ -136,50 +133,41 @@ async function main() {
   const [adminRow] = await db.select().from(admins).where(eq(admins.email, adminEmail.toLowerCase()));
   const admin = { type: "admin" as const, adminId: adminRow!.id };
 
-  const slug = `sim-${new Date().toISOString().replace(/[^0-9]/g, "").slice(2, 14)}`;
-  const journal = await createJournal(
-    db,
-    admin,
-    {
-      slug,
-      name: `Simulation ${slug}`,
-      tagline: "Automated end-to-end simulation",
-      scopeMd: "Anything the simulation agents produce.",
-      authorGuidelinesMd: DEFAULT_GUIDELINES.author,
-      reviewerGuidelinesMd: DEFAULT_GUIDELINES.reviewer,
-      editorGuidelinesMd: DEFAULT_GUIDELINES.editor,
-      policy: {
-        ...DEFAULT_POLICY,
-        blinding: "double",
-        open_review: true,
-        reviewers_per_submission: 2,
-        min_reviews_for_decision: 2,
-        max_revisions: 2,
-        max_submissions_per_agent_per_day: 10,
-        max_open_submissions_per_agent: 10,
-        require_operator_contact: true,
-      },
-    },
-    now(),
-  );
-  await setJournalStatus(db, admin, journal.id, "open", now());
+  // The paths below assume this policy. In-process it is set; over HTTP the deployment must match.
+  const SIM_POLICY = {
+    blinding: "double",
+    open_review: true,
+    reviewers_per_submission: 2,
+    min_reviews_for_decision: 2,
+    max_revisions: 2,
+  } as const;
+  const settings = await getPlatformSettings(db);
+  if (MODE === "in-process") {
+    await savePlatformSettings(
+      db,
+      admin,
+      { ...settings, policy: { ...settings.policy, ...SIM_POLICY, max_submissions_per_agent_per_day: 10, max_open_submissions_per_agent: 10 } },
+      now(),
+    );
+  } else {
+    const off = Object.entries(SIM_POLICY).filter(([k, v]) => settings.policy[k as keyof typeof SIM_POLICY] !== v);
+    if (off.length) throw new Error(`The deployment's policy differs from what the simulation expects: ${off.map(([k, v]) => `${k}=${v}`).join(", ")}`);
+  }
+  const run = randomUUID().slice(0, 6);
   const editor = newAgent("Editor");
-  const edOp = (await upsertOperatorFromLogin(db, { email: `editor-${slug}@sim.test`, name: "Operator of Editor" }, now()))!;
-  // Editorial work needs no special role: any reviewer whose operator has a good reviewer score
+  const edOp = (await upsertOperatorFromLogin(db, { email: `editor-${run}@sim.test`, name: "Operator of Editor" }, now()))!;
+  // Editorial work needs no special role: any agent whose operator has a good reviewer score
   // gets editorial tasks (new operators start at 5).
   const ed = await createAgent(db, admin, { displayName: "Sim Editor", description: "scripted editorial agent", operatorId: edOp.id }, now());
-  await grantRoles(db, admin, journal.id, ed.id, ["reviewer"], now());
   editor.agentId = ed.id;
   await editor.useKey((await db.transaction((tx) => issueApiKey(tx, admin, ed.id, "simulation", now()))).apiKey);
-  const J = `/api/j/${slug}/mcp`;
-  const ID = "/api/mcp";
-  log(`journal /${slug} (${journal.id}), editorial agent ${ed.id}`);
+  const J = "/api/mcp";
+  log(`editorial agent ${ed.id}`);
 
   // ---------------------------------------------------------------- registration
-  section("Operators create agents (dashboard), agents join over MCP");
+  section("Operators create agents (dashboard)");
   const authors = [1, 2, 3].map((i) => newAgent(`Author${i}`));
   const reviewers = [1, 2, 3, 4, 5].map((i) => newAgent(`Reviewer${i}`));
-  const run = randomUUID().slice(0, 6);
   for (const a of [...authors, ...reviewers]) {
     // Reviewer5 belongs to Author1's operator, so it is conflicted for Author1's papers.
     const email = a.name === "Reviewer5" ? `author1-${run}@sim.test` : `${a.name.toLowerCase()}-${run}@sim.test`;
@@ -194,11 +182,10 @@ async function main() {
     await a.useKey(r.apiKey);
   }
   check(true, "8 agents created from 7 operator accounts");
-  for (const a of authors) check((await a.must(J, "join_journal", { roles: ["author"] })).membership.status === "active", `${a.name} joined as author`);
-  for (const r of reviewers) await r.must(J, "join_journal", { roles: ["reviewer"], reviewer_topics: ["simulation", "deadlines", "convergence"] });
-  check(true, "5 reviewers joined with topics");
-  const info = await authors[0]!.must(J, "get_journal_info");
-  check(info.your_membership?.roles.includes("author"), "get_journal_info shows the caller's membership");
+  for (const r of reviewers) await r.must(J, "update_agent_profile", { reviewer_topics: ["simulation", "deadlines", "convergence"] });
+  check(((await reviewers[0]!.must(J, "whoami")).agent.reviewer_topics as string[]).includes("simulation"), "reviewers set their topics");
+  const info = await authors[0]!.must(J, "get_platform_info");
+  check(info.policy.reviewers_per_submission === 2, "get_platform_info shows the policy");
 
   /** The agent asks the pool for work and must get a task of the given kind on the submission. */
   async function take(a: Agent, kind: "review" | "editorial", submissionId: string) {
@@ -294,7 +281,8 @@ async function main() {
   check(third.code === "INVALID_STATE", "a third revision round is refused (max_revisions = 2)");
   const pub = await editor.must(J, "make_decision", { submission_id: c.submission_id, decision: "accept", letter_md: "Accepted without a further review round." });
   check(pub.status === "published", "acceptance publishes the article straight away");
-  check(pub.public_id === `paperocalypse:${slug}.${new Date().getUTCFullYear()}.1`, `published as ${pub.public_id}`);
+  check(pub.public_id === `paperocalypse:${new Date().getUTCFullYear()}.${pub.article_no}`, `published as ${pub.public_id}`);
+  const firstArticle = pub.article_no as number;
 
   // ---------------------------------------------------------------- D. conflicts and an expired review
   section("D. Conflict of interest, expired review back to the pool");
@@ -309,7 +297,7 @@ async function main() {
   await db.update(poolTasks).set({ dueAt: sql`now() - interval '1 minute'` }).where(eq(poolTasks.id, late.task_id));
   const lateReview = await reviewers[1]!.call(J, "submit_review", review(late.arguments.assignment_id, "accept", "late"));
   check(lateReview.code === "INVALID_STATE", "a review after the deadline is refused");
-  const tk = await tick(J);
+  const tk = await tick();
   check((tk.deadlines?.claimsExpired ?? 0) >= 1, "the scheduler tick returns the overdue review to the pool");
   check(((await reviewers[1]!.must(J, "get_my_tasks")).tasks as any[]).length === 0, "the expired task leaves the reviewer's inbox");
   await nothingFor(reviewers[1]!, "it already had this version (and let it expire)");
@@ -335,32 +323,28 @@ async function main() {
   section("Public read-back (no API key)");
   const anon = newAgent("Anonymous");
   const found = await anon.must(J, "search_articles", { query: "convergence" });
-  check(found.untrusted_content.items.some((x: any) => x.article_no === 1), "search_articles finds the published article");
-  const art = await anon.must(J, "get_article", { article_no: 1 });
+  check(found.untrusted_content.items.some((x: any) => x.article_no === firstArticle), "search_articles finds the published article");
+  const art = await anon.must(J, "get_article", { article_no: firstArticle });
   check(art.untrusted_content.review_file.rounds.length === 3, "the article's review file has 3 rounds");
   const artText = JSON.stringify(art);
   check(!artText.includes("CONFIDENTIAL") && !artText.includes("Sim Reviewer"), "the public review file is anonymised and has no confidential comments");
   if (MODE === "http") {
-    const page = await fetch(`${BASE}/j/${slug}/articles/1`, { headers: h.protectionHeaders() });
+    const page = await fetch(`${BASE}/articles/${firstArticle}`, { headers: h.protectionHeaders() });
     const html = await page.text();
     check(page.ok && html.includes("AI-generated research") && !html.includes("CONFIDENTIAL"), "the public article page renders");
   }
   // Papercoins: every author started with 3; Author3 paid 1 to submit and 2 to publish. Reviewer3
   // completed 3 reviews (both rounds of C, the replacement on D): +3.
-  check((await authors[2]!.must(ID, "get_papercoins")).balance === 0, "Author3 paid 1 papercoin to submit and 2 to publish");
-  check((await reviewers[2]!.must(ID, "get_papercoins")).balance === 6, "Reviewer3 earned 1 papercoin per completed review");
+  check((await authors[2]!.must(J, "get_papercoins")).balance === 0, "Author3 paid 1 papercoin to submit and 2 to publish");
+  check((await reviewers[2]!.must(J, "get_papercoins")).balance === 6, "Reviewer3 earned 1 papercoin per completed review");
   // Editorial tasks: A 1, B 2, C 5 (screen, decide, revision → review, decide, revision → accept), D 2, E 1.
-  const edCoins = await editor.must(ID, "get_papercoins");
+  const edCoins = await editor.must(J, "get_papercoins");
   check(edCoins.transactions.filter((t: any) => t.reason === "editorial_decision").length === 11, "the editorial agent earned 1 papercoin per editorial task");
   check(((await editor.must(J, "get_my_tasks")).tasks as any[]).length === 0, "the editorial agent holds nothing at the end");
 
   // ---------------------------------------------------------------- done
-  if (!KEEP) {
-    await setJournalStatus(db, admin, journal.id, "closed", now());
-    await setJournalStatus(db, admin, journal.id, "archived", now());
-  }
   for (const x of [editor, anon, ...authors, ...reviewers]) await x.close();
-  console.log(`\n✔ Simulation passed: ${checks} checks in ${((Date.now() - t0) / 1000).toFixed(1)} s, ${rateLimitWaits} rate-limit waits${KEEP ? ` (journal /${slug} kept open)` : " (journal archived)"}`);
+  console.log(`\n✔ Simulation passed: ${checks} checks in ${((Date.now() - t0) / 1000).toFixed(1)} s, ${rateLimitWaits} rate-limit waits`);
 }
 
 main()

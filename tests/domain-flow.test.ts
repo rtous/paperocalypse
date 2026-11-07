@@ -3,7 +3,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { articles, events, poolTasks, reviewAssignments, submissions } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "@/lib/domain/actor";
-import { grantRoles, issueApiKey, revokeApiKey, setAgentStatus, verifyApiKey } from "@/lib/domain/agents";
+import { issueApiKey, revokeApiKey, setAgentStatus, verifyApiKey } from "@/lib/domain/agents";
 import { loadBundle } from "@/lib/domain/bundle";
 import { serializeForAuthor } from "@/lib/domain/blinding";
 import { DomainError } from "@/lib/domain/errors";
@@ -18,13 +18,13 @@ import {
   submitRevision,
   withdrawSubmission,
 } from "@/lib/domain/submissions";
-import { createTestDb } from "./helpers/db";
+import { createTestDb, resetDb } from "./helpers/db";
 import {
   LETTER,
   T0,
   agentFor,
   createAdmin,
-  createJournal,
+  setPolicy,
   createMember,
   decide,
   hours,
@@ -67,26 +67,28 @@ async function openPool(submissionId: string) {
   return rows.map((r) => r.kind).sort();
 }
 
-/** A journal with one editorial agent, two authors and four reviewers (all reviewers may edit: new operators score 5). */
-async function setup(policy: Parameters<typeof createJournal>[1] = {}) {
-  const journal = await createJournal(db, policy);
-  const editor = await createMember(db, admin, journal.id, ["reviewer"], { name: "Editor" });
-  const author = await createMember(db, admin, journal.id, ["author"], { name: "Author" });
-  const coauthor = await createMember(db, admin, journal.id, ["author", "reviewer"], { name: "Coauthor" });
+/** A clean platform with one editorial agent, two authors and four reviewers (all may edit: new operators score 5). */
+async function setup(policy: Parameters<typeof setPolicy>[1] = {}) {
+  await resetDb(db);
+  admin = await createAdmin(db);
+  await setPolicy(db, policy);
+  const editor = await createMember(db, admin, { name: "Editor" });
+  const author = await createMember(db, admin, { name: "Author" });
+  const coauthor = await createMember(db, admin, { name: "Coauthor" });
   const reviewers = [];
   for (let i = 1; i <= 4; i++) {
-    reviewers.push(await createMember(db, admin, journal.id, ["reviewer"], { name: `Reviewer${i}` }));
+    reviewers.push(await createMember(db, admin, { name: `Reviewer${i}` }));
   }
-  return { journal, editor, author, coauthor, reviewers };
+  return { editor, author, coauthor, reviewers };
 }
 
 /** Submit, send to review and collect two reviews (status awaiting_decision). */
 async function toAwaitingDecision(ctx: Awaited<ReturnType<typeof setup>>, now = T0) {
-  const { submissionId } = await submitManuscript(db, ctx.author, ctx.journal.id, manuscript(), now);
-  await sendOut(db, ctx.editor, ctx.journal.id, submissionId, now);
+  const { submissionId } = await submitManuscript(db, ctx.author, manuscript(), now);
+  await sendOut(db, ctx.editor, submissionId, now);
   const assignments: string[] = [];
   for (const r of ctx.reviewers.slice(0, 2)) {
-    const id = await takeReview(db, r, ctx.journal.id, submissionId, hours(1, now));
+    const id = await takeReview(db, r, submissionId, hours(1, now));
     await submitReview(db, r, id, review(), hours(2, now));
     assignments.push(id);
   }
@@ -97,15 +99,14 @@ describe("submission → publication happy path with two revision rounds", () =>
   it("runs the full cycle through the pool and keeps tasks and events in sync", async () => {
     const ctx = await setup({ open_review: true, blinding: "double" });
     const { author, editor, reviewers } = ctx;
-    const J = ctx.journal.id;
 
-    const { submissionId, status: s0 } = await submitManuscript(db, author, J, manuscript(), T0);
+    const { submissionId, status: s0 } = await submitManuscript(db, author, manuscript(), T0);
     expect(s0).toBe("with_editor");
     expect(await openPool(submissionId)).toEqual(["editorial"]);
     expect(await inboxKinds(editor.agentId)).toEqual([]);
 
     // The editorial agent takes the screening task and sends the paper to review.
-    await takeTask(db, editor, J, "editorial", submissionId, T0);
+    await takeTask(db, editor, "editorial", submissionId, T0);
     expect(await inboxKinds(editor.agentId)).toEqual(["editorial"]);
     expect((await loadBundle(db, submissionId))!.submission.handling_editor!.id).toBe(editor.agentId);
     const sent = await sendToReview(db, editor, submissionId, T0);
@@ -117,7 +118,7 @@ describe("submission → publication happy path with two revision rounds", () =>
 
     // Two reviewers take the review tasks and submit.
     for (const r of reviewers.slice(0, 2)) {
-      const id = await takeReview(db, r, J, submissionId, hours(1));
+      const id = await takeReview(db, r, submissionId, hours(1));
       expect(await inboxKinds(r.agentId)).toEqual(["write_review"]);
       await submitReview(db, r, id, review(), hours(2));
       expect(await inboxKinds(r.agentId)).toEqual([]);
@@ -126,7 +127,7 @@ describe("submission → publication happy path with two revision rounds", () =>
     expect(await openPool(submissionId)).toEqual(["editorial"]);
 
     // Round 1: major revision. The decision goes to an editorial agent through the pool.
-    await decide(db, editor, J, submissionId, "major_revision", hours(3));
+    await decide(db, editor, submissionId, "major_revision", hours(3));
     expect(await status(submissionId)).toBe("revision_requested");
     const [authorTask] = await listInbox(db, [author.agentId]);
     expect(authorTask!.kind).toBe("revise_submission");
@@ -143,23 +144,23 @@ describe("submission → publication happy path with two revision rounds", () =>
     await submitRevision(db, author, submissionId, { ...manuscript({ title: "v2" }), responseToReviewersMd: "Fixed." }, hours(4));
     expect(await status(submissionId)).toBe("with_editor");
     expect(await inboxKinds(author.agentId)).toEqual([]);
-    await sendOut(db, editor, J, submissionId, hours(5));
+    await sendOut(db, editor, submissionId, hours(5));
     // Reviewers may review a new version again.
     for (const r of [reviewers[0]!, reviewers[2]!]) {
-      await submitReview(db, r, await takeReview(db, r, J, submissionId, hours(6)), review(), hours(7));
+      await submitReview(db, r, await takeReview(db, r, submissionId, hours(6)), review(), hours(7));
     }
     expect(await status(submissionId)).toBe("awaiting_decision");
-    await decide(db, editor, J, submissionId, "minor_revision", hours(8));
+    await decide(db, editor, submissionId, "minor_revision", hours(8));
 
     // Revision 2 → the editor decides directly (no new round). max_revisions (2) reached.
     await submitRevision(db, author, submissionId, { ...manuscript({ title: "v3" }), responseToReviewersMd: "Done." }, hours(9));
-    await takeTask(db, editor, J, "editorial", submissionId, hours(10));
+    await takeTask(db, editor, "editorial", submissionId, hours(10));
     await expectCode(makeDecision(db, editor, submissionId, "minor_revision", LETTER, hours(10)), "INVALID_STATE");
     const accepted = await makeDecision(db, editor, submissionId, "accept", LETTER, hours(10));
     // Acceptance publishes immediately.
     expect(accepted.status).toBe("published");
     expect(accepted.article!.articleNo).toBe(1);
-    expect(accepted.article!.publicId).toBe(`paperocalypse:${ctx.journal.slug}.2026.1`);
+    expect(accepted.article!.publicId).toBe("paperocalypse:2026.1");
     expect(await status(submissionId)).toBe("published");
     expect(await inboxKinds(editor.agentId)).toEqual([]);
     expect(await openPool(submissionId)).toEqual([]);
@@ -167,7 +168,6 @@ describe("submission → publication happy path with two revision rounds", () =>
     const [article] = await db.select().from(articles).where(eq(articles.id, accepted.article!.articleId));
     expect(article!.title).toBe("v3");
     expect(article!.versionNo).toBe(3);
-    expect(article!.volume).toBe(1);
     expect(article!.reviewFile!.rounds).toHaveLength(3);
     expect(JSON.stringify(article!.reviewFile)).not.toContain("CONFIDENTIAL-NOTE");
     expect(JSON.stringify(article!.reviewFile)).not.toContain("Reviewer1"); // double blind → anonymous
@@ -200,7 +200,7 @@ describe("submission → publication happy path with two revision rounds", () =>
 
     // Second article gets number 2.
     const second = await toAwaitingDecision(ctx, hours(20));
-    const r2 = await decide(db, editor, J, second.submissionId, "accept", hours(30));
+    const r2 = await decide(db, editor, second.submissionId, "accept", hours(30));
     expect(r2.article!.articleNo).toBe(2);
   });
 });
@@ -208,10 +208,10 @@ describe("submission → publication happy path with two revision rounds", () =>
 describe("authorization", () => {
   it("only the agent holding the editorial task (or an admin) can act as editor", async () => {
     const ctx = await setup();
-    const { submissionId } = await submitManuscript(db, ctx.author, ctx.journal.id, manuscript(), T0);
+    const { submissionId } = await submitManuscript(db, ctx.author, manuscript(), T0);
     // Nobody holds the task yet: agents can't act.
     await expectCode(deskReject(db, ctx.editor, submissionId, LETTER, T0), "NOT_FOUND");
-    await takeTask(db, ctx.editor, ctx.journal.id, "editorial", submissionId, T0);
+    await takeTask(db, ctx.editor, "editorial", submissionId, T0);
     await expectCode(deskReject(db, ctx.reviewers[0]!, submissionId, LETTER, T0), "NOT_FOUND");
     await expectCode(deskReject(db, ctx.author, submissionId, LETTER, T0), "NOT_AUTHORIZED");
     await deskReject(db, admin, submissionId, LETTER, T0);
@@ -222,17 +222,17 @@ describe("authorization", () => {
 
   it("reviewers cannot touch assignments that are not theirs", async () => {
     const ctx = await setup();
-    const { submissionId } = await submitManuscript(db, ctx.author, ctx.journal.id, manuscript(), T0);
-    await sendOut(db, ctx.editor, ctx.journal.id, submissionId, T0);
-    const id = await takeReview(db, ctx.reviewers[0]!, ctx.journal.id, submissionId, T0);
+    const { submissionId } = await submitManuscript(db, ctx.author, manuscript(), T0);
+    await sendOut(db, ctx.editor, submissionId, T0);
+    const id = await takeReview(db, ctx.reviewers[0]!,  submissionId, T0);
     await expectCode(submitReview(db, ctx.reviewers[1]!, id, review(), T0), "NOT_FOUND");
   });
 
   it("a decision needs min_reviews_for_decision reviews", async () => {
     const ctx = await setup();
-    const { submissionId } = await submitManuscript(db, ctx.author, ctx.journal.id, manuscript(), T0);
+    const { submissionId } = await submitManuscript(db, ctx.author, manuscript(), T0);
     // On version 1 the editor cannot decide straight from with_editor.
-    await takeTask(db, ctx.editor, ctx.journal.id, "editorial", submissionId, T0);
+    await takeTask(db, ctx.editor, "editorial", submissionId, T0);
     await expectCode(makeDecision(db, ctx.editor, submissionId, "accept", LETTER, T0), "INVALID_STATE");
     await sendToReview(db, ctx.editor, submissionId, T0);
     // Under review there is no editorial task to hold; admins still can't decide before the reviews.
@@ -243,8 +243,8 @@ describe("authorization", () => {
 describe("desk reject, rejection and withdrawal", () => {
   it("desk reject finishes the editorial task and records a decision", async () => {
     const ctx = await setup();
-    const { submissionId } = await submitManuscript(db, ctx.author, ctx.journal.id, manuscript(), T0);
-    await takeTask(db, ctx.editor, ctx.journal.id, "editorial", submissionId, T0);
+    const { submissionId } = await submitManuscript(db, ctx.author, manuscript(), T0);
+    await takeTask(db, ctx.editor, "editorial", submissionId, T0);
     await deskReject(db, ctx.editor, submissionId, LETTER, T0);
     expect(await status(submissionId)).toBe("rejected");
     expect(await inboxKinds(ctx.editor.agentId)).toEqual([]);
@@ -259,15 +259,15 @@ describe("desk reject, rejection and withdrawal", () => {
   it("reject after review", async () => {
     const ctx = await setup();
     const { submissionId } = await toAwaitingDecision(ctx);
-    await decide(db, ctx.editor, ctx.journal.id, submissionId, "reject", hours(3));
+    await decide(db, ctx.editor, submissionId, "reject", hours(3));
     expect(await status(submissionId)).toBe("rejected");
   });
 
   it("withdrawal cancels unfinished reviews and pending pool tasks", async () => {
     const ctx = await setup();
-    const { submissionId } = await submitManuscript(db, ctx.author, ctx.journal.id, manuscript(), T0);
-    await sendOut(db, ctx.editor, ctx.journal.id, submissionId, T0);
-    const id = await takeReview(db, ctx.reviewers[0]!, ctx.journal.id, submissionId, hours(1));
+    const { submissionId } = await submitManuscript(db, ctx.author, manuscript(), T0);
+    await sendOut(db, ctx.editor, submissionId, T0);
+    const id = await takeReview(db, ctx.reviewers[0]!,  submissionId, hours(1));
 
     // Only the submitting author may withdraw.
     await expectCode(withdrawSubmission(db, ctx.reviewers[0]!, submissionId, null, hours(2)), "NOT_FOUND");
@@ -291,25 +291,25 @@ describe("reviews", () => {
     const r0 = ctx.reviewers[0]!;
     const res = await submitReview(db, r0, assignments[0]!, review({ summaryMd: "Edited" }), hours(3));
     expect(res.edited).toBe(true);
-    await decide(db, ctx.editor, ctx.journal.id, submissionId, "accept", hours(4));
+    await decide(db, ctx.editor, submissionId, "accept", hours(4));
     await expectCode(submitReview(db, r0, assignments[0]!, review(), hours(5)), "INVALID_STATE");
   });
 
   it("validates scores", async () => {
     const ctx = await setup();
-    const { submissionId } = await submitManuscript(db, ctx.author, ctx.journal.id, manuscript(), T0);
-    await sendOut(db, ctx.editor, ctx.journal.id, submissionId, T0);
-    const id = await takeReview(db, ctx.reviewers[0]!, ctx.journal.id, submissionId, T0);
+    const { submissionId } = await submitManuscript(db, ctx.author, manuscript(), T0);
+    await sendOut(db, ctx.editor, submissionId, T0);
+    const id = await takeReview(db, ctx.reviewers[0]!,  submissionId, T0);
     await expectCode(submitReview(db, ctx.reviewers[0]!, id, review({ confidence: 9 }), T0), "VALIDATION_ERROR");
   });
 
   it("extra review slots nobody took are cancelled once enough reviews are in", async () => {
     const ctx = await setup({ reviewers_per_submission: 3, min_reviews_for_decision: 2 });
-    const { submissionId } = await submitManuscript(db, ctx.author, ctx.journal.id, manuscript(), T0);
-    await sendOut(db, ctx.editor, ctx.journal.id, submissionId, T0);
+    const { submissionId } = await submitManuscript(db, ctx.author, manuscript(), T0);
+    await sendOut(db, ctx.editor, submissionId, T0);
     expect(await openPool(submissionId)).toEqual(["review", "review", "review"]);
     for (const r of ctx.reviewers.slice(0, 2)) {
-      await submitReview(db, r, await takeReview(db, r, ctx.journal.id, submissionId, T0), review(), hours(1));
+      await submitReview(db, r, await takeReview(db, r, submissionId, T0), review(), hours(1));
     }
     expect(await status(submissionId)).toBe("awaiting_decision");
     expect(await openPool(submissionId)).toEqual(["editorial"]);
@@ -320,32 +320,35 @@ describe("submission limits", () => {
   it("enforces max_manuscript_chars, open submissions and the daily limit", async () => {
     const ctx = await setup({ max_manuscript_chars: 1000, max_open_submissions_per_agent: 2, max_submissions_per_agent_per_day: 3 });
     await expectCode(
-      submitManuscript(db, ctx.author, ctx.journal.id, manuscript({ bodyMd: "x".repeat(1001) }), T0),
+      submitManuscript(db, ctx.author, manuscript({ bodyMd: "x".repeat(1001) }), T0),
       "VALIDATION_ERROR",
     );
-    const a = await submitManuscript(db, ctx.author, ctx.journal.id, manuscript(), T0);
-    await submitManuscript(db, ctx.author, ctx.journal.id, manuscript(), T0);
-    await expectCode(submitManuscript(db, ctx.author, ctx.journal.id, manuscript(), T0), "RATE_LIMITED");
+    const a = await submitManuscript(db, ctx.author, manuscript(), T0);
+    await submitManuscript(db, ctx.author, manuscript(), T0);
+    await expectCode(submitManuscript(db, ctx.author, manuscript(), T0), "RATE_LIMITED");
     await withdrawSubmission(db, ctx.author, a.submissionId, null, T0);
-    await submitManuscript(db, ctx.author, ctx.journal.id, manuscript(), T0); // 3rd today, 2 open
+    await submitManuscript(db, ctx.author, manuscript(), T0); // 3rd today, 2 open
     await withdrawSubmission(db, ctx.author, (await submitManuscriptIds(ctx))[0]!, null, T0);
-    const err = await submitManuscript(db, ctx.author, ctx.journal.id, manuscript(), T0).catch((e) => e);
+    const err = await submitManuscript(db, ctx.author, manuscript(), T0).catch((e) => e);
     expect(err).toBeInstanceOf(DomainError);
     expect(err.code).toBe("RATE_LIMITED");
     expect(err.details.retry_after_seconds).toBeGreaterThan(0);
   });
 
-  it("requires membership, an open journal, co-authors who are members and an AI disclosure", async () => {
+  it("requires active co-authors and an AI disclosure", async () => {
     const ctx = await setup();
-    const outsider = await createMember(db, admin, (await createJournal(db)).id, ["author"]);
-    await expectCode(submitManuscript(db, outsider, ctx.journal.id, manuscript(), T0), "NOT_AUTHORIZED");
+    const suspended = await createMember(db, admin);
+    await setAgentStatus(db, admin, suspended.agentId, "suspended", T0);
     await expectCode(
-      submitManuscript(db, ctx.author, ctx.journal.id, manuscript({ coAuthorAgentIds: [outsider.agentId] }), T0),
+      submitManuscript(db, ctx.author, manuscript({ coAuthorAgentIds: [suspended.agentId] }), T0),
       "VALIDATION_ERROR",
     );
-    await expectCode(submitManuscript(db, ctx.author, ctx.journal.id, manuscript({ aiDisclosure: " " }), T0), "VALIDATION_ERROR");
-    await db.execute(sql`update journals set status = 'closed' where id = ${ctx.journal.id}`);
-    await expectCode(submitManuscript(db, ctx.author, ctx.journal.id, manuscript(), T0), "INVALID_STATE");
+    await expectCode(
+      submitManuscript(db, ctx.author, manuscript({ coAuthorAgentIds: ["00000000-0000-0000-0000-000000000000"] }), T0),
+      "VALIDATION_ERROR",
+    );
+    await expectCode(submitManuscript(db, ctx.author, manuscript({ aiDisclosure: " " }), T0), "VALIDATION_ERROR");
+    await submitManuscript(db, ctx.author, manuscript({ coAuthorAgentIds: [ctx.coauthor.agentId] }), T0);
   });
 
   async function submitManuscriptIds(ctx: Awaited<ReturnType<typeof setup>>) {
@@ -360,8 +363,8 @@ describe("submission limits", () => {
 describe("admin override", () => {
   it("moves a submission anywhere, logs the reason, and brings the pool in line", async () => {
     const ctx = await setup();
-    const { submissionId } = await submitManuscript(db, ctx.author, ctx.journal.id, manuscript(), T0);
-    await takeTask(db, ctx.editor, ctx.journal.id, "editorial", submissionId, T0);
+    const { submissionId } = await submitManuscript(db, ctx.author, manuscript(), T0);
+    await takeTask(db, ctx.editor, "editorial", submissionId, T0);
     await expectCode(adminOverride(db, ctx.editor, submissionId, "rejected", "because", T0), "NOT_AUTHORIZED");
     // Back under review: the editorial task is cancelled and review tasks are published.
     await adminOverride(db, admin, submissionId, "under_review", "Skip screening", T0);
@@ -410,9 +413,4 @@ describe("API keys", () => {
     expect(await verifyApiKey(db, apiKey, T0)).toBeNull();
   });
 
-  it("only admins grant roles", async () => {
-    const j = await createJournal(db);
-    const agent = await agentFor(db, admin, "x");
-    await expectCode(grantRoles(db, { type: "agent", agentId: agent.id }, j.id, agent.id, ["reviewer"], T0), "NOT_AUTHORIZED");
-  });
 });

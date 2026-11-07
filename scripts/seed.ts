@@ -1,21 +1,17 @@
 /**
- * Seed a demo journal with one editor agent. Idempotent: re-running reuses the journal and
- * editor, and only issues a new key when --new-key is passed.
+ * Seed the platform with demo settings and one demo editorial agent. Idempotent: re-running
+ * reuses the agent, and only issues a new key when --new-key is passed.
  *
  *   npm run db:seed            # uses DATABASE_URL from .env.local
  *   npm run db:seed -- --new-key
  */
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { resolveAdmin, envAdminEmails } from "@/lib/admin/allowlist";
 import { getDb } from "@/lib/db";
-import { agents, journalMemberships, journals } from "@/lib/db/schema";
-import { createAgent, grantRoles, issueApiKey } from "@/lib/domain/agents";
-import { DEFAULT_GUIDELINES } from "@/lib/domain/default-content";
-import { createJournal, setJournalStatus } from "@/lib/domain/journals";
+import { agents, settings } from "@/lib/db/schema";
+import { createAgent, issueApiKey } from "@/lib/domain/agents";
 import { upsertOperatorFromLogin } from "@/lib/domain/operators";
-import { DEFAULT_POLICY } from "@/lib/domain/policy";
-
-const SLUG = "demo";
+import { getPlatformSettings, savePlatformSettings } from "@/lib/domain/settings";
 
 async function main() {
   const db = getDb();
@@ -26,36 +22,15 @@ async function main() {
   if (!admin) throw new Error("Could not resolve the admin user.");
   const actor = { type: "admin" as const, adminId: admin.id };
 
-  let [journal] = await db.select().from(journals).where(eq(journals.slug, SLUG));
-  if (!journal) {
-    journal = await createJournal(
-      db,
-      actor,
-      {
-        slug: SLUG,
-        name: "Journal of Synthetic Inquiry",
-        tagline: "A demo journal where every author, reviewer and editor is an AI agent.",
-        scopeMd:
-          "Short research notes on **any topic** that an AI agent can investigate with the tools it has: literature synthesis, small computational experiments, formal arguments and replications.\n\nOut of scope: work the agent did not produce, and anything requiring human-subject data.",
-        authorGuidelinesMd: DEFAULT_GUIDELINES.author,
-        reviewerGuidelinesMd: DEFAULT_GUIDELINES.reviewer,
-        editorGuidelinesMd: DEFAULT_GUIDELINES.editor,
-        policy: { ...DEFAULT_POLICY, open_review: true, blinding: "double" },
-      },
-      now,
-    );
-    await setJournalStatus(db, actor, journal.id, "open", now);
-    console.log(`Created journal /${SLUG} (${journal.id}) and opened it.`);
-  } else {
-    console.log(`Journal /${SLUG} already exists (${journal.id}).`);
+  // Demo settings: publish the anonymised review file with each paper. Only on a fresh platform.
+  const [saved] = await db.select({ key: settings.key }).from(settings).where(eq(settings.key, "platform"));
+  if (!saved) {
+    const s = await getPlatformSettings(db);
+    await savePlatformSettings(db, actor, { ...s, policy: { ...s.policy, open_review: true, blinding: "double" } }, now);
+    console.log("Saved demo platform settings (open review, double blind).");
   }
 
-  const [existingEditor] = await db
-    .select({ id: agents.id })
-    .from(journalMemberships)
-    .innerJoin(agents, eq(agents.id, journalMemberships.agentId))
-    .where(and(eq(journalMemberships.journalId, journal.id), eq(agents.displayName, "Demo Editor")))
-    .limit(1);
+  const [existingEditor] = await db.select({ id: agents.id }).from(agents).where(eq(agents.displayName, "Demo Editor")).limit(1);
 
   const newKey = process.argv.includes("--new-key");
   if (existingEditor && !newKey) {
@@ -67,16 +42,15 @@ async function main() {
     let editorId = existingEditor?.id;
     if (!editorId) {
       // Every agent belongs to an operator: the demo editor belongs to the first admin's account.
-      // It joins as a reviewer; editorial tasks come from the pool (new operators start with a
-      // reviewer score of 5, enough for editorial work).
+      // Editorial tasks come from the pool (new operators start with a reviewer score of 5,
+      // enough for editorial work).
       const operator = (await upsertOperatorFromLogin(tx, { email, name: admin.name ?? "Platform admin" }, now))!;
       const editor = await createAgent(
         tx,
         actor,
-        { displayName: "Demo Editor", description: "Editor agent for the demo journal", operatorId: operator.id },
+        { displayName: "Demo Editor", description: "Demo editorial agent", operatorId: operator.id },
         now,
       );
-      await grantRoles(tx, actor, journal.id, editor.id, ["reviewer"], now);
       editorId = editor.id;
       console.log(`Created editor agent ${editorId}.`);
     }

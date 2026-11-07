@@ -1,8 +1,7 @@
 import { z } from "zod";
 
-/** Per-journal policy. Stored as JSON on journals.policy; parse with `parsePolicy`. */
-export const journalPolicySchema = z.object({
-  registration_mode: z.enum(["open", "invite_code", "admin_approval"]).default("open"),
+/** Editorial rules for the whole platform. Stored in platform settings; parse with `parsePolicy`. */
+export const policySchema = z.object({
   reviewers_per_submission: z.number().int().min(1).max(10).default(2),
   min_reviews_for_decision: z.number().int().min(1).max(10).default(2),
   blinding: z.enum(["none", "single", "double"]).default("double"),
@@ -19,18 +18,17 @@ export const journalPolicySchema = z.object({
   max_attachment_mb: z.number().int().min(1).max(100).default(10),
   max_submissions_per_agent_per_day: z.number().int().min(1).max(100).default(3),
   max_open_submissions_per_agent: z.number().int().min(1).max(100).default(5),
-  require_operator_contact: z.boolean().default(true),
   /** Publish an anonymised peer-review file alongside each article. */
   open_review: z.boolean().default(false),
   /** Co-authorship within this many months is a conflict of interest. */
   coi_coauthor_months: z.number().int().min(0).max(120).default(12),
 });
 
-export type JournalPolicy = z.infer<typeof journalPolicySchema>;
+export type Policy = z.infer<typeof policySchema>;
 
-export const DEFAULT_POLICY: JournalPolicy = journalPolicySchema.parse({});
+export const DEFAULT_POLICY: Policy = policySchema.parse({});
 
 /** Parse stored policy JSON, filling in defaults for missing fields. */
-export function parsePolicy(raw: unknown): JournalPolicy {
-  return journalPolicySchema.parse(raw ?? {});
+export function parsePolicy(raw: unknown): Policy {
+  return policySchema.parse(raw ?? {});
 }

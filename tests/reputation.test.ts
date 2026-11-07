@@ -1,14 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@/lib/db/types";
 import type { Actor } from "@/lib/domain/actor";
-import { grantRoles } from "@/lib/domain/agents";
 import { citationStats } from "@/lib/domain/citations";
 import { adjustPapercoins } from "@/lib/domain/papercoins";
 import { contributorRanking, reviewerRanking } from "@/lib/domain/rankings";
 import { computeReputation, loadReputation, operatorReputation, relativeScore } from "@/lib/domain/reputation";
 import { submitManuscript, submitReview } from "@/lib/domain/submissions";
 import { createTestDb } from "./helpers/db";
-import { T0, agentFor, createAdmin, createJournal, decide, hours, manuscript, review, sendOut, takeReview } from "./helpers/fixtures";
+import { T0, agentFor, createAdmin, setPolicy, decide, hours, manuscript, review, sendOut, takeReview } from "./helpers/fixtures";
 
 const days = (d: number, from = T0) => hours(24 * d, from);
 
@@ -27,7 +26,7 @@ describe("relativeScore", () => {
 });
 
 describe("computeReputation", () => {
-  const art = (id: string, ops: string[], publishedAt = T0) => ({ id, journalId: "j", publishedAt, operatorIds: ops });
+  const art = (id: string, ops: string[], publishedAt = T0) => ({ id, publishedAt, operatorIds: ops });
 
   it("keeps the starting score of 5 until a paper completes its first year", () => {
     const rep = computeReputation(
@@ -54,30 +53,29 @@ describe("reputation from the database", () => {
   });
   afterAll(async () => close());
 
-  async function agent(journalId: string, name: string, role: "author" | "reviewer", operatorName: string) {
+  async function agent(name: string, operatorName: string) {
     const a = await agentFor(db, admin, name, { email: `${operatorName.toLowerCase()}@lab.org`, operatorName });
-    await grantRoles(db, admin, journalId, a.id, [role], T0);
     await adjustPapercoins(db, admin, a.operatorId, 100, "test balance", T0);
     return { type: "agent" as const, agentId: a.id, operatorId: a.operatorId };
   }
 
   it("scores papers, authors and reviewers from first-year citations", async () => {
-    const j = await createJournal(db, { require_operator_contact: false, max_submissions_per_agent_per_day: 50, max_open_submissions_per_agent: 50 });
-    const editor = await agent(j.id, "Editor-Bot", "reviewer", "Eve");
-    const rita = await agent(j.id, "Rita-Bot", "reviewer", "Rita");
-    const rex = await agent(j.id, "Rex-Bot", "reviewer", "Rex");
-    const ann = await agent(j.id, "Ann-Bot", "author", "Ann");
-    const ben = await agent(j.id, "Ben-Bot", "author", "Ben");
-    const cat = await agent(j.id, "Cat-Bot", "author", "Cat");
+    await setPolicy(db, { max_submissions_per_agent_per_day: 50, max_open_submissions_per_agent: 50 });
+    const editor = await agent("Editor-Bot", "Eve");
+    const rita = await agent("Rita-Bot", "Rita");
+    const rex = await agent("Rex-Bot", "Rex");
+    const ann = await agent("Ann-Bot", "Ann");
+    const ben = await agent("Ben-Bot", "Ben");
+    const cat = await agent("Cat-Bot", "Cat");
 
     /** Publish a paper at `at`; Rita and Rex give the overall scores in `scores`. */
     async function publish(author: Actor & { type: "agent" }, body: string, at: Date, scores: [number, number]) {
-      const { submissionId } = await submitManuscript(db, author, j.id, manuscript({ bodyMd: body }), at);
-      await sendOut(db, editor, j.id, submissionId, at);
+      const { submissionId } = await submitManuscript(db, author, manuscript({ bodyMd: body }), at);
+      await sendOut(db, editor, submissionId, at);
       for (const [i, r] of [rita, rex].entries()) {
-        await submitReview(db, r, await takeReview(db, r, j.id, submissionId, at), review({ overallScore: scores[i]! }), at);
+        await submitReview(db, r, await takeReview(db, r, submissionId, at), review({ overallScore: scores[i]! }), at);
       }
-      return (await decide(db, editor, j.id, submissionId, "accept", at)).article!;
+      return (await decide(db, editor, submissionId, "accept", at)).article!;
     }
 
     const p1 = await publish(ann, "Ann's first paper. ".repeat(20), T0, [5, 0]);
@@ -118,14 +116,14 @@ describe("reputation from the database", () => {
     expect(eve.reviewer).toMatchObject({ score: 5, isNew: true });
 
     // Rankings.
-    const authors = await contributorRanking(db, { journalId: j.id, sort: "score", now });
+    const authors = await contributorRanking(db, { sort: "score", now });
     expect(authors.map((r) => [r.name, r.score, r.papers, r.citations])).toEqual([
       ["Ann", 5, 2, 2],
       ["Ben", 0, 2, 0],
       ["Cat", 0, 1, 0],
     ]);
     expect(authors.map((r) => r.rank)).toEqual([1, 2, 2]);
-    const reviewers = await reviewerRanking(db, { journalId: j.id, now });
+    const reviewers = await reviewerRanking(db, { now });
     expect(reviewers.map((r) => [r.name, r.score, r.reviews, r.scoredPapers])).toEqual([
       ["Rita", 4.8, 5, 5],
       ["Rex", 0, 5, 5],
@@ -133,13 +131,13 @@ describe("reputation from the database", () => {
   });
 
   it("rejects overall scores outside 0–5", async () => {
-    const j = await createJournal(db, { require_operator_contact: false });
-    const editor = await agent(j.id, "Ed2", "reviewer", "Ed2");
-    const r = await agent(j.id, "Rv2", "reviewer", "Rv2");
-    const au = await agent(j.id, "Au2", "author", "Au2");
-    const { submissionId } = await submitManuscript(db, au, j.id, manuscript(), T0);
-    await sendOut(db, editor, j.id, submissionId, T0);
-    const assignmentId = await takeReview(db, r, j.id, submissionId, T0);
+    await setPolicy(db);
+    const editor = await agent("Ed2", "Ed2");
+    const r = await agent("Rv2", "Rv2");
+    const au = await agent("Au2", "Au2");
+    const { submissionId } = await submitManuscript(db, au, manuscript(), T0);
+    await sendOut(db, editor, submissionId, T0);
+    const assignmentId = await takeReview(db, r, submissionId, T0);
     for (const bad of [-1, 6, 2.5]) {
       await expect(submitReview(db, r, assignmentId, review({ overallScore: bad }), T0)).rejects.toMatchObject({
         code: "VALIDATION_ERROR",

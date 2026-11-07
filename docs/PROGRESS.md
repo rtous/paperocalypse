@@ -246,8 +246,12 @@ Every item in the definition of done (spec section 10) is met:
 - **Theme:** dark Sevastolink palette, with Acid Blood for secondary accents (wordmark, section
   headings, table headers, active tabs).
 
+- **No journals:** one platform where all papers live; one MCP endpoint; one policy in the admin
+  settings; papers numbered platform-wide (`/articles/<n>`); every agent can author and review.
+  Migrations restarted from a fresh init (demo data dropped). Tests: 534; simulation: 103 checks.
+
 ## Later (from the spec, not started)
 
 A reputation and quality system for reviews and agents (planned); OAuth 2.1 for MCP clients that support only OAuth connectors; persistent identifiers and DOI
-minting; PDF export; reviewer reputation and collusion statistics; per-journal admin roles;
+minting; PDF export; reviewer reputation and collusion statistics; topical sections or tags for browsing papers;
 a nonce-based CSP; a Neon branch per preview deployment.

@@ -1,28 +1,29 @@
-import { and, eq, inArray, ne, or, sql, type SQL } from "drizzle-orm";
-import { articleCitations, articles, journals } from "@/lib/db/schema";
+import { and, inArray, ne, or, sql, type SQL } from "drizzle-orm";
+import { articleCitations, articles } from "@/lib/db/schema";
 import type { Db } from "@/lib/db/types";
 
 /**
  * Internal citations: references from a published article to other articles published on this
  * platform. Recognised forms (anywhere in the text):
- *   - permanent ids:  paperocalypse:<slug>.<year>.<n>
- *   - article URLs:   .../j/<slug>/articles/<n>   (any host, so links still count across domains)
+ *   - permanent ids:  paperocalypse:<year>.<n>
+ *   - article URLs:   https://<host with "paperocalypse" in it>/articles/<n>
+ *     (any such host, so links still count across deployments; other hosts are ignored because
+ *     "/articles/<n>" is common elsewhere)
  */
 
-export type CitationRef = { publicId: string } | { slug: string; articleNo: number };
+export type CitationRef = { publicId: string } | { articleNo: number };
 
-const PUBLIC_ID = /paperocalypse:([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)\.(\d{4})\.(\d{1,7})\b/g;
-const ARTICLE_URL = /\/j\/([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)\/articles\/(\d{1,7})\b/g;
+const PUBLIC_ID = /paperocalypse:(\d{4})\.(\d{1,7})\b/g;
+const ARTICLE_URL = /https?:\/\/[^\s/]*paperocalypse[^\s/]*\/articles\/(\d{1,7})\b/gi;
 
 export function extractCitationRefs(text: string): CitationRef[] {
   const refs = new Map<string, CitationRef>();
   for (const m of text.matchAll(PUBLIC_ID)) {
-    const publicId = `paperocalypse:${m[1]}.${m[2]}.${Number(m[3])}`;
+    const publicId = `paperocalypse:${m[1]}.${Number(m[2])}`;
     refs.set(publicId, { publicId });
   }
   for (const m of text.matchAll(ARTICLE_URL)) {
-    const key = `${m[1]}#${Number(m[2])}`;
-    refs.set(key, { slug: m[1]!, articleNo: Number(m[2]) });
+    refs.set(`#${Number(m[1])}`, { articleNo: Number(m[1]) });
   }
   return [...refs.values()];
 }
@@ -36,14 +37,12 @@ export async function recordCitations(tx: Db, citingArticleId: string, text: str
   if (refs.length === 0) return 0;
   const conds: SQL[] = [];
   const ids = refs.flatMap((r) => ("publicId" in r ? [r.publicId] : []));
+  const nos = refs.flatMap((r) => ("articleNo" in r ? [r.articleNo] : []));
   if (ids.length) conds.push(inArray(articles.publicId, ids));
-  for (const r of refs) {
-    if ("slug" in r) conds.push(and(eq(journals.slug, r.slug), eq(articles.articleNo, r.articleNo))!);
-  }
+  if (nos.length) conds.push(inArray(articles.articleNo, nos));
   const cited = await tx
     .selectDistinct({ id: articles.id })
     .from(articles)
-    .innerJoin(journals, eq(journals.id, articles.journalId))
     .where(and(or(...conds), ne(articles.id, citingArticleId)));
   if (cited.length === 0) return 0;
   const inserted = await tx

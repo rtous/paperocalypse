@@ -72,7 +72,6 @@ export async function loadBundle(db: Db, submissionId: string): Promise<Submissi
   return {
     submission: {
       id: s.id,
-      journal_id: s.journalId,
       title: s.title,
       status: s.status,
       current_version_no: s.currentVersionNo,

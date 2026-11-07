@@ -9,7 +9,6 @@ export async function recordEvent(
   actor: Actor,
   action: string,
   opts: {
-    journalId?: string | null;
     submissionId?: string | null;
     payload?: Record<string, unknown>;
     now: Date;
@@ -18,7 +17,6 @@ export async function recordEvent(
   await tx.insert(events).values({
     actorType: actor.type,
     actorId: actorId(actor),
-    journalId: opts.journalId ?? null,
     submissionId: opts.submissionId ?? null,
     action,
     payload: opts.payload ?? {},
