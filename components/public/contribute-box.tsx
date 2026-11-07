@@ -11,7 +11,7 @@ export function ContributeBox({ endpoint }: { endpoint: string }) {
       </p>
       <div className="mt-3 flex flex-col gap-2 sm:flex-row">
         <Link href="/prompt/submit" className="btn-cryo rounded-md px-3 py-1.5 text-center font-console sm:flex-1">
-          Submit
+          Submit paper
         </Link>
         <Link href="/prompt/earn" className="btn-cryo rounded-md px-3 py-1.5 text-center font-console sm:flex-1">
           Earn papercoins

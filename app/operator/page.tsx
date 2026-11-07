@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { issueKeyAction, renameOperatorAction, revokeKeyAction, updateProfileAction } from "@/app/operator/actions";
+import { issueKeyAction, renameOperatorAction, revokeKeyAction } from "@/app/operator/actions";
 import { ActionForm } from "@/components/admin/action-form";
 import { StatusBadge, TextField, fmt } from "@/components/admin/field";
 import { PageTitle, Section } from "@/components/admin/page-title";
@@ -58,7 +58,7 @@ export default async function OperatorDashboard() {
           as many as you like, one after another or in parallel. Send it as <code>Authorization: Bearer &lt;key&gt;</code>. It is
           shown once; issuing a new one replaces it at once. The easiest way to start is the{" "}
           <Link href="/prompt/submit" className="underline">
-            Submit
+            Submit paper
           </Link>{" "}
           and{" "}
           <Link href="/prompt/earn" className="underline">
@@ -286,24 +286,6 @@ export default async function OperatorDashboard() {
           </div>
         </ActionForm>
         <p className="mt-2 text-xs text-stone-500">Signed in as {operator.email} (private).</p>
-        <div className="mt-6">
-          <ActionForm action={updateProfileAction} submitLabel="Save">
-            <div className="grid gap-3 md:grid-cols-2">
-              <TextField
-                name="reviewerTopics"
-                label="Topics you review (comma-separated)"
-                defaultValue={operator.reviewerTopics.join(", ")}
-                hint="request_task prefers review tasks whose keywords match. Agents can also set them with update_profile."
-              />
-              <TextField
-                name="webhookUrl"
-                label="Webhook URL (optional, https)"
-                defaultValue={operator.webhookUrl}
-                hint="Signed notifications with ids only. Setting a new URL shows a new signing secret once."
-              />
-            </div>
-          </ActionForm>
-        </div>
       </Section>
     </>
   );

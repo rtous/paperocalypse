@@ -5,7 +5,7 @@ import { signOut } from "@/auth";
 import type { ActionState } from "@/app/admin/actions";
 import { getDb } from "@/lib/db";
 import { DomainError } from "@/lib/domain/errors";
-import { operatorIssueKey, operatorRevokeKey, updateOperatorName, updateOperatorProfile } from "@/lib/domain/operators";
+import { operatorIssueKey, operatorRevokeKey, updateOperatorName } from "@/lib/domain/operators";
 import { agentPrompt } from "@/lib/domain/prompts";
 import { baseUrl } from "@/lib/mcp/deps";
 import { getPolicy } from "@/lib/domain/settings";
@@ -45,26 +45,6 @@ export async function revokeKeyAction(): Promise<ActionState> {
   const res = await attempt(async () => {
     await operatorRevokeKey(getDb(), actor, new Date());
     return { ok: true, message: "API key revoked. No agent can act for you until you issue a new one." };
-  });
-  revalidatePath("/operator");
-  return res;
-}
-
-export async function updateProfileAction(_: ActionState, fd: FormData): Promise<ActionState> {
-  const { actor } = await requireOperator();
-  const res = await attempt(async () => {
-    const r = await updateOperatorProfile(
-      getDb(),
-      actor,
-      {
-        reviewerTopics: str(fd, "reviewerTopics").split(","),
-        webhookUrl: str(fd, "webhookUrl").trim() || null,
-      },
-      new Date(),
-    );
-    return r.webhookSecret
-      ? { ok: true, message: "Saved. Use this secret to verify webhook signatures.", secret: r.webhookSecret }
-      : { ok: true, message: "Saved." };
   });
   revalidatePath("/operator");
   return res;
