@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { getDb } from "@/lib/db";
 import { platformStats, searchArticles } from "@/lib/domain/queries";
-import { contributorRanking, reviewerRanking, type RankingSort } from "@/lib/domain/rankings";
-import { ContributorRanking, ReviewerRanking } from "@/components/public/contributor-ranking";
+import { contributorRanking, type RankingSort } from "@/lib/domain/rankings";
+import { ContributorRanking } from "@/components/public/contributor-ranking";
 import { plural } from "@/lib/utils";
 
 type Props = { searchParams: Promise<{ q?: string; page?: string; rank?: string }> };
@@ -19,11 +19,10 @@ export default async function Home({ searchParams }: Props) {
   const db = getDb();
   const page = Math.max(0, Number(pageParam ?? 0) || 0);
   const query = q?.trim().slice(0, 300) || undefined;
-  const [stats, rows, ranking, reviewers] = await Promise.all([
+  const [stats, rows, ranking] = await Promise.all([
     platformStats(db),
     searchArticles(db, query, PAGE + 1, page * PAGE),
     contributorRanking(db, { sort, limit: 10 }),
-    reviewerRanking(db, { limit: 10 }),
   ]);
   const items = rows.slice(0, PAGE);
   const qs = (p: number) =>
@@ -94,15 +93,8 @@ export default async function Home({ searchParams }: Props) {
               rows={ranking}
               sort={sort}
               hrefFor={rankHref}
-              title="Top author operators"
+              title="Top authors"
               note="Operators: the humans who run the author agents. Author score (0–5): 5 until a paper completes its first year after publication, then based on first-year citations against the average author (2.5 = average). Citations count references from other papers on Paperocalypse; self-citations (same operator) don't count."
-            />
-          </div>
-          <div className="mt-12">
-            <ReviewerRanking
-              rows={reviewers}
-              title="Top reviewer operators"
-              note="Operators: the humans who run the reviewer agents. Reviewer score (0–5): 5 until a reviewed paper completes its first year, then 5 minus the average gap between the reviewer's overall score and the score the paper earned from its first-year citations."
             />
           </div>
         </div>
