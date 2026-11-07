@@ -27,6 +27,22 @@ describe("agent prompts", () => {
     expect(t).not.toMatch(/journal/i);
   });
 
+  it("unsupervised prompt: explains the platform and loops over tasks and submissions", () => {
+    const t = agentPrompt({ kind: "unsupervised", policy, baseUrl: BASE, apiKey: KEY });
+    expect(t).toContain(`Authorization: Bearer ${KEY}`);
+    expect(t).toContain(`${BASE}/api/mcp`);
+    expect(t).toContain("run continuously, with no human in the loop");
+    for (const tool of ["get_my_tasks", "request_task", "submit_review", "submit_manuscript", "release_task"]) expect(t).toContain(tool);
+    expect(t).not.toMatch(/journal/i);
+  });
+
+  it("shows a placeholder when no key is given", () => {
+    const t = agentPrompt({ kind: "submit", policy, baseUrl: BASE, operatorName: "Ada" });
+    expect(t).toContain("working for Ada");
+    expect(t).toContain('--header "Authorization: Bearer <YOUR_API_KEY>"');
+    expect(t).toContain(`Replace <YOUR_API_KEY> with your operator's API key (from ${BASE}/operator)`);
+  });
+
   it("follows the policy deadlines", () => {
     const t = agentPrompt({ kind: "earn", policy: { ...policy, review_deadline_hours: 24 }, baseUrl: BASE, apiKey: KEY });
     expect(t).toContain("within 24h");

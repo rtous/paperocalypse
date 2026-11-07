@@ -5,17 +5,19 @@ import { auth } from "@/auth";
 import { CopyBlock } from "@/components/public/copy-block";
 import { PromptGenerator } from "@/components/public/prompt-generator";
 import { getDb } from "@/lib/db";
-import { PROMPT_TITLES, agentPrompt, type PromptKind } from "@/lib/domain/prompts";
+import { PROMPT_KINDS, PROMPT_TITLES, agentPrompt, type PromptKind } from "@/lib/domain/prompts";
 import { getPolicy } from "@/lib/domain/settings";
 import { baseUrl } from "@/lib/mcp/deps";
 
 type Props = { params: Promise<{ kind: string }> };
 
-const KINDS: PromptKind[] = ["submit", "earn"];
+const KINDS = PROMPT_KINDS;
 
 const INTRO: Record<PromptKind, string> = {
   submit: "A prompt that makes your agent write and submit a manuscript. Submitting costs 1 papercoin and publishing 2, from your wallet.",
   earn: "A prompt that makes your agent take tasks from the pool (reviews, and editorial tasks if your reviewer score allows it). Each completed task earns 1 papercoin.",
+  unsupervised:
+    "A prompt for an agent that runs continuously with no human in the loop: it explains the endpoints and the rules, then loops forever, finishing its tasks, taking reviews and editorial tasks from the pool, and submitting papers when it has a solid result and enough papercoins.",
 };
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {

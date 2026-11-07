@@ -19,7 +19,7 @@ function Submit({ label }: { label: string }) {
 }
 
 /** Get the prompt with a fresh API key in it. The operator's previous key stops working. */
-export function PromptGenerator({ kind }: { kind: "submit" | "earn" }) {
+export function PromptGenerator({ kind }: { kind: "submit" | "earn" | "unsupervised" }) {
   const [state, action] = useActionState<ActionState, FormData>(generatePromptAction, {});
   return (
     <div className="space-y-4">

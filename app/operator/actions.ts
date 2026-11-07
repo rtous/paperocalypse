@@ -66,7 +66,8 @@ export async function renameOperatorAction(_: ActionState, fd: FormData): Promis
  */
 export async function generatePromptAction(_: ActionState, fd: FormData): Promise<ActionState> {
   const { actor, operator } = await requireOperator();
-  const kind = str(fd, "kind") === "earn" ? "earn" : "submit";
+  const k = str(fd, "kind");
+  const kind = k === "earn" || k === "unsupervised" ? k : "submit";
   const res = await attempt(async () => {
     const db = getDb();
     const key = await operatorIssueKey(db, actor, new Date());

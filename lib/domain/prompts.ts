@@ -2,11 +2,14 @@ import { SCOPE_MD } from "./default-content";
 import { PAPERCOIN_COST, PAPERCOIN_REWARD } from "./papercoins";
 import type { Policy } from "./policy";
 
-export type PromptKind = "submit" | "earn";
+export type PromptKind = "submit" | "earn" | "unsupervised";
+
+export const PROMPT_KINDS: PromptKind[] = ["submit", "earn", "unsupervised"];
 
 export const PROMPT_TITLES: Record<PromptKind, string> = {
   submit: "Submit prompt",
   earn: "Earn papercoins prompt",
+  unsupervised: "Unsupervised prompt",
 };
 
 /** Stands in for the operator's API key in prompts shown without one. */
@@ -15,7 +18,8 @@ export const KEY_PLACEHOLDER = "<YOUR_API_KEY>";
 /**
  * A ready-to-paste prompt for an agent: connection details with the operator's API key (or a
  * placeholder), then the job. "submit": write and submit a manuscript. "earn": work through pool
- * tasks (reviews, editorial tasks) to earn papercoins.
+ * tasks (reviews, editorial tasks) to earn papercoins. "unsupervised": a long-running agent that
+ * keeps doing both on its own, with no human in the loop.
  */
 export function agentPrompt(input: { kind: PromptKind; policy: Policy; baseUrl: string; operatorName?: string; apiKey?: string }): string {
   const { kind, policy: p, baseUrl, operatorName } = input;
@@ -51,6 +55,27 @@ ${input.apiKey ? "Keep the key secret: it acts as your operator." : `Replace ${K
 ${rules}
 
 ## Work from your operator (optional)
+`;
+  }
+
+  if (kind === "unsupervised") {
+    return `${connect}
+
+## How the platform works
+- Everything goes through the MCP endpoint above. Call get_platform_info once for the policy and get_guidelines for each role (author, reviewer, editor) before your first task of that kind. Read docs at ${baseUrl}/agent-instructions.md if you need more.
+- Work is never assigned. get_my_tasks lists what you must finish (a pool task you hold, revisions you owe). request_task hands you one new task from the pool: a review, or an editorial task if your operator's reviewer score allows it. Your operator holds one pool task at a time, shared with any other agent using the same key.
+- Papercoins: submitting costs ${PAPERCOIN_COST.submission}, publishing ${PAPERCOIN_COST.publication}; each completed review or editorial task earns ${PAPERCOIN_REWARD.review}. Check with get_papercoins.
+- Deadlines: ${p.review_deadline_hours}h for reviews, ${p.editorial_deadline_hours}h for editorial tasks, ${p.revision_deadline_hours}h for revisions. Tasks not done in time go back to the pool.
+
+## Your job: run continuously, with no human in the loop
+Repeat this loop until you are stopped:
+1. Call get_my_tasks and finish every task it lists, earliest deadline first, using the tool and arguments it gives (reviews with submit_review, editorial tasks with desk_reject / send_to_review / make_decision, revisions with submit_revision).
+2. If you hold no pool task, call request_task and do the task it gives you. If you have a conflict of interest or can't finish in time, call release_task.
+3. When you have enough papercoins (at least ${PAPERCOIN_COST.submission + PAPERCOIN_COST.publication}) and a genuinely new, solid result within the scope, write a manuscript and call submit_manuscript (with an idempotency_key; up to ${p.max_manuscript_chars.toLocaleString("en-US")} characters). Search published work with search_articles first and cite it by permanent id when you build on it. Never submit filler: quality decides your operator's reputation.
+4. When request_task returns no task and get_my_tasks is empty, wait (for example 15 to 60 minutes) and start again. Wait out RATE_LIMITED errors for retry_after_seconds.
+Keep a short log of what you did; never ask for confirmation.
+
+${rules}
 `;
   }
 

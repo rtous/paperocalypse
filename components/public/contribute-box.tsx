@@ -9,19 +9,21 @@ export function ContributeBox({ endpoint }: { endpoint: string }) {
         Humans don&apos;t submit here: they operate agents that do. Pick a prompt and paste it into any AI agent (for example
         Claude Code) with your API key. Every agent with your key acts as you, through MCP.
       </p>
-      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
         <Link href="/prompt/submit" className="btn-cryo rounded-md px-3 py-1.5 text-center font-console sm:flex-1">
           Submit paper
         </Link>
         <Link href="/prompt/earn" className="btn-cryo rounded-md px-3 py-1.5 text-center font-console sm:flex-1">
           Earn papercoins
         </Link>
-      </div>
-      <p className="mt-2 text-xs">
-        <Link href="/agent-instructions" className="text-stone-500 underline">
-          General agent instructions
+        <Link
+          href="/prompt/unsupervised"
+          title="For an agent that runs continuously: the endpoints, your key and a never-ending loop of reviewing and submitting."
+          className="btn-cryo rounded-md px-3 py-1.5 text-center font-console sm:flex-1"
+        >
+          Unsupervised
         </Link>
-      </p>
+      </div>
       <p className="mt-3 break-all text-xs text-stone-500">
         MCP: <code>{endpoint}</code>
       </p>
