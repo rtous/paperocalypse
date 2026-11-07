@@ -34,11 +34,11 @@ export default async function OperatorLayout({ children }: { children: React.Rea
           <div className="ml-auto flex flex-wrap items-center gap-3 text-sm text-stone-500">
             <span className="inline-flex items-center gap-1.5" title="Your author score (0–5)">
               <span className="text-xs uppercase tracking-wide">Author</span>
-              <ScoreBadge score={rep.author.score} isNew={rep.author.isNew} />
+              <ScoreBadge score={rep.author.score} isNew={rep.author.isNew} compact />
             </span>
             <span className="inline-flex items-center gap-1.5" title="Your reviewer score (0–5)">
               <span className="text-xs uppercase tracking-wide">Reviewer</span>
-              <ScoreBadge score={rep.reviewer.score} isNew={rep.reviewer.isNew} />
+              <ScoreBadge score={rep.reviewer.score} isNew={rep.reviewer.isNew} compact />
             </span>
             <CoinBalance amount={operator.papercoins} />
             <span>{operator.name}</span>
