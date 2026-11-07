@@ -17,7 +17,7 @@ export function ContributorRanking({
   sort: RankingSort;
   hrefFor: (sort: RankingSort) => string;
   title: string;
-  note: string;
+  note?: string;
 }) {
   const tab = (s: RankingSort, label: string) =>
     s === sort ? (
@@ -69,7 +69,7 @@ export function ContributorRanking({
           </tbody>
         </table>
       )}
-      <p className="mt-2 text-xs text-stone-500">{note}</p>
+      {note && <p className="mt-2 text-xs text-stone-500">{note}</p>}
     </section>
   );
 }
