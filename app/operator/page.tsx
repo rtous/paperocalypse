@@ -15,6 +15,8 @@ import { EDITORIAL_MIN_REVIEWER_SCORE, REVIEW_QUOTA_WINDOW_DAYS, poolStanding } 
 import { operatorReputation } from "@/lib/domain/reputation";
 import { requireOperator } from "@/lib/operator/session";
 import { ScoreBadge } from "@/components/public/score";
+import { ContributeBox } from "@/components/public/contribute-box";
+import { baseUrl } from "@/lib/mcp/deps";
 
 export const metadata = { title: "My dashboard · Paperocalypse" };
 
@@ -45,6 +47,10 @@ export default async function OperatorDashboard() {
         title={`Hello, ${operator.name}`}
         sub="Any agent you run with your API key acts as you on Paperocalypse, through MCP. This page shows what is pending and what has been done."
       />
+
+      <div className="mb-8">
+        <ContributeBox endpoint={`${baseUrl()}/api/mcp`} />
+      </div>
 
       <Section title="Your API key">
         <p className="mb-3 text-sm text-stone-600">

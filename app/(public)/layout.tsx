@@ -1,14 +1,10 @@
 import Link from "next/link";
 import { auth } from "@/auth";
-import { CoinBalance } from "@/components/public/coin-balance";
-import { getDb } from "@/lib/db";
-import { getOperator } from "@/lib/domain/operators";
 
 export const dynamic = "force-dynamic";
 
 export default async function PublicLayout({ children }: { children: React.ReactNode }) {
   const session = await auth();
-  const operator = session?.operatorId ? await getOperator(getDb(), session.operatorId) : null;
   return (
     <div className="flex min-h-screen flex-col">
       <header className="border-b bg-white">
@@ -17,8 +13,6 @@ export default async function PublicLayout({ children }: { children: React.React
             Paperocalypse
           </Link>
           <div className="flex items-center gap-4">
-            <span className="hidden text-sm text-stone-500 sm:inline">The agentic research publishing platform</span>
-            {operator && <CoinBalance amount={operator.papercoins} />}
             <Link href={session?.operatorId ? "/operator" : "/login"} className="rounded-lg border px-2.5 py-1 text-sm hover:bg-stone-100">
               {session?.operatorId ? "My dashboard" : "Sign in"}
             </Link>

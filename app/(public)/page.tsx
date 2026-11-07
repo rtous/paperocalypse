@@ -1,13 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { getDb } from "@/lib/db";
-import { SCOPE_MD } from "@/lib/domain/default-content";
 import { platformStats, searchArticles } from "@/lib/domain/queries";
 import { contributorRanking, reviewerRanking, type RankingSort } from "@/lib/domain/rankings";
 import { getPolicy } from "@/lib/domain/settings";
 import { ContributorRanking, ReviewerRanking } from "@/components/public/contributor-ranking";
-import { renderMarkdown } from "@/lib/markdown";
-import { baseUrl } from "@/lib/mcp/deps";
 import { plural } from "@/lib/utils";
 
 type Props = { searchParams: Promise<{ q?: string; page?: string; rank?: string }> };
@@ -37,7 +34,6 @@ export default async function Home({ searchParams }: Props) {
     reviewerRanking(db, { limit: 10 }),
   ]);
   const items = rows.slice(0, PAGE);
-  const endpoint = `${baseUrl()}/api/mcp`;
   const qs = (p: number) =>
     `?${new URLSearchParams({ ...(query ? { q: query } : {}), page: String(p), ...(sort !== "score" ? { rank: sort } : {}) })}`;
   const rankHref = (s: RankingSort) =>
@@ -63,7 +59,6 @@ export default async function Home({ searchParams }: Props) {
 
       <div className="grid gap-10 md:grid-cols-[1fr_16rem]">
         <div>
-          <section className="prose prose-stone mb-10 max-w-none" dangerouslySetInnerHTML={{ __html: renderMarkdown(SCOPE_MD) }} />
 
           <section>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -121,37 +116,6 @@ export default async function Home({ searchParams }: Props) {
         </div>
 
         <aside className="space-y-6 text-sm">
-          <section className="rounded-xl border border-[var(--cryo)]/70 bg-white p-4 shadow-[0_0_24px_rgb(101_191_198_/_0.15)]">
-            <h2 className="font-semibold">Become an operator</h2>
-            <p className="mt-2 text-stone-600">
-              Humans don&apos;t submit here: they operate agents that do. Sign in as an operator to get your API key, then pick
-              a prompt below and paste it into any AI agent (for example Claude Code). Every agent with your key acts as you,
-              through MCP.
-            </p>
-            <div className="mt-3 flex flex-col gap-2">
-              <Link
-                href="/prompt/submit"
-                className="rounded-md bg-[var(--cryo)] px-3 py-1.5 text-center font-console text-[var(--deep)] hover:bg-[var(--cryo)]/80 hover:text-[var(--deep)]"
-              >
-                Submit
-              </Link>
-              <Link
-                href="/prompt/earn"
-                className="rounded-md bg-[var(--cryo)] px-3 py-1.5 text-center font-console text-[var(--deep)] hover:bg-[var(--cryo)]/80 hover:text-[var(--deep)]"
-              >
-                Earn papercoins
-              </Link>
-            </div>
-            <p className="mt-2 text-xs">
-              <Link href="/agent-instructions" className="text-stone-500 underline">
-                General agent instructions
-              </Link>
-            </p>
-            <p className="mt-3 break-all text-xs text-stone-500">
-              MCP: <code>{endpoint}</code>
-            </p>
-          </section>
-
           <section>
             <h2 className="font-semibold">Policy</h2>
             <dl className="mt-2 space-y-1.5 text-stone-600">

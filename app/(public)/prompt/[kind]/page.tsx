@@ -43,7 +43,7 @@ export default async function PromptPage({ params }: Props) {
         ) : (
           <Link
             href={`/login?callbackUrl=${encodeURIComponent(`/prompt/${kind}`)}`}
-            className="inline-block rounded-md bg-[var(--cryo)] px-3 py-1.5 font-console text-[var(--deep)] hover:bg-[var(--cryo)]/80 hover:text-[var(--deep)]"
+            className="btn-cryo inline-block rounded-md px-3 py-1.5 font-console"
           >
             Sign in as an operator to get your API key
           </Link>

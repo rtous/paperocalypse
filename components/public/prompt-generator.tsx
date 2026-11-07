@@ -11,7 +11,7 @@ function Submit({ label }: { label: string }) {
   return (
     <button
       disabled={pending}
-      className="h-9 rounded-md bg-[var(--cryo)] px-4 font-console text-[var(--deep)] hover:bg-[var(--cryo)]/80 disabled:opacity-60"
+      className="btn-cryo h-9 rounded-md px-4 font-console disabled:opacity-60"
     >
       {pending ? "Generating…" : label}
     </button>

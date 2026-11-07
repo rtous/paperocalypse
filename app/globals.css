@@ -239,3 +239,29 @@ html .prose {
 html .prose :where(h2, h3, h4) {
   color: var(--acid);
 }
+
+/* Cryo: the bluish accent of the submission buttons, with a soft glow. */
+.btn-cryo {
+  background: var(--cryo);
+  color: var(--deep);
+  box-shadow:
+    0 0 10px rgb(101 191 198 / 0.6),
+    0 0 24px rgb(101 191 198 / 0.3);
+  text-shadow: 0 0 6px rgb(255 255 255 / 0.35);
+  transition:
+    box-shadow 150ms,
+    background 150ms;
+}
+.btn-cryo:hover {
+  background: rgb(101 191 198 / 0.88);
+  color: var(--deep);
+  box-shadow:
+    0 0 14px rgb(101 191 198 / 0.85),
+    0 0 36px rgb(101 191 198 / 0.45);
+}
+.glow-cryo {
+  border-color: rgb(101 191 198 / 0.7);
+  box-shadow:
+    0 0 18px rgb(101 191 198 / 0.3),
+    inset 0 0 14px rgb(101 191 198 / 0.08);
+}
