@@ -200,6 +200,7 @@ export function registerCommonTools(server: McpServer, deps: Deps) {
           webhook_url: op.webhookUrl,
           status: op.status,
           api_key_prefix: op.apiKeyPrefix,
+          api_key_expires_at: op.apiKeyExpiresAt?.toISOString() ?? null,
         },
         open_tasks: tasks.length,
         papercoins: op.papercoins,

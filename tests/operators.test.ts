@@ -14,8 +14,8 @@ import {
 } from "@/lib/domain/operator-queries";
 import {
   getOperator,
+  currentApiKey,
   operatorIssueKey,
-  operatorRevokeKey,
   updateOperatorName,
   updateOperatorProfile,
   upsertOperatorFromLogin,
@@ -67,22 +67,35 @@ describe("operator accounts", () => {
     expect(await code(updateOperatorName(db, { type: "operator", operatorId: op!.id }, "x", T0))).toBe("VALIDATION_ERROR");
   });
 
-  it("get the welcome grant once and have one API key, which a new one replaces", async () => {
+  it("get the welcome grant once and a first API key at sign-up", async () => {
     const { operator, actor } = await createOperator(db, "grace@lab.org", "Grace");
     expect(operator.papercoins).toBe(3);
-    expect(operator.apiKeyHash).toBeNull();
+    expect(operator.apiKeyHash).not.toBeNull();
+    expect(operator.apiKeyExpiresAt).toEqual(hours(24));
+    const prefix = operator.apiKeyPrefix;
+    // Later sign-ins don't bring more grants or new keys.
     await upsertOperatorFromLogin(db, { email: "grace@lab.org", name: "Grace" }, hours(1));
     expect(await getPapercoinBalance(db, operator.id)).toBe(3);
+    expect((await getOperator(db, operator.id))!.apiKeyPrefix).toBe(prefix);
 
-    const k1 = await operatorIssueKey(db, actor, T0);
-    expect(await verifyApiKey(db, k1.apiKey, T0)).toEqual({ operatorId: operator.id });
-    expect((await getOperator(db, operator.id))!.apiKeyPrefix).toBe(k1.keyPrefix);
-    const k2 = await operatorIssueKey(db, actor, T0);
-    expect(await verifyApiKey(db, k1.apiKey, T0)).toBeNull();
-    expect(await verifyApiKey(db, k2.apiKey, T0)).toEqual({ operatorId: operator.id });
-    await operatorRevokeKey(db, actor, T0);
-    expect(await verifyApiKey(db, k2.apiKey, T0)).toBeNull();
-    expect(await code(operatorRevokeKey(db, actor, T0))).toBe("NOT_FOUND");
+    // The current key is shown again (it is stored encrypted) and works...
+    const k1 = await currentApiKey(db, actor, hours(2));
+    expect(k1.keyPrefix).toBe(prefix);
+    expect((await currentApiKey(db, actor, hours(3))).apiKey).toBe(k1.apiKey);
+    expect(await verifyApiKey(db, k1.apiKey, hours(2))).toEqual({ operatorId: operator.id });
+    // ...for 24 hours. After that it fails, and the next request for it issues a fresh one.
+    expect(await verifyApiKey(db, k1.apiKey, hours(24))).toBeNull();
+    const k2 = await currentApiKey(db, actor, hours(25));
+    expect(k2.apiKey).not.toBe(k1.apiKey);
+    expect(k2.expiresAt).toEqual(hours(49));
+    expect(await verifyApiKey(db, k2.apiKey, hours(25))).toEqual({ operatorId: operator.id });
+    // Replacing a key stops the old one at once.
+    const k3 = await operatorIssueKey(db, actor, hours(26));
+    expect(await verifyApiKey(db, k2.apiKey, hours(26))).toBeNull();
+    expect(await verifyApiKey(db, k3.apiKey, hours(26))).toEqual({ operatorId: operator.id });
+    // The plain key is never stored.
+    const [row] = await db.select().from(operators).where(eq(operators.id, operator.id));
+    expect(JSON.stringify(row)).not.toContain(k3.apiKey);
   });
 
   it("set reviewer topics and a webhook (with a new secret, once)", async () => {

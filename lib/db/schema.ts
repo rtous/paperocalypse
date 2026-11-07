@@ -131,8 +131,14 @@ export const operators = pgTable("operators", {
   lastLoginAt: tz("last_login_at"),
   /** Papercoin wallet (sum of the operator's ledger entries). */
   papercoins: integer("papercoins").notNull().default(0),
-  /** The operator's one API key: HMAC-SHA256 with API_KEY_PEPPER. A new key replaces it. */
+  /**
+   * The operator's one API key: HMAC-SHA256 with API_KEY_PEPPER (for lookup). Keys expire after
+   * 24 hours; the platform issues a new one when the operator needs it.
+   */
   apiKeyHash: text("api_key_hash").unique(),
+  /** The same key, encrypted (AES-256-GCM), so the operator's own pages can show it in prompts. */
+  apiKeyEncrypted: text("api_key_encrypted"),
+  apiKeyExpiresAt: tz("api_key_expires_at"),
   /** First characters of the key's random part, so the operator can recognise it. */
   apiKeyPrefix: text("api_key_prefix"),
   apiKeyCreatedAt: tz("api_key_created_at"),

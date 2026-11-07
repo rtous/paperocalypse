@@ -5,6 +5,7 @@ import type { Db } from "@/lib/db/types";
 import type { Actor, OperatorActor } from "./actor";
 import { DomainError, notAuthorized, notFound, validationError } from "./errors";
 import { recordEvent } from "./events";
+import { decryptKey, encryptKey } from "./key-crypto";
 import { grantOperatorWelcome } from "./papercoins";
 import { checkWebhookUrl } from "./webhooks";
 
@@ -16,10 +17,12 @@ import { checkWebhookUrl } from "./webhooks";
 export type { OperatorActor };
 
 // ---------------------------------------------------------------------------
-// API keys (one per operator)
+// API keys (one per operator, valid for 24 hours)
 // ---------------------------------------------------------------------------
 
 export const API_KEY_PREFIX = "pk_live_";
+/** How long a key works. After that the platform issues a new one when the operator needs it. */
+export const API_KEY_TTL_HOURS = 24;
 
 function pepper(): string {
   const p = process.env.API_KEY_PEPPER;
@@ -39,24 +42,52 @@ export function generateApiKey(): { plain: string; prefix: string; hash: string 
   return { plain, prefix: secret.slice(0, 8), hash: hashApiKey(plain) };
 }
 
-/** Give the operator a new API key. Their previous key, if any, stops working at once. */
-export async function issueApiKey(tx: Db, actor: Actor, operatorId: string, now: Date): Promise<{ apiKey: string; keyPrefix: string }> {
+export type IssuedKey = { apiKey: string; keyPrefix: string; expiresAt: Date };
+
+/** Give the operator a new API key (valid for 24 hours). Their previous key stops working at once. */
+export async function issueApiKey(tx: Db, actor: Actor, operatorId: string, now: Date): Promise<IssuedKey> {
   const key = generateApiKey();
+  const expiresAt = new Date(now.getTime() + API_KEY_TTL_HOURS * 3_600_000);
   const [row] = await tx
     .update(operators)
-    .set({ apiKeyHash: key.hash, apiKeyPrefix: key.prefix, apiKeyCreatedAt: now, apiKeyLastUsedAt: null, updatedAt: now })
+    .set({
+      apiKeyHash: key.hash,
+      apiKeyEncrypted: encryptKey(key.plain),
+      apiKeyPrefix: key.prefix,
+      apiKeyCreatedAt: now,
+      apiKeyExpiresAt: expiresAt,
+      apiKeyLastUsedAt: null,
+      updatedAt: now,
+    })
     .where(eq(operators.id, operatorId))
     .returning({ id: operators.id });
   if (!row) throw notFound("Operator");
-  await recordEvent(tx, actor, "api_key.issued", { payload: { operator_id: operatorId, key_prefix: key.prefix }, now });
-  return { apiKey: key.plain, keyPrefix: key.prefix };
+  await recordEvent(tx, actor, "api_key.issued", {
+    payload: { operator_id: operatorId, key_prefix: key.prefix, expires_at: expiresAt.toISOString() },
+    now,
+  });
+  return { apiKey: key.plain, keyPrefix: key.prefix, expiresAt };
+}
+
+/**
+ * The operator's current key, for their own pages: the existing one while it is valid, otherwise
+ * a new one (the platform recreates expired keys when the operator needs one).
+ */
+export async function currentApiKey(db: Db, actor: OperatorActor, now: Date): Promise<IssuedKey> {
+  return db.transaction(async (tx) => {
+    const [op] = await tx.select().from(operators).where(eq(operators.id, actor.operatorId)).for("update");
+    if (!op || op.status !== "active") throw notAuthorized("Your operator account is not active.");
+    const plain = op.apiKeyEncrypted && op.apiKeyExpiresAt && op.apiKeyExpiresAt > now ? decryptKey(op.apiKeyEncrypted) : null;
+    if (plain) return { apiKey: plain, keyPrefix: op.apiKeyPrefix!, expiresAt: op.apiKeyExpiresAt! };
+    return issueApiKey(tx, actor, op.id, now);
+  });
 }
 
 /** Remove the operator's API key: nothing can act for them over MCP until they get a new one. */
 export async function revokeApiKey(tx: Db, actor: Actor, operatorId: string, now: Date): Promise<void> {
   const [row] = await tx
     .update(operators)
-    .set({ apiKeyHash: null, apiKeyPrefix: null, apiKeyCreatedAt: null, apiKeyLastUsedAt: null, updatedAt: now })
+    .set({ apiKeyHash: null, apiKeyEncrypted: null, apiKeyPrefix: null, apiKeyCreatedAt: null, apiKeyExpiresAt: null, apiKeyLastUsedAt: null, updatedAt: now })
     .where(eq(operators.id, operatorId))
     .returning({ id: operators.id });
   if (!row) throw notFound("Operator");
@@ -64,14 +95,14 @@ export async function revokeApiKey(tx: Db, actor: Actor, operatorId: string, now
 }
 
 /**
- * Resolve a bearer token to an active operator. Returns null for unknown keys and suspended
- * operators. Updates api_key_last_used_at (at most once a minute).
+ * Resolve a bearer token to an active operator. Returns null for unknown, expired or replaced keys
+ * and suspended operators. Updates api_key_last_used_at (at most once a minute).
  */
 export async function verifyApiKey(db: Db, plain: string, now: Date): Promise<{ operatorId: string } | null> {
   if (!plain.startsWith(API_KEY_PREFIX) || plain.length > 200) return null;
   const hash = hashApiKey(plain);
   const [row] = await db
-    .select({ id: operators.id, hash: operators.apiKeyHash, status: operators.status })
+    .select({ id: operators.id, hash: operators.apiKeyHash, status: operators.status, expiresAt: operators.apiKeyExpiresAt })
     .from(operators)
     .where(eq(operators.apiKeyHash, hash))
     .limit(1);
@@ -79,6 +110,7 @@ export async function verifyApiKey(db: Db, plain: string, now: Date): Promise<{ 
   // The lookup is by hash already; compare again in constant time as defence in depth.
   if (!timingSafeEqual(Buffer.from(row.hash, "hex"), Buffer.from(hash, "hex"))) return null;
   if (row.status !== "active") return null;
+  if (!row.expiresAt || row.expiresAt <= now) return null;
   const stale = new Date(now.getTime() - 60_000);
   await db
     .update(operators)
@@ -112,6 +144,8 @@ export async function upsertOperatorFromLogin(
     if (!row || row.status !== "active") return null;
     // The welcome grant is idempotent per operator, so calling it on every sign-in is safe.
     await grantOperatorWelcome(tx, row.id, now);
+    // A first API key at sign-up.
+    if (!row.apiKeyHash) await issueApiKey(tx, { type: "operator", operatorId: row.id }, row.id, now);
     const [fresh] = await tx.select().from(operators).where(eq(operators.id, row.id));
     return fresh!;
   });
@@ -128,19 +162,11 @@ async function requireActiveOperator(db: Db, actor: OperatorActor) {
   return op;
 }
 
-/** The operator issues (or replaces) their own API key on the dashboard. */
+/** Replace the operator's key now (seed script and tests; the pages use currentApiKey). */
 export async function operatorIssueKey(db: Db, actor: OperatorActor, now: Date) {
   return db.transaction(async (tx) => {
     await requireActiveOperator(tx, actor);
     return issueApiKey(tx, actor, actor.operatorId, now);
-  });
-}
-
-export async function operatorRevokeKey(db: Db, actor: OperatorActor, now: Date) {
-  return db.transaction(async (tx) => {
-    const op = await requireActiveOperator(tx, actor);
-    if (!op.apiKeyHash) throw notFound("API key");
-    await revokeApiKey(tx, actor, actor.operatorId, now);
   });
 }
 

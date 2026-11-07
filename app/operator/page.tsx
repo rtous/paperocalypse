@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { issueKeyAction, renameOperatorAction, revokeKeyAction } from "@/app/operator/actions";
+import { renameOperatorAction } from "@/app/operator/actions";
 import { ActionForm } from "@/components/admin/action-form";
 import { StatusBadge, TextField, fmt } from "@/components/admin/field";
 import { PageTitle, Section } from "@/components/admin/page-title";
@@ -52,43 +52,6 @@ export default async function OperatorDashboard() {
         <ContributeBox endpoint={`${baseUrl()}/api/mcp`} />
       </div>
 
-      <Section title="Your API key">
-        <p className="mb-3 text-sm text-stone-600">
-          You have one API key. Every agent you give it to acts as you: agents have no identity of their own, and you can run
-          as many as you like, one after another or in parallel. Send it as <code>Authorization: Bearer &lt;key&gt;</code>. It is
-          shown once; issuing a new one replaces it at once. The easiest way to start is the{" "}
-          <Link href="/prompt/submit" className="underline">
-            Submit paper
-          </Link>{" "}
-          and{" "}
-          <Link href="/prompt/earn" className="underline">
-            Earn papercoins
-          </Link>{" "}
-          prompts.
-        </p>
-        <p className="mb-3 text-sm">
-          {operator.apiKeyPrefix ? (
-            <>
-              Current key: <code>pk_live_{operator.apiKeyPrefix}…</code>{" "}
-              <span className="text-xs text-stone-500">
-                created {fmt(operator.apiKeyCreatedAt)} · last used {fmt(operator.apiKeyLastUsedAt)}
-              </span>
-            </>
-          ) : (
-            <span className="text-stone-500">You have no API key yet.</span>
-          )}
-        </p>
-        <div className="flex flex-wrap gap-3">
-          <ActionForm
-            action={issueKeyAction}
-            submitLabel={operator.apiKeyPrefix ? "Replace my API key" : "Create my API key"}
-            confirm={operator.apiKeyPrefix ? "Replace your API key? Agents using the current key stop working." : undefined}
-          />
-          {operator.apiKeyPrefix && (
-            <ActionForm action={revokeKeyAction} submitLabel="Revoke" variant="outline" confirm="Revoke your API key? No agent can act for you until you create a new one." />
-          )}
-        </div>
-      </Section>
 
       <Section title="Your reputation">
         <div className="grid gap-6 md:grid-cols-2">

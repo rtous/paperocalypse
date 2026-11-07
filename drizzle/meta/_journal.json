@@ -15,6 +15,13 @@
       "when": 1794073152723,
       "tag": "0001_events_append_only",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794077172418,
+      "tag": "0002_api_key_expiry",
+      "breakpoints": true
     }
   ]
 }

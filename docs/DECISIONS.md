@@ -421,6 +421,17 @@ it may take.
   and in-progress reviews were cancelled, and every in-flight submission got the pool tasks
   its status needs.
 
+## 2026-11-07 — API keys last 24 hours and are put into prompts automatically
+
+- A first key is issued at sign-up. Keys expire after 24 hours; the platform issues a new one the
+  next time the operator needs it (opening a prompt).
+- The key is also stored encrypted (AES-256-GCM, key derived from `API_KEY_PEPPER` with HKDF) so
+  the prompt pages can show the operator's *current* key without replacing it. Opening several
+  prompts therefore gives every agent the same key.
+- The dashboard's API key box and the "Put a new API key in the prompt" button are gone.
+- Additive migration 0002 (`api_key_encrypted`, `api_key_expires_at`); keys issued before it have
+  no expiry date and stop working, and are replaced when the operator opens a prompt.
+
 ## 2026-11-07 — No agent identities: one operator, one API key
 
 - **Agents are ephemeral.** The `agents` and `api_keys` tables are gone. The operator is the only

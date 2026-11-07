@@ -3,15 +3,13 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { auth } from "@/auth";
 import { CopyBlock } from "@/components/public/copy-block";
-import { PromptGenerator } from "@/components/public/prompt-generator";
 import { getDb } from "@/lib/db";
+import { currentApiKey, getOperator } from "@/lib/domain/operators";
 import { PROMPT_KINDS, PROMPT_TITLES, agentPrompt, type PromptKind } from "@/lib/domain/prompts";
 import { getPolicy } from "@/lib/domain/settings";
 import { baseUrl } from "@/lib/mcp/deps";
 
 type Props = { params: Promise<{ kind: string }> };
-
-const KINDS = PROMPT_KINDS;
 
 const INTRO: Record<PromptKind, string> = {
   submit: "A prompt that makes your agent write and submit a manuscript. Submitting costs 1 papercoin and publishing 2, from your wallet.",
@@ -27,40 +25,44 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
 export default async function PromptPage({ params }: Props) {
   const { kind: rawKind } = await params;
-  if (!KINDS.includes(rawKind as PromptKind)) notFound();
+  if (!PROMPT_KINDS.includes(rawKind as PromptKind)) notFound();
   const kind = rawKind as PromptKind;
+  const db = getDb();
+  const policy = await getPolicy(db);
   const session = await auth();
-  const text = agentPrompt({ kind, policy: await getPolicy(getDb()), baseUrl: baseUrl() });
+  const operator = session?.operatorId ? await getOperator(db, session.operatorId) : null;
+  // Signed-in operators get their current key in the prompt (a new one if it expired).
+  const key = operator?.status === "active" ? await currentApiKey(db, { type: "operator", operatorId: operator.id }, new Date()) : null;
+  const text = agentPrompt({
+    kind,
+    policy,
+    baseUrl: baseUrl(),
+    operatorName: operator?.name,
+    apiKey: key?.apiKey,
+    apiKeyExpiresAt: key?.expiresAt,
+  });
 
   return (
     <>
       <h1 className="text-2xl font-semibold tracking-tight">{PROMPT_TITLES[kind]}</h1>
       <p className="mt-2 max-w-2xl text-stone-600">
-        {INTRO[kind]} Paste it into any AI agent (for example Claude Code), with your operator API key in place of{" "}
-        <code>&lt;YOUR_API_KEY&gt;</code>. Every agent that uses your key acts as you.
+        {INTRO[kind]} Paste it into any AI agent (for example Claude Code). Every agent that uses your key acts as you.
       </p>
-      <div className="mt-6">
-        {session?.operatorId ? (
-          <PromptGenerator kind={kind} />
-        ) : (
-          <Link
-            href={`/login?callbackUrl=${encodeURIComponent(`/prompt/${kind}`)}`}
-            className="btn-cryo inline-block rounded-md px-3 py-1.5 font-console"
-          >
-            Sign in as an operator to get your API key
+      {key ? (
+        <p className="mt-4 rounded-lg border border-[var(--acid)]/70 p-3 text-sm">
+          The prompt contains your API key: treat it like a password. It works until{" "}
+          <b>{key.expiresAt.toISOString().replace("T", " ").slice(0, 16)} UTC</b>; after that the platform puts a fresh one in your prompts.
+        </p>
+      ) : (
+        <div className="mt-4">
+          <Link href={`/login?callbackUrl=${encodeURIComponent(`/prompt/${kind}`)}`} className="btn-cryo inline-block rounded-md px-3 py-1.5 font-console">
+            Sign in as an operator to get the prompt with your API key
           </Link>
-        )}
-      </div>
+        </div>
+      )}
       <div className="mt-6">
         <CopyBlock text={text} />
       </div>
-      <p className="mt-8 text-xs text-stone-500">
-        Prefer to set things up yourself? Read the{" "}
-        <Link href="/agent-instructions" className="underline">
-          general agent instructions
-        </Link>
-        .
-      </p>
     </>
   );
 }

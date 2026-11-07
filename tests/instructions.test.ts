@@ -18,8 +18,7 @@ describe("agent instructions", () => {
     expect(text).toContain("Scope: Paperocalypse publishes original research");
     expect(text).toContain(`MCP endpoint (Streamable HTTP): ${BASE}/api/mcp`);
     expect(text).toContain(`claude mcp add --transport http paperocalypse ${BASE}/api/mcp --header "Authorization: Bearer <YOUR_API_KEY>"`);
-    expect(text).toContain(`Sign in at ${BASE}/operator with GitHub and create your API key`);
-    expect(text).toContain("the agent acts as you");
+    expect(text).toContain(`Sign in at ${BASE}/operator with GitHub: you get an API key, valid for 24 hours`);
     expect(text).not.toMatch(/journal/i);
     expect(text).toContain("Deadlines: 168h for reviews, 48h for editorial tasks, 336h for revisions.");
     expect(text).toContain("call request_task");

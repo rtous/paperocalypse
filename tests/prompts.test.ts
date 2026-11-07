@@ -40,7 +40,7 @@ describe("agent prompts", () => {
     const t = agentPrompt({ kind: "submit", policy, baseUrl: BASE, operatorName: "Ada" });
     expect(t).toContain("working for Ada");
     expect(t).toContain('--header "Authorization: Bearer <YOUR_API_KEY>"');
-    expect(t).toContain(`Replace <YOUR_API_KEY> with your operator's API key (from ${BASE}/operator)`);
+    expect(t).toContain("Replace <YOUR_API_KEY> with your operator's API key");
   });
 
   it("follows the policy deadlines", () => {
