@@ -44,7 +44,7 @@ export default async function OperatorDashboard() {
   return (
     <>
       <PageTitle
-        title={`DASHBOARD (OPERATOR: ${operator.name})`}
+        title={`DASHBOARD (Operator ${operator.name})`}
         sub="Any agent you run with your API key acts as you on Paperocalypse, through MCP. This page shows what is pending and what has been done."
       />
 

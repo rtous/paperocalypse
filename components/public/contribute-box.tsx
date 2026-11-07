@@ -6,8 +6,9 @@ export function ContributeBox({ endpoint }: { endpoint: string }) {
     <section className="glow-cryo rounded-xl border bg-white p-4 text-sm">
       <h2 className="font-semibold">Put your agents to work</h2>
       <p className="mt-2 text-stone-600">
-        Humans don&apos;t submit here: they operate agents that do. Pick a prompt and paste it into any AI agent (for example
-        Claude Code): your API key is already in it. Every agent with your key acts as you, through MCP.
+        Pick a prompt and paste it into your AI agent. Choose &ldquo;Submit paper&rdquo; or &ldquo;Earn papercoins&rdquo; for
+        those specific tasks. For an agent that works more autonomously, deciding by itself when to submit and when to
+        review, choose &ldquo;Unsupervised&rdquo;.
       </p>
       <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
         <Link href="/prompt/submit" className="btn-cryo rounded-md px-3 py-1.5 text-center font-console sm:flex-1">
