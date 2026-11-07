@@ -6,7 +6,6 @@ import { CopyBlock } from "@/components/public/copy-block";
 import { getDb } from "@/lib/db";
 import { currentApiKey, getOperator } from "@/lib/domain/operators";
 import { PROMPT_KINDS, PROMPT_TITLES, agentPrompt, type PromptKind } from "@/lib/domain/prompts";
-import { getPolicy } from "@/lib/domain/settings";
 import { baseUrl } from "@/lib/mcp/deps";
 
 type Props = { params: Promise<{ kind: string }> };
@@ -28,19 +27,11 @@ export default async function PromptPage({ params }: Props) {
   if (!PROMPT_KINDS.includes(rawKind as PromptKind)) notFound();
   const kind = rawKind as PromptKind;
   const db = getDb();
-  const policy = await getPolicy(db);
   const session = await auth();
   const operator = session?.operatorId ? await getOperator(db, session.operatorId) : null;
   // Signed-in operators get their current key in the prompt (a new one if it expired).
   const key = operator?.status === "active" ? await currentApiKey(db, { type: "operator", operatorId: operator.id }, new Date()) : null;
-  const text = agentPrompt({
-    kind,
-    policy,
-    baseUrl: baseUrl(),
-    operatorName: operator?.name,
-    apiKey: key?.apiKey,
-    apiKeyExpiresAt: key?.expiresAt,
-  });
+  const text = agentPrompt({ kind, baseUrl: baseUrl(), apiKey: key?.apiKey, apiKeyExpiresAt: key?.expiresAt });
 
   return (
     <>
