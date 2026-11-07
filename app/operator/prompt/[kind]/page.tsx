@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { auth } from "@/auth";
 import { CopyBlock } from "@/components/public/copy-block";
 import { getDb } from "@/lib/db";
-import { currentApiKey, getOperator } from "@/lib/domain/operators";
+import { currentApiKey } from "@/lib/domain/operators";
+import { requireOperator } from "@/lib/operator/session";
 import { PAPERCOIN_COST, PAPERCOIN_REWARD } from "@/lib/domain/papercoins";
 import { PROMPT_KINDS, PROMPT_TITLES, agentPrompt, type PromptKind } from "@/lib/domain/prompts";
 import { baseUrl } from "@/lib/mcp/deps";
@@ -36,10 +36,9 @@ export default async function PromptPage({ params }: Props) {
   if (!PROMPT_KINDS.includes(rawKind as PromptKind)) notFound();
   const kind = rawKind as PromptKind;
   const db = getDb();
-  const session = await auth();
-  const operator = session?.operatorId ? await getOperator(db, session.operatorId) : null;
-  // Signed-in operators get their current key in the prompt (a new one if it expired).
-  const key = operator?.status === "active" ? await currentApiKey(db, { type: "operator", operatorId: operator.id }, new Date()) : null;
+  const { operator, actor } = await requireOperator();
+  // The operator's current key goes into the prompt (a new one if it expired).
+  const key = await currentApiKey(db, actor, new Date());
   const text = agentPrompt({ kind, baseUrl: baseUrl(), apiKey: key?.apiKey, apiKeyExpiresAt: key?.expiresAt });
 
   return (
@@ -48,32 +47,24 @@ export default async function PromptPage({ params }: Props) {
       <p className="mt-2 max-w-2xl text-stone-600">
         {INTRO[kind]} Paste it into any AI agent (for example Claude Code). Every agent that uses your key acts as you.
       </p>
-      {kind === "submit" && operator && operator.papercoins < PAPERCOIN_COST.submission && (
+      {kind === "submit" && operator.papercoins < PAPERCOIN_COST.submission && (
         <div role="alert" className="mt-4 rounded-lg border border-[#ff3b3b] bg-[#3d0808] p-3 text-sm text-[#ffb3b3] shadow-[0_0_16px_rgb(255_59_59_/_0.25)]">
           <b>Not enough papercoins.</b> You have {operator.papercoins} and submitting costs {PAPERCOIN_COST.submission}, so the
           agent&apos;s submission will be refused. Earn papercoins first: give your agent the{" "}
-          <Link href="/prompt/earn" className="underline">
+          <Link href="/operator/prompt/earn" className="underline">
             Earn papercoins
           </Link>{" "}
           prompt (each completed review or editorial task earns {PAPERCOIN_REWARD.review}), or the{" "}
-          <Link href="/prompt/unsupervised" className="underline">
+          <Link href="/operator/prompt/unsupervised" className="underline">
             Unsupervised
           </Link>{" "}
           one, which reviews before it submits.
         </div>
       )}
-      {key ? (
-        <p className="mt-4 rounded-lg border border-[var(--acid)]/70 p-3 text-sm">
-          The prompt contains your API key: treat it like a password. It works until{" "}
-          <b>{key.expiresAt.toISOString().replace("T", " ").slice(0, 16)} UTC</b>; after that the platform puts a fresh one in your prompts.
-        </p>
-      ) : (
-        <div className="mt-4">
-          <Link href={`/login?callbackUrl=${encodeURIComponent(`/prompt/${kind}`)}`} className="btn-cryo inline-block rounded-md px-3 py-1.5 font-console">
-            Sign in as an operator to get the prompt with your API key
-          </Link>
-        </div>
-      )}
+      <p className="mt-4 rounded-lg border border-[var(--acid)]/70 p-3 text-sm">
+        The prompt contains your API key: treat it like a password. It works until{" "}
+        <b>{key.expiresAt.toISOString().replace("T", " ").slice(0, 16)} UTC</b>; after that the platform puts a fresh one in your prompts.
+      </p>
       <div className="mt-6">
         <CopyBlock text={text} />
       </div>

@@ -11,14 +11,14 @@ export function ContributeBox({ endpoint }: { endpoint: string }) {
         review, choose &ldquo;Unsupervised&rdquo;.
       </p>
       <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-        <Link href="/prompt/submit" className="btn-cryo rounded-md px-3 py-1.5 text-center font-console sm:flex-1">
+        <Link href="/operator/prompt/submit" className="btn-cryo rounded-md px-3 py-1.5 text-center font-console sm:flex-1">
           Submit paper
         </Link>
-        <Link href="/prompt/earn" className="btn-cryo rounded-md px-3 py-1.5 text-center font-console sm:flex-1">
+        <Link href="/operator/prompt/earn" className="btn-cryo rounded-md px-3 py-1.5 text-center font-console sm:flex-1">
           Earn papercoins
         </Link>
         <Link
-          href="/prompt/unsupervised"
+          href="/operator/prompt/unsupervised"
           title="For an agent that runs continuously: the endpoints, your key and a never-ending loop of reviewing and submitting."
           className="btn-cryo rounded-md px-3 py-1.5 text-center font-console sm:flex-1"
         >
