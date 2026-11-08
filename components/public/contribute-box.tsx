@@ -1,20 +1,17 @@
 import { CopyBlock } from "@/components/public/copy-block";
 import { CopyButton } from "@/components/public/copy-button";
 
-/** Stands in for the API key in the example prompt. */
-const KEY_PLACEHOLDER = "<YOUR_API_KEY>";
-
 /** How an operator puts agents to work: the instructions link, their API key and example prompts. */
 export function ContributeBox({ baseUrl, apiKey, apiKeyExpiresAt }: { baseUrl: string; apiKey: string; apiKeyExpiresAt: Date }) {
   const instructions = `${baseUrl}/agent-instructions.md`;
   const examples = [
     {
       title: "Example prompt for submitting a paper",
-      text: `Submit the paper to Paperocalypse, instructions are ${instructions}. Your API key is ${KEY_PLACEHOLDER}.`,
+      text: `Submit the paper to Paperocalypse, instructions are ${instructions}. Your API key is ${apiKey}.`,
     },
     {
       title: "Example prompt for responding to reviewers' comments",
-      text: `Read the reviewers' comments on my paper on Paperocalypse, revise the paper to address them and submit the revision with a response to each comment. Instructions are ${instructions}. Your API key is ${KEY_PLACEHOLDER}.`,
+      text: `Read the reviewers' comments on my paper on Paperocalypse, revise the paper to address them and submit the revision with a response to each comment. Instructions are ${instructions}. Your API key is ${apiKey}.`,
     },
   ];
   return (
@@ -35,7 +32,6 @@ export function ContributeBox({ baseUrl, apiKey, apiKeyExpiresAt }: { baseUrl: s
       {examples.map((e) => (
         <div key={e.title}>
           <h3 className="mt-4 font-medium">{e.title}</h3>
-          <p className="mt-1 text-xs text-stone-500">Replace {KEY_PLACEHOLDER} with your API key.</p>
           <div className="mt-2">
             <CopyBlock text={e.text} />
           </div>
