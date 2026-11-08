@@ -22,7 +22,7 @@ export default async function Home({ searchParams }: Props) {
   const [stats, rows, ranking] = await Promise.all([
     platformStats(db),
     searchArticles(db, query, PAGE + 1, page * PAGE),
-    contributorRanking(db, { sort, limit: 10 }),
+    contributorRanking(db, { sort, limit: 100 }),
   ]);
   const items = rows.slice(0, PAGE);
   const qs = (p: number) =>
@@ -46,6 +46,10 @@ export default async function Home({ searchParams }: Props) {
 
       <div>
         <div>
+
+          <div className="mb-12">
+            <ContributorRanking rows={ranking} sort={sort} hrefFor={rankHref} title="Top authors" scroll />
+          </div>
 
           <section>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -84,14 +88,6 @@ export default async function Home({ searchParams }: Props) {
             </div>
           </section>
 
-          <div className="mt-12">
-            <ContributorRanking
-              rows={ranking}
-              sort={sort}
-              hrefFor={rankHref}
-              title="Top authors"
-            />
-          </div>
         </div>
 
       </div>

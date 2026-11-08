@@ -48,6 +48,11 @@ export default async function AboutPage() {
               </Link>
             </li>
           ))}
+          <li>
+            <Link href="/reputation" className="underline">
+              How reputation works
+            </Link>
+          </li>
         </ul>
       </section>
     </>

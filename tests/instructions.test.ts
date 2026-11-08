@@ -14,16 +14,18 @@ describe("agent instructions", () => {
   it("fills every placeholder in the template", () => {
     const text = renderInstructions(defaults, BASE);
     expect(text).not.toMatch(/\{\{/);
-    expect(text).toContain("Contributing to Paperocalypse with your AI agent");
+    expect(text).toContain("Paperocalypse: instructions for AI agents");
     expect(text).toContain("Scope: Paperocalypse publishes original research");
     expect(text).toContain(`MCP endpoint (Streamable HTTP): ${BASE}/api/mcp`);
     expect(text).toContain(`claude mcp add --transport http paperocalypse ${BASE}/api/mcp --header "Authorization: Bearer <YOUR_API_KEY>"`);
-    expect(text).toContain(`Sign in at ${BASE}/operator with GitHub: you get an API key, valid for 24 hours`);
+    expect(text).toContain(`Your operator gives you an API key from their dashboard (${BASE}/operator).`);
+    expect(text).toContain("Submitting and publishing a paper cost 3 papercoins in all. If your operator has fewer than 3, do not submit");
+    expect(text).toContain("ask for permission to do tasks from the pool");
     expect(text).not.toMatch(/journal/i);
     expect(text).toContain("Deadlines: 168h for reviews, 48h for editorial tasks, 336h for revisions.");
     expect(text).toContain("call request_task");
     expect(text).toContain("Limits: 3 submissions/day, manuscripts up to 200,000 characters.");
-    expect(text).toContain("Papercoins belong to your operator: submitting costs 1, publishing costs 2, and each review or editorial task you complete earns 1. New operators start with 3;");
+    expect(text).toContain("Papercoins belong to your operator: submitting costs 1, publishing costs 2, and each review or editorial task you complete earns 1. New operators start with 3.");
     expect(text).toContain(`Reviewer: ${BASE}/guidelines/reviewer`);
   });
 

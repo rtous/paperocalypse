@@ -11,8 +11,9 @@ import {
   operatorSubmissions,
   operatorTasks,
 } from "@/lib/domain/operator-queries";
-import { EDITORIAL_MIN_REVIEWER_SCORE, REVIEW_QUOTA_WINDOW_DAYS, poolStanding } from "@/lib/domain/pool";
+import { EDITORIAL_MIN_REVIEWER_SCORE } from "@/lib/domain/pool";
 import { operatorReputation } from "@/lib/domain/reputation";
+import { currentApiKey } from "@/lib/domain/operators";
 import { requireOperator } from "@/lib/operator/session";
 import { ScoreBadge } from "@/components/public/score";
 import { ContributeBox } from "@/components/public/contribute-box";
@@ -27,17 +28,17 @@ const TASK_LABEL: Record<string, string> = {
 };
 
 export default async function OperatorDashboard() {
-  const { operator } = await requireOperator();
+  const { operator, actor } = await requireOperator();
   const db = getDb();
   const now = new Date();
-  const [tasks, subs, reviews, editorial, coins, rep, standing] = await Promise.all([
+  const [key, tasks, subs, reviews, editorial, coins, rep] = await Promise.all([
+    currentApiKey(db, actor, now),
     operatorTasks(db, operator.id),
     operatorSubmissions(db, operator.id),
     operatorReviews(db, operator.id),
     operatorEditorial(db, operator.id),
     operatorPapercoinHistory(db, operator.id, 20),
     operatorReputation(db, operator.id, now),
-    poolStanding(db, operator.id, now),
   ]);
   const avg = (x: number | null) => (x === null ? "—" : x.toFixed(2));
 
@@ -49,7 +50,7 @@ export default async function OperatorDashboard() {
       />
 
       <div className="mb-8">
-        <ContributeBox endpoint={`${baseUrl()}/api/mcp`} />
+        <ContributeBox baseUrl={baseUrl()} apiKey={key.apiKey} apiKeyExpiresAt={key.expiresAt} />
       </div>
 
 
@@ -74,24 +75,12 @@ export default async function OperatorDashboard() {
             </p>
           </div>
         </div>
-        <div className="mt-4 rounded-lg bg-stone-100 p-3 text-sm">
-          <div className="font-medium">What you may take from the task pool</div>
-          <ul className="mt-1 space-y-0.5 text-stone-700">
-            <li>
-              Reviews: <b className="tabular-nums">{standing.reviewsInWindow}</b> of <b className="tabular-nums">{standing.reviewQuota}</b> used in
-              the last {REVIEW_QUOTA_WINDOW_DAYS} days (1 + 2 × reviewer score)
-              {standing.nextReviewSlotAt && `; the next one frees up on ${fmt(standing.nextReviewSlotAt)}`}.
-            </li>
-            <li>
-              Editorial tasks:{" "}
-              {standing.editorialAllowed
-                ? "allowed."
-                : `need a reviewer score of ${EDITORIAL_MIN_REVIEWER_SCORE.toFixed(1)} or more.`}
-            </li>
-          </ul>
-          <p className="mt-1 text-xs text-stone-500">Your agents get work by calling request_task; you hold one pool task at a time, whichever agent took it.</p>
-        </div>
-        <p className="mt-4 text-xs text-stone-500">Only citations from other operators&apos; papers count.</p>
+        <p className="mt-4 text-sm">
+          <Link href="/reputation" className="underline">
+            How reputation works
+          </Link>
+          <span className="text-stone-500">: how the scores are computed and what they let you take from the task pool.</span>
+        </p>
       </Section>
 
       <Section title={`What you need to do (${tasks.length})`}>

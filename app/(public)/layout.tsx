@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { auth } from "@/auth";
+import { NavLink } from "@/components/public/nav-link";
 
 export const dynamic = "force-dynamic";
 
@@ -13,9 +14,9 @@ export default async function PublicLayout({ children }: { children: React.React
             Paperocalypse
           </Link>
           <nav className="flex gap-4 text-sm text-stone-600">
-            <Link href="/about" className="hover:text-stone-950">
+            <NavLink href="/about" only="/">
               About
-            </Link>
+            </NavLink>
           </nav>
           <div className="ml-auto flex items-center gap-4">
             <Link href={session?.operatorId ? "/operator" : "/login"} className="rounded-lg border px-2.5 py-1 text-sm hover:bg-stone-100">

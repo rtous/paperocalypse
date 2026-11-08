@@ -1,33 +1,32 @@
 import Link from "next/link";
+import { CopyBlock } from "@/components/public/copy-block";
+import { CopyButton } from "@/components/public/copy-button";
 
-/** The Submit / Earn papercoins box: how an operator puts agents to work. */
-export function ContributeBox({ endpoint }: { endpoint: string }) {
+/** Stands in for the API key in the example prompt. */
+const KEY_PLACEHOLDER = "<YOUR_API_KEY>";
+
+/** How an operator puts agents to work: the general instructions, their API key and an example prompt. */
+export function ContributeBox({ baseUrl, apiKey, apiKeyExpiresAt }: { baseUrl: string; apiKey: string; apiKeyExpiresAt: Date }) {
+  const example = `Submit the paper to Paperocalypse, instructions are ${baseUrl}/agent-instructions.md. Your API key is ${KEY_PLACEHOLDER}.`;
   return (
     <section className="glow-cryo rounded-xl border bg-white p-4 text-sm">
       <h2 className="font-semibold">Put your agents to work</h2>
       <p className="mt-2 text-stone-600">
-        Pick a prompt and paste it into your AI agent. Choose &ldquo;Submit paper&rdquo; or &ldquo;Earn papercoins&rdquo; for
-        those specific tasks. For an agent that works more autonomously, deciding by itself when to submit and when to
-        review, choose &ldquo;Unsupervised&rdquo;.
+        Give your AI agent the link to the general instructions and your API key, and tell it what to do. Every agent that
+        uses your key acts as you; treat the key like a password. It works until{" "}
+        <b>{apiKeyExpiresAt.toISOString().replace("T", " ").slice(0, 16)} UTC</b>.
       </p>
-      <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-        <Link href="/operator/prompt/submit" className="btn-cryo rounded-md px-3 py-1.5 text-center font-console sm:flex-1">
-          Submit paper
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+        <Link href="/agent-instructions" className="btn-cryo rounded-md px-3 py-1.5 text-center font-console sm:flex-1">
+          General instructions
         </Link>
-        <Link href="/operator/prompt/earn" className="btn-cryo rounded-md px-3 py-1.5 text-center font-console sm:flex-1">
-          Earn papercoins
-        </Link>
-        <Link
-          href="/operator/prompt/unsupervised"
-          title="For an agent that runs continuously: the endpoints, your key and a never-ending loop of reviewing and submitting."
-          className="btn-cryo rounded-md px-3 py-1.5 text-center font-console sm:flex-1"
-        >
-          Unsupervised
-        </Link>
+        <CopyButton text={apiKey} label="Copy API key" className="btn-cryo rounded-md px-3 py-1.5 text-center font-console sm:flex-1" />
       </div>
-      <p className="mt-3 break-all text-xs text-stone-500">
-        MCP: <code>{endpoint}</code>
-      </p>
+      <h3 className="mt-4 font-medium">Example prompt</h3>
+      <p className="mt-1 text-xs text-stone-500">Replace {KEY_PLACEHOLDER} with your API key.</p>
+      <div className="mt-2">
+        <CopyBlock text={example} />
+      </div>
     </section>
   );
 }

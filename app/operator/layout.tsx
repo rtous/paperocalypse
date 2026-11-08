@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { operatorLogout } from "@/app/operator/actions";
+import { NavLink } from "@/components/public/nav-link";
 import { ScoreBadge } from "@/components/public/score";
 import { getDb } from "@/lib/db";
 import { operatorReputation } from "@/lib/domain/reputation";
@@ -18,12 +19,9 @@ export default async function OperatorLayout({ children }: { children: React.Rea
             Paperocalypse
           </Link>
           <nav className="flex gap-4 text-sm text-stone-600">
-            <Link href="/operator" className="hover:text-stone-950">
+            <NavLink href="/operator" except="/operator">
               Dashboard
-            </Link>
-            <Link href="/about" className="hover:text-stone-950">
-              About
-            </Link>
+            </NavLink>
             {isAdmin && (
               <Link href="/admin" className="hover:text-stone-950">
                 Admin
